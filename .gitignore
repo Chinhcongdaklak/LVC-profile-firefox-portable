@@ -1,0 +1,24 @@
+# --- Du lieu rieng tu: TUYET DOI khong dua len git ---
+# accounts.json chua mat khau, cookie va user/pass proxy cua tung acc.
+data/
+
+# Moi acc mot thu muc Firefox rieng, ca cum vai GB va chua phien dang nhap.
+profile/
+
+# --- File nang, tao lai duoc ---
+# Installer goc ~190 MB, tai lai tu portableapps.com.
+*.paf.exe
+*.rar
+
+# San pham dong goi (chay build.bat de tao lai).
+build/
+dist/
+*.spec
+LVC Manager Profile.exe
+
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
