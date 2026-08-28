@@ -25,6 +25,7 @@ import base64
 import json
 import os
 import re
+import shutil
 import socket
 import sys
 from typing import Optional
@@ -39,6 +40,17 @@ DEFAULT_REALM = "proxy"
 # Hai file cua lop va mui gio, duoc chep canh firefox.exe.
 SHIM_NAME = "tz_shim.js"    # process script, chay trong tien trinh noi dung
 PATCH_NAME = "tz_patch.js"  # lop va thuc su, chay trong tung trang
+
+def _asset_path(name: str) -> str:
+    """Duong dan toi mot file trong core/assets (chay ca khi da dong goi)."""
+    base = getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.abspath(__file__))
+    for candidate in (
+        os.path.join(base, "assets", name),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", name),
+    ):
+        if os.path.exists(candidate):
+            return candidate
+    raise FileNotFoundError(f"Thiếu {name} trong core/assets.")
 
 
 def _asset(name: str) -> str:
@@ -397,6 +409,216 @@ try {
 """
 
 
+# Addon chep san vao <profile>/extensions/ bi Firefox coi la "cai tu ben ngoai",
+# mac dinh CAI NHUNG DE TAT va cho nguoi dung tu bat. Hai pref nay bao Firefox
+# quet thu muc do va bat luon -- da do: khong co chung thi addon nam im.
+_EXTENSION_PREFS = """
+// Nhan addon duoc chep san vao thu muc profile
+defaultPref("extensions.autoDisableScopes", 0);
+defaultPref("extensions.startupScanScopes", 15);
+"""
+
+
+# Ten file ket qua do trinh duyet tu ghi vao thu muc profile. Tool doc file nay
+# de biet cookie vao duoc Facebook hay khong ma khong phai ngoi doi.
+PROBE_NAME = "qlfp-login.json"
+PROBE_LOG = "qlfp-login.log"   # nhat ky de soi khi khong ra ket qua
+
+# Bao cho tool biet NGAY khi trang Facebook tai xong la vao duoc hay khong.
+#
+# Vi sao khong doc cookies.sqlite: Firefox gom cac thay doi cookie roi moi ghi
+# xuong dia theo dot, nen nhin vao file la thay cham vai chuc giay. O day doc
+# thang kho cookie TRONG BO NHO (Services.cookies) ngay khi trang tai xong ->
+# biet ket qua sau 1-2 giay thay vi 30 giay.
+#
+# Dau hieu: phien chet thi Facebook xoa c_user/xs va/hoac day sang trang dang
+# nhap. Chay o muc chrome (khong dung toi noi dung trang) nen khong the lam
+# crash tab nhu kieu tiem script vao trang.
+_PROBE_JS = r"""
+(function () {
+  var CMP = null, SVC = null;
+  try { CMP = Components; } catch (e) {}
+  try { SVC = Services; } catch (e) {}
+  if (!CMP || !SVC) { return; }
+
+  var MARK = "%(mark)s";
+  var LOGF = "%(log)s";
+  var DEAD_URL = /facebook\.com\/(login|checkpoint|recover|two_step)/i;
+  var written = "";
+  var lines = [];
+  var finished = false;   // chot xong roi thi thoi, dung ghi file nua
+
+  // Ghi file: uu tien IOUtils, khong co thi dung luong file kieu cu.
+  function put(name, text) {
+    try {
+      IOUtils.writeUTF8(PathUtils.join(PathUtils.profileDir, name), text);
+      return true;
+    } catch (e) {}
+    try {
+      var f = CMP.classes["@mozilla.org/file/directory_service;1"]
+                 .getService(CMP.interfaces.nsIProperties)
+                 .get("ProfD", CMP.interfaces.nsIFile);
+      f.append(name);
+      var os = CMP.classes["@mozilla.org/network/file-output-stream;1"]
+                  .createInstance(CMP.interfaces.nsIFileOutputStream);
+      os.init(f, 0x02 | 0x08 | 0x20, 420, 0);
+      var cv = CMP.classes["@mozilla.org/intl/converter-output-stream;1"]
+                  .createInstance(CMP.interfaces.nsIConverterOutputStream);
+      cv.init(os, "UTF-8"); cv.writeString(text); cv.close();
+      return true;
+    } catch (e) {}
+    return false;
+  }
+
+  function note(m) {
+    lines.push(m);
+    put(LOGF, lines.join("\r\n") + "\r\n");
+  }
+
+  function write(ok, why, done) {
+    if (finished) { return; }
+    var text = JSON.stringify({ ok: !!ok, final: !!done, why: why });
+    if (text !== written) {
+      written = text;
+      note("bao: " + text);
+      put(MARK, text);
+    }
+    // Da chot thi ngung han: nhung lan duyet web sau khong can ghi file nua.
+    if (done) { finished = true; }
+  }
+
+  // Con giu ca c_user lan xs nghia la Facebook chua huy phien.
+  function stillLoggedIn() {
+    try {
+      var list = SVC.cookies.cookies, user = false, xs = false;
+      for (var i = 0; i < list.length; i++) {
+        var c = list[i];
+        if (!c.host || c.host.indexOf("facebook.com") === -1) { continue; }
+        if (c.name === "c_user") { user = true; }
+        else if (c.name === "xs") { xs = true; }
+      }
+      return user && xs;
+    } catch (e) {
+      note("LOI doc cookie: " + e);
+      return true;    // khong doc duoc thi cho tiep, dung ket luan voi
+    }
+  }
+
+  // Bi day sang /login la chac chan chet -- ket luan duoc ngay khong can cho.
+  // Chi de soi trong nhat ky khi ket qua khong nhu mong doi.
+  function fbCookieNames() {
+    try {
+      var list = SVC.cookies.cookies, names = [];
+      for (var i = 0; i < list.length; i++) {
+        if (list[i].host && list[i].host.indexOf("facebook.com") !== -1) {
+          names.push(list[i].name);
+        }
+      }
+      return names.length ? names.join(",") : "(khong co)";
+    } catch (e) { return "LOI: " + e; }
+  }
+
+  function judgeUrl(url) {
+    if (!url || url.indexOf("facebook.com") === -1) { return; }
+    if (DEAD_URL.test(url)) { write(false, "bi day sang trang dang nhap", true); }
+  }
+
+  // CHI goi sau khi trang da tai xong. Goi som hon la doc nham: luc trang chua
+  // tai, kho cookie chua duoc nap len nen c_user/xs nhin nhu da mat -> bao chet oan.
+  function judgeLoaded(url, done) {
+    if (!url || url.indexOf("facebook.com") === -1) { return; }
+    if (DEAD_URL.test(url)) { write(false, "bi day sang trang dang nhap", true); return; }
+    if (!stillLoggedIn()) { write(false, "Facebook da xoa c_user/xs", true); return; }
+    write(true, "vao duoc", done);
+  }
+
+  function watch(win) {
+    try {
+      if (win.__qlfpProbe) { return true; }
+      if (!win.gBrowser || !win.gBrowser.addTabsProgressListener) { return false; }
+      win.__qlfpProbe = true;
+      var WPL = CMP.interfaces.nsIWebProgressListener;
+      win.gBrowser.addTabsProgressListener({
+        // Bi day sang /login thi biet ngay, khong doi tai xong.
+        onLocationChange: function (browser, progress, request, location) {
+          try { if (!finished && progress.isTopLevel) { judgeUrl(location.spec); } } catch (e) {}
+        },
+        onStateChange: function (browser, progress, request, flags) {
+          try {
+            if (finished || !progress.isTopLevel) { return; }
+            if (!(flags & WPL.STATE_STOP) || !(flags & WPL.STATE_IS_NETWORK)) { return; }
+            var url = browser.currentURI ? browser.currentURI.spec : "";
+            note("tai xong: " + url + "  | tieu de: " + (browser.contentTitle || ""));
+            note("cookie facebook: " + fbCookieNames());
+            judgeLoaded(url, false);
+            // Facebook co the huy phien them mot nhip sau khi trang tai xong ->
+            // xem lai lan nua roi moi chot ket qua.
+            win.setTimeout(function () { judgeLoaded(url, true); }, 2500);
+          } catch (e) { note("LOI onStateChange: " + e); }
+        },
+        onProgressChange: function () {},
+        onStatusChange: function () {},
+        onSecurityChange: function () {},
+        onRefreshAttempted: function () { return true; }
+      });
+      note("da gan bo theo doi vao cua so");
+      return true;
+    } catch (e) { note("LOI gan bo theo doi: " + e); }
+    return false;
+  }
+
+  // gBrowser co the chua san sang ngay luc cua so "load" -> thu lai vai nhip.
+  function watchSoon(win) {
+    if (watch(win)) { return; }
+    var n = 0;
+    var again = function () {
+      if (watch(win) || ++n > 40) { return; }
+      win.setTimeout(again, 250);
+    };
+    win.setTimeout(again, 100);
+  }
+
+  try {
+    note("bat dau theo doi dang nhap");
+    SVC.wm.addListener({
+      onOpenWindow: function (xulWin) {
+        try {
+          var win = xulWin.docShell.domWindow;
+          win.addEventListener("load", function onload() {
+            win.removeEventListener("load", onload);
+            if (win.location.href.indexOf("browser.xhtml") === -1) { return; }
+            watchSoon(win);
+          });
+        } catch (e) { note("LOI onOpenWindow: " + e); }
+      },
+      onCloseWindow: function () {},
+      onWindowTitleChange: function () {}
+    });
+    var e = SVC.wm.getEnumerator("navigator:browser");
+    while (e.hasMoreElements()) { watchSoon(e.getNext()); }
+  } catch (e) { note("LOI dang ky: " + e); }
+})();
+""" % {"mark": PROBE_NAME, "log": PROBE_LOG}
+
+
+# Tool dong trinh duyet bang cach ket lieu tien trinh, nen lan mo ke tiep Firefox
+# tuong vua bi sap va hien trang "Restore Session" thay vi vao thang dia chi duoc
+# giao -- da do: acc bi treo o do het thoi gian cho ma khong bao gio toi Facebook.
+# Tat han phan phuc hoi phien thi mo lan nao cung vao thang trang can vao.
+_STARTUP_PREFS = """
+// Khong hoi phuc hoi phien sau khi bi ket lieu tien trinh
+defaultPref("browser.sessionstore.resume_from_crash", false);
+defaultPref("browser.sessionstore.max_resumed_crashes", 0);
+defaultPref("toolkit.startup.max_resumed_crashes", -1);
+// Khong chen trang gioi thieu / hoi trinh duyet mac dinh lam tre buoc dang nhap
+defaultPref("browser.shell.checkDefaultBrowser", false);
+defaultPref("browser.startup.homepage_override.mstone", "ignore");
+defaultPref("startup.homepage_welcome_url", "");
+defaultPref("startup.homepage_welcome_url.additional", "");
+defaultPref("browser.aboutwelcome.enabled", false);
+"""
+
+
 def render(
     proxy: Proxy,
     realm: str = DEFAULT_REALM,
@@ -443,7 +665,10 @@ def render(
     if identity.timezone and use_shim:
         parts.append(_SHIM_LOADER_JS % {"shim": SHIM_NAME})
 
+    parts.append(_STARTUP_PREFS)
+    parts.append(_EXTENSION_PREFS)
     parts.append(_TITLE_JS)
+    parts.append(_PROBE_JS)
     return "\n".join(parts)
 
 
@@ -489,6 +714,7 @@ def install(
             _write(os.path.join(folder, PATCH_NAME), patch)
         else:
             _remove_shim(folder)
+
         written.append(folder)
     return written
 

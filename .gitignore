@@ -5,6 +5,9 @@ data/
 # Moi acc mot thu muc Firefox rieng, ca cum vai GB va chua phien dang nhap.
 profile/
 
+# Installer Firefox (~190 MB) va file .xpi da ky -- tai/dung lai duoc.
+extension/
+
 # --- File nang, tao lai duoc ---
 # Installer goc ~190 MB, tai lai tu portableapps.com.
 *.paf.exe

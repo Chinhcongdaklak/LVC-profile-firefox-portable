@@ -16,8 +16,11 @@ Bo cuc thu muc:
 
 from __future__ import annotations
 
+import json
 import os
+import zipfile
 import shutil
+import sqlite3
 import subprocess
 import time
 from typing import Callable, Optional
@@ -109,6 +112,7 @@ class ProfileManager:
             # Da co san thu muc trung ten voi id acc -> dung luon, khong cai lai.
             self.configure(account)
             self._auto_identity(account, status)
+            self._auto_extension(account, status)
             self.cleanup_installer(account, status)
             return self.app_dir(account)
         if self.is_installed(account):
@@ -124,8 +128,89 @@ class ProfileManager:
 
         self.configure(account)
         self._auto_identity(account, status)
+        self._auto_extension(account, status)
         self.cleanup_installer(account, status)
         return self.app_dir(account)
+
+    # ---- extension -----------------------------------------------------
+    @staticmethod
+    def read_extension_info(xpi_path: str) -> tuple[str, str]:
+        """Doc (id, phien ban) tu file .xpi va kiem tra da duoc ky chua.
+
+        Firefox ban release TU CHOI addon chua ky -- khong co cach nao vong qua
+        (pref xpinstall.signatures.required bi bo qua tren kenh release). Nen
+        phai bao loi ngay tu day thay vi de nguoi dung tuong da cai xong.
+        """
+        if not os.path.isfile(xpi_path):
+            raise ProfileError(f"Không thấy file: {xpi_path}")
+        try:
+            with zipfile.ZipFile(xpi_path) as archive:
+                names = archive.namelist()
+                manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+        except (OSError, KeyError, ValueError, zipfile.BadZipFile) as exc:
+            raise ProfileError(f"File .xpi hỏng hoặc không đọc được: {exc}") from exc
+
+        if not any(name.startswith("META-INF/") for name in names):
+            raise ProfileError(
+                "File .xpi này CHƯA được Mozilla ký.\n"
+                "Firefox bản release từ chối addon chưa ký — hãy ký qua "
+                "addons.mozilla.org rồi dùng file trong thư mục 'da-ky'."
+            )
+
+        gecko = (manifest.get("browser_specific_settings")
+                 or manifest.get("applications") or {}).get("gecko") or {}
+        addon_id = gecko.get("id")
+        if not addon_id:
+            raise ProfileError(
+                "manifest.json thiếu browser_specific_settings.gecko.id — "
+                "Firefox cần id này để nhận addon."
+            )
+        return addon_id, str(manifest.get("version") or "?")
+
+    def extension_dir(self, account: Account) -> str:
+        return os.path.join(self.profile_dir(account), "extensions")
+
+    def installed_extensions(self, account: Account) -> list[str]:
+        try:
+            return sorted(
+                n for n in os.listdir(self.extension_dir(account))
+                if n.lower().endswith(".xpi")
+            )
+        except OSError:
+            return []
+
+    def install_extension(self, account: Account, xpi_path: str) -> str:
+        """Chep addon da ky vao ``<profile>/extensions/<id>.xpi``.
+
+        Firefox quet thu muc nay luc khoi dong, nen phai cai khi trinh duyet
+        DANG DONG; dang mo thi no ghi de lai danh sach addon cua no.
+        """
+        if not self.is_installed(account):
+            raise ProfileError(f"Chưa cài profile cho acc '{account.id}'.")
+        addon_id, version = self.read_extension_info(xpi_path)
+
+        target_dir = self.extension_dir(account)
+        os.makedirs(target_dir, exist_ok=True)
+        shutil.copyfile(xpi_path, os.path.join(target_dir, addon_id + ".xpi"))
+        return f"{addon_id} v{version}"
+
+    def remove_extension(self, account: Account, addon_id: str) -> bool:
+        path = os.path.join(self.extension_dir(account), addon_id + ".xpi")
+        try:
+            os.remove(path)
+            return True
+        except OSError:
+            return False
+
+    def _auto_extension(self, account: Account, status: Callable[[str], None]) -> None:
+        """Cai san extension khi vua tao profile, neu da chi dinh file .xpi."""
+        xpi = (getattr(self.settings, "extension_xpi", "") or "").strip()
+        if not xpi:
+            return
+        try:
+            status(f"Cài extension: {self.install_extension(account, xpi)}")
+        except ProfileError as exc:
+            status(f"Không cài được extension: {exc}")
 
     def find_existing_launcher(self, account: Account) -> str:
         """Tim ``FirefoxPortable.exe`` co san trong thu muc mang ten id acc.
@@ -472,6 +557,85 @@ class ProfileManager:
         account.set_identity(None)
         if self.is_installed(account):
             self.configure(account)
+
+    def login_probe_path(self, account: Account) -> str:
+        """File ket qua do chinh trinh duyet ghi ra (xem autoconfig._PROBE_JS)."""
+        return os.path.join(self.profile_dir(account), autoconfig.PROBE_NAME)
+
+    def clear_login_probe(self, account: Account) -> None:
+        """Xoa ket qua cu -- phai goi TRUOC khi mo, khong la doc nham lan truoc."""
+        try:
+            os.remove(self.login_probe_path(account))
+        except OSError:
+            pass
+
+    def read_login_probe(self, account: Account):
+        """Tra ve ``(vao_duoc, da_chot)``, hoac ``None`` neu trinh duyet chua bao."""
+        try:
+            with open(self.login_probe_path(account), encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        return bool(data.get("ok")), bool(data.get("final"))
+
+    def verify_cookie_login(
+        self,
+        account: Account,
+        timeout: float = 25.0,
+        settle: float = 0.0,
+        fallback_after: float = 12.0,
+    ) -> bool:
+        """Cookie vua nap co vao duoc Facebook khong -- biet cang som cang tot.
+
+        Duong chinh: trinh duyet tu bao ra file ``qlfp-login.json`` ngay khi trang
+        Facebook tai xong (doc kho cookie trong bo nho, xem autoconfig._PROBE_JS).
+        Thuong co ket qua sau 2-5 giay ke tu luc mo.
+
+        Duong du phong: profile cu chua co doan script do (hoac mo bang duong khac)
+        thi quay ve cach cu -- theo doi ``cookies.sqlite``, vi Facebook XOA
+        ``c_user``/``xs`` khoi profile khi phien da chet. Cach nay cham hon nhieu
+        vi Firefox ghi cookie xuong dia theo dot.
+        """
+        database = os.path.join(self.profile_dir(account), "cookies.sqlite")
+        deadline = time.time() + timeout
+        if settle > 0:
+            time.sleep(min(settle, timeout))
+        fallback_at = time.time() + min(fallback_after, timeout)
+
+        while True:
+            probe = self.read_login_probe(account)
+            if probe is not None:
+                vao_duoc, da_chot = probe
+                if not vao_duoc:
+                    return False        # chac chan chet -> khoi cho them
+                if da_chot:
+                    return True         # da xem lai mot lan nua -> vao duoc that
+
+            now = time.time()
+            if now >= deadline:
+                # Het gio: lay tam ket qua chua chot, khong co thi doc file cookie.
+                return probe[0] if probe is not None else self._has_login_cookie(database)
+            # Trinh duyet im lang qua lau -> nga sang cach cu de con biet duong.
+            if probe is None and now >= fallback_at and not self._has_login_cookie(database):
+                return False
+            time.sleep(0.25)
+
+    @staticmethod
+    def _has_login_cookie(database: str) -> bool:
+        """Con ``c_user`` trong cookies.sqlite khong (duong du phong, cham)."""
+        if not os.path.isfile(database):
+            return False
+        try:
+            with sqlite3.connect(database, timeout=5) as connection:
+                found = connection.execute(
+                    "SELECT 1 FROM moz_cookies WHERE name = 'c_user' LIMIT 1"
+                ).fetchone()
+            return bool(found)
+        except sqlite3.Error:
+            # Firefox dang ghi do -> chua ket luan duoc, coi nhu con.
+            return True
 
     def restart(self, account: Account, wait: float = 2.0) -> None:
         """Dong roi mo lai trinh duyet cua acc de ap dung cau hinh moi."""

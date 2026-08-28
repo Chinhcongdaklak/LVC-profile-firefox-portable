@@ -75,7 +75,16 @@ class AccountDialog(BaseDialog):
         row += 1
         self.password_entry = self._field(container, row, "Mật khẩu", self.account.password, secret=True)
         row += 1
-        self.mail_entry = self._field(container, row, "Mail khôi phục", self.account.recovery_mail)
+        self.mail_entry = self._field(container, row, "Email khôi phục", self.account.recovery_mail)
+        row += 1
+        self.mailpass_entry = self._field(
+            container, row, "Pass email khôi phục", self.account.recovery_mail_password,
+            secret=True,
+        )
+        row += 1
+        self.mailbackup_entry = self._field(
+            container, row, "Email khôi phục của email KP", self.account.recovery_mail_backup,
+        )
         row += 1
 
         ctk.CTkLabel(container, text="Mã 2FA (secret)").grid(row=row, column=0, sticky="w", padx=PAD, pady=6)
@@ -177,12 +186,13 @@ class AccountDialog(BaseDialog):
 
     def _field(self, parent, row: int, label: str, value: str, secret: bool = False) -> ctk.CTkEntry:
         ctk.CTkLabel(parent, text=label).grid(row=row, column=0, sticky="w", padx=PAD, pady=6)
-        entry = ctk.CTkEntry(parent, show="•" if secret else "")
+        # Mat khau hien san cho de doi chieu; bam nut con mat de che lai.
+        entry = ctk.CTkEntry(parent)
         entry.insert(0, value or "")
         entry.grid(row=row, column=1, sticky="ew", padx=PAD, pady=6)
         if secret:
             def toggle():
-                entry.configure(show="" if entry.cget("show") else "•")
+                entry.configure(show="•" if not entry.cget("show") else "")
             ctk.CTkButton(parent, text="👁", width=32, command=toggle).grid(row=row, column=2, padx=(0, PAD))
         return entry
 
@@ -291,6 +301,8 @@ class AccountDialog(BaseDialog):
         self.account.id = account_id
         self.account.password = self.password_entry.get().strip()
         self.account.recovery_mail = self.mail_entry.get().strip()
+        self.account.recovery_mail_password = self.mailpass_entry.get().strip()
+        self.account.recovery_mail_backup = self.mailbackup_entry.get().strip()
         self.account.twofa = self.twofa_entry.get().strip()
         self.account.set_proxy(proxy)
         self.account.auto_identity = bool(self.auto_identity.get())
@@ -313,8 +325,8 @@ IMPORT_FIELDS = [
     ("x:token", "Token"),
     ("proxy", "Proxy / ProxySsh"),
     ("twofa", "2FA"),
-    ("x:email", "Email"),
-    ("x:pass_email", "Pass Email"),
+    ("recovery_mail", "Email khôi phục"),
+    ("recovery_mail_password", "Pass email khôi phục"),
     ("x:phone", "Phone"),
     ("x:user_agent", "UserAgent"),
     ("x:fb_name", "Facebook Name"),
@@ -323,8 +335,7 @@ IMPORT_FIELDS = [
     ("x:friends", "Friends"),
     ("x:fb_groups", "Groups (FB)"),
     ("note", "Ghi chú"),
-    ("recovery_mail", "Mail khôi phục"),
-    ("x:recovery_mail_pass", "Pass mail khôi phục"),
+    ("recovery_mail_backup", "Email khôi phục của email KP"),
     ("group", "Nhóm (trong tool)"),
 ]
 _FIELD_LABEL = {key: label for key, label in IMPORT_FIELDS}
@@ -917,12 +928,105 @@ class SimplePromptDialog(BaseDialog):
         self.destroy()
 
 
+class FieldEditDialog(BaseDialog):
+    """Sua MOT truong cua mot hoac nhieu acc cung luc.
+
+    Khac SimplePromptDialog o hai cho quan trong:
+      * de trong van la ket qua hop le (dung de XOA gia tri), chi bam Huy moi la huy;
+      * chon nhieu acc thi noi ro se ghi de len tat ca, va chi mo san gia tri cu
+        khi ca nhom dang dung chung mot gia tri.
+    """
+
+    def __init__(self, parent, accounts: list[Account], title: str, label: str,
+                 values: list[str], multiline: bool = False,
+                 options: Optional[list[str]] = None):
+        many = len(accounts) > 1
+        ten = f"{title} — {len(accounts)} acc" if many else f"{title} — {accounts[0].id}"
+        cao = 420 if multiline else (300 if many else 250)
+        super().__init__(parent, ten, 620, cao)
+        self.minsize(460, 230)
+
+        chung = set(values)
+        san = chung.pop() if len(chung) == 1 else ""
+
+        if many:
+            ten_acc = ", ".join(a.id for a in accounts[:4])
+            if len(accounts) > 4:
+                ten_acc += f" … (+{len(accounts) - 4})"
+            dau = f"Ghi đè {label.lower()} cho {len(accounts)} acc: {ten_acc}"
+        else:
+            dau = f"{label} của acc {accounts[0].id}:"
+        ctk.CTkLabel(self, text=dau, justify="left", wraplength=580).pack(
+            anchor="w", padx=PAD, pady=(PAD, 4)
+        )
+        if many and not san and len(chung) != 0:
+            ctk.CTkLabel(self, text="Các acc đang có giá trị khác nhau — lưu là thay hết.",
+                         text_color="gray60", justify="left", wraplength=580).pack(
+                anchor="w", padx=PAD, pady=(0, 4))
+
+        self.options = options
+        if options:
+            self.choice = ctk.CTkOptionMenu(self, values=options)
+            self.choice.set(san if san in options else options[0])
+            self.choice.pack(anchor="w", padx=PAD, pady=(4, 0))
+        elif multiline:
+            self.box = ctk.CTkTextbox(self)
+            self.box.pack(fill="both", expand=True, padx=PAD, pady=(4, 0))
+            if san:
+                self.box.insert("1.0", san)
+        else:
+            self.box = ctk.CTkEntry(self)
+            self.box.pack(fill="x", padx=PAD, pady=(4, 0))
+            self.box.insert(0, san)
+            self.box.bind("<Return>", lambda _e: self._submit())
+
+        ctk.CTkLabel(self, text="Để trống rồi bấm Lưu là xoá giá trị này.",
+                     text_color="gray60", justify="left").pack(
+            anchor="w", padx=PAD, pady=(4, 0))
+
+        nut = ctk.CTkFrame(self, fg_color="transparent")
+        nut.pack(fill="x", padx=PAD, pady=PAD)
+        ctk.CTkButton(nut, text="Hủy", width=90, fg_color="gray35",
+                      command=self._cancel).pack(side="right")
+        ctk.CTkButton(nut, text="Lưu", width=90, command=self._submit).pack(
+            side="right", padx=6)
+        self.after(200, self._focus)
+
+    def _focus(self) -> None:
+        try:
+            if self.options:
+                return
+            self.box.focus_set()
+            if isinstance(self.box, ctk.CTkEntry):
+                self.box.select_range(0, "end")
+        except tk.TclError:
+            pass
+
+    def _submit(self) -> None:
+        if self.options:
+            self.result = self.choice.get()
+        elif isinstance(self.box, ctk.CTkTextbox):
+            self.result = self.box.get("1.0", "end").strip()
+        else:
+            self.result = self.box.get().strip()
+        self.destroy()
+
+
 class SettingsDialog(BaseDialog):
     """Chinh duong dan va cach tao profile."""
 
     def __init__(self, parent, settings: Settings):
-        super().__init__(parent, "Cài đặt", 720, 480)
+        super().__init__(parent, "Cài đặt", 760, 700)
         self.settings = settings
+
+        # Hang nut phai duoc pack TRUOC khung noi dung: pack cap cho theo thu tu,
+        # khung co expand=True se an het chieu cao va nut bi cat mat o duoi.
+        buttons = ctk.CTkFrame(self, fg_color="transparent")
+        buttons.pack(side="bottom", fill="x", padx=PAD, pady=PAD)
+        ctk.CTkButton(buttons, text="Hủy", width=110, fg_color="gray35",
+                      command=self._cancel).pack(side="right")
+        ctk.CTkButton(buttons, text="Lưu", width=110, command=self._save).pack(
+            side="right", padx=8)
 
         frame = ctk.CTkFrame(self, fg_color="transparent")
         frame.pack(fill="both", expand=True, padx=PAD, pady=PAD)
@@ -939,49 +1043,53 @@ class SettingsDialog(BaseDialog):
         self.template_entry = self._path_row(
             frame, 2, "Thư mục FirefoxPortable mẫu", settings.template_dir, folder=True
         )
+        self.xpi_entry = self._path_row(
+            frame, 3, "Extension .xpi (đã ký)", settings.extension_xpi,
+            folder=False, filetypes=[("Firefox extension", "*.xpi")],
+        )
 
         self.clone_var = tk.BooleanVar(value=settings.clone_from_template)
         ctk.CTkCheckBox(
             frame,
             text="Nhân bản từ thư mục mẫu thay vì chạy installer (nhanh hơn nhiều)",
             variable=self.clone_var,
-        ).grid(row=3, column=1, sticky="w", padx=PAD, pady=(10, 4))
+        ).grid(row=4, column=1, sticky="w", padx=PAD, pady=(10, 4))
 
         self.multi_var = tk.BooleanVar(value=settings.allow_multiple_instances)
         ctk.CTkCheckBox(
             frame,
             text="Cho phép mở nhiều profile cùng lúc (AllowMultipleInstances)",
             variable=self.multi_var,
-        ).grid(row=4, column=1, sticky="w", padx=PAD, pady=4)
+        ).grid(row=5, column=1, sticky="w", padx=PAD, pady=4)
 
         self.autologin_var = tk.BooleanVar(value=settings.auto_login_cookie)
         ctk.CTkCheckBox(
             frame,
             text="Tự nạp cookie để đăng nhập khi mở (nếu profile chưa đăng nhập)",
             variable=self.autologin_var,
-        ).grid(row=5, column=1, sticky="w", padx=PAD, pady=4)
-
-        self.tzshim_var = tk.BooleanVar(value=getattr(settings, "use_tz_shim", False))
-        ctk.CTkCheckBox(
-            frame,
-            text="Giả múi giờ bằng JS (dễ bị phát hiện — chỉ bật khi proxy khác múi giờ máy)",
-            variable=self.tzshim_var,
         ).grid(row=6, column=1, sticky="w", padx=PAD, pady=4)
 
+        self.tzshim_var = tk.BooleanVar(value=getattr(settings, "use_tz_shim", True))
+        ctk.CTkCheckBox(
+            frame,
+            text="Giả múi giờ theo IP proxy (tắt thì proxy ngoài Mỹ sẽ lộ giờ máy thật)",
+            variable=self.tzshim_var,
+        ).grid(row=7, column=1, sticky="w", padx=PAD, pady=4)
+
         ctk.CTkLabel(frame, text="Giao diện").grid(
-            row=7, column=0, sticky="w", padx=PAD, pady=8
+            row=8, column=0, sticky="w", padx=PAD, pady=8
         )
         self.appearance_box = ctk.CTkOptionMenu(
             frame, values=list(APPEARANCES), width=160,
         )
         self.appearance_box.set(APPEARANCE_LABELS.get(settings.appearance, "Sáng"))
-        self.appearance_box.grid(row=7, column=1, sticky="w", padx=PAD, pady=8)
+        self.appearance_box.grid(row=8, column=1, sticky="w", padx=PAD, pady=8)
 
         ctk.CTkLabel(frame, text="Số luồng tạo profile").grid(
-            row=8, column=0, sticky="w", padx=PAD, pady=8
+            row=9, column=0, sticky="w", padx=PAD, pady=8
         )
         thread_row = ctk.CTkFrame(frame, fg_color="transparent")
-        thread_row.grid(row=8, column=1, sticky="w", padx=PAD, pady=8)
+        thread_row.grid(row=9, column=1, sticky="w", padx=PAD, pady=8)
         self.threads_box = ctk.CTkOptionMenu(
             thread_row, values=[str(n) for n in range(1, 9)], width=80
         )
@@ -989,19 +1097,19 @@ class SettingsDialog(BaseDialog):
         self.threads_box.pack(side="left")
         ctk.CTkLabel(
             thread_row,
-            text="Tạo nhiều acc cùng lúc cho nhanh. Nhiều quá thì máy chậm và dễ lỗi.",
+            text="acc cùng lúc — nhiều quá thì máy chậm",
             text_color="gray60",
             font=ctk.CTkFont(size=11),
         ).pack(side="left", padx=8)
 
         ctk.CTkLabel(frame, text="Trang mở khi bấm “Mở”").grid(
-            row=9, column=0, sticky="w", padx=PAD, pady=8
+            row=11, column=0, sticky="w", padx=PAD, pady=8
         )
         self.starturl_entry = ctk.CTkEntry(
             frame, placeholder_text="https://www.facebook.com/  (để trống = trang chủ mặc định)"
         )
         self.starturl_entry.insert(0, settings.start_url or "")
-        self.starturl_entry.grid(row=9, column=1, sticky="ew", padx=PAD, pady=8)
+        self.starturl_entry.grid(row=11, column=1, sticky="ew", padx=PAD, pady=8)
 
         ctk.CTkLabel(
             frame,
@@ -1012,12 +1120,7 @@ class SettingsDialog(BaseDialog):
                  "nhưng cần chỉ định sẵn một thư mục FirefoxPortable đã giải nén.",
             text_color="gray60",
             justify="left",
-        ).grid(row=8, column=1, sticky="w", padx=PAD, pady=(14, 0))
-
-        buttons = ctk.CTkFrame(self, fg_color="transparent")
-        buttons.pack(fill="x", padx=PAD, pady=(0, PAD))
-        ctk.CTkButton(buttons, text="Hủy", width=100, fg_color="gray35", command=self._cancel).pack(side="right")
-        ctk.CTkButton(buttons, text="Lưu", width=100, command=self._save).pack(side="right", padx=6)
+        ).grid(row=12, column=0, columnspan=2, sticky="w", padx=PAD, pady=(16, 0))
 
     def _path_row(self, parent, row: int, label: str, value: str, folder: bool,
                   filetypes=None, default: str = ""):
@@ -1082,4 +1185,266 @@ class SettingsDialog(BaseDialog):
         self.settings.create_threads = max(1, min(8, int(self.threads_box.get() or 3)))
         self.settings.start_url = self.starturl_entry.get().strip()
         self.result = self.settings
+        self.destroy()
+
+
+class CopyCustomDialog(BaseDialog):
+    """Cho nguoi dung tu dat dinh dang roi copy hang loat theo mau do."""
+
+    def __init__(self, parent, accounts, template: str, render, placeholders):
+        super().__init__(parent, "Copy theo định dạng", 700, 560)
+        self._accounts = accounts
+        self._render = render
+
+        body = ctk.CTkFrame(self, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=PAD, pady=PAD)
+
+        ctk.CTkLabel(
+            body,
+            text=f"Sẽ copy {len(accounts)} acc, mỗi acc một dòng theo mẫu bên dưới.",
+            anchor="w",
+        ).pack(fill="x")
+
+        self.entry = ctk.CTkEntry(body, placeholder_text="{id}|{password}|{proxy}")
+        self.entry.insert(0, template)
+        self.entry.pack(fill="x", pady=(8, 4))
+        self.entry.bind("<KeyRelease>", lambda _e: self._preview())
+
+        ctk.CTkLabel(
+            body, text="Bấm để chèn vào mẫu:", anchor="w",
+            text_color="gray60", font=ctk.CTkFont(size=11),
+        ).pack(fill="x", pady=(6, 2))
+
+        chips = ctk.CTkScrollableFrame(body, height=150, fg_color="transparent")
+        chips.pack(fill="x")
+        column = 0
+        line = None
+        for key, label in placeholders:
+            if column % 3 == 0:
+                line = ctk.CTkFrame(chips, fg_color="transparent")
+                line.pack(fill="x", pady=1)
+            ctk.CTkButton(
+                line, text=f"{label}  {{{key}}}", height=24, anchor="w",
+                fg_color="gray30", hover_color="gray40",
+                command=lambda k=key: self._insert(k),
+            ).pack(side="left", fill="x", expand=True, padx=2)
+            column += 1
+
+        ctk.CTkLabel(
+            body, text="Xem trước:", anchor="w",
+            text_color="gray60", font=ctk.CTkFont(size=11),
+        ).pack(fill="x", pady=(10, 2))
+        self.preview = ctk.CTkTextbox(body, height=90)
+        self.preview.pack(fill="x")
+
+        buttons = ctk.CTkFrame(self, fg_color="transparent")
+        buttons.pack(fill="x", padx=PAD, pady=(0, PAD))
+        ctk.CTkButton(buttons, text="Hủy", width=110, fg_color="gray35",
+                      command=self._cancel).pack(side="right")
+        ctk.CTkButton(buttons, text="Copy", width=110, command=self._save).pack(
+            side="right", padx=8)
+
+        self.entry.focus_set()
+        self._preview()
+
+    def _insert(self, key: str) -> None:
+        self.entry.insert(self.entry.index("insert"), "{" + key + "}")
+        self.entry.focus_set()
+        self._preview()
+
+    def _preview(self) -> None:
+        template = self.entry.get()
+        lines = []
+        for account in self._accounts[:3]:
+            try:
+                lines.append(self._render(template, account))
+            except Exception as exc:
+                lines = [f"Mẫu sai: {exc}"]
+                break
+        if len(self._accounts) > 3:
+            lines.append(f"... còn {len(self._accounts) - 3} dòng nữa")
+        self.preview.delete("1.0", "end")
+        self.preview.insert("1.0", "\n".join(lines))
+
+    def _save(self) -> None:
+        template = self.entry.get().strip()
+        if not template:
+            messagebox.showerror("Copy", "Chưa nhập định dạng.", parent=self)
+            return
+        try:
+            self._render(template, self._accounts[0])
+        except Exception as exc:
+            messagebox.showerror("Copy", f"Mẫu sai: {exc}", parent=self)
+            return
+        self.result = template
+        self.destroy()
+
+
+class AccountPickerDialog(BaseDialog):
+    """Chon tai khoan tu danh sach, co o tim va nut chon nhanh."""
+
+    def __init__(self, parent, accounts, picked_ids):
+        super().__init__(parent, "Chọn tài khoản", 560, 620)
+        self._accounts = list(accounts)
+        self._vars = {}
+
+        head = ctk.CTkFrame(self, fg_color="transparent")
+        head.pack(fill="x", padx=PAD, pady=(PAD, 4))
+        self.search = ctk.CTkEntry(head, placeholder_text="Tìm theo ID hoặc nhóm")
+        self.search.pack(side="left", fill="x", expand=True)
+        self.search.bind("<KeyRelease>", lambda _e: self._fill())
+
+        tools = ctk.CTkFrame(self, fg_color="transparent")
+        tools.pack(fill="x", padx=PAD, pady=(0, 4))
+        self.count = ctk.CTkLabel(tools, text="", text_color="gray60")
+        self.count.pack(side="left")
+        ctk.CTkButton(tools, text="Bỏ chọn", width=90, fg_color="gray35",
+                      command=lambda: self._set_all(False)).pack(side="right")
+        ctk.CTkButton(tools, text="Chọn tất cả", width=100,
+                      command=lambda: self._set_all(True)).pack(side="right", padx=6)
+
+        self.body = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self.body.pack(fill="both", expand=True, padx=PAD)
+
+        for account in self._accounts:
+            variable = tk.BooleanVar(value=account.id in picked_ids)
+            variable.trace_add("write", lambda *_a: self._count())
+            self._vars[account.id] = variable
+
+        buttons = ctk.CTkFrame(self, fg_color="transparent")
+        buttons.pack(fill="x", padx=PAD, pady=PAD)
+        ctk.CTkButton(buttons, text="Hủy", width=110, fg_color="gray35",
+                      command=self._cancel).pack(side="right")
+        ctk.CTkButton(buttons, text="Xong", width=110, command=self._save).pack(
+            side="right", padx=8)
+
+        self._fill()
+        self.search.focus_set()
+
+    def _fill(self) -> None:
+        keyword = self.search.get().strip().lower()
+        for child in self.body.winfo_children():
+            child.destroy()
+        for account in self._accounts:
+            haystack = f"{account.id} {account.group}".lower()
+            if keyword and keyword not in haystack:
+                continue
+            label = account.id + (f"   ({account.group})" if account.group else "")
+            ctk.CTkCheckBox(
+                self.body, text=label, variable=self._vars[account.id],
+            ).pack(anchor="w", pady=1)
+        self._count()
+
+    def _count(self) -> None:
+        picked = sum(1 for v in self._vars.values() if v.get())
+        self.count.configure(text=f"đã chọn {picked}/{len(self._vars)}")
+
+    def _set_all(self, value: bool) -> None:
+        """Chi doi nhung dong dang hien -- neu khong o tim thanh vo nghia."""
+        keyword = self.search.get().strip().lower()
+        for account in self._accounts:
+            haystack = f"{account.id} {account.group}".lower()
+            if keyword and keyword not in haystack:
+                continue
+            self._vars[account.id].set(value)
+
+    def _save(self) -> None:
+        self.result = [i for i, v in self._vars.items() if v.get()]
+        self.destroy()
+
+
+class ColumnDialog(BaseDialog):
+    """Chon cot nao hien, va keo thu tu cot."""
+
+    def __init__(self, parent, columns, order, hidden):
+        """``columns``: [(khoa, ten hien thi), ...] theo thu tu goc."""
+        super().__init__(parent, "Cột hiển thị", 460, 620)
+        self._labels = dict(columns)
+        self._default = [key for key, _ in columns]
+
+        # Thu tu dang dung = thu tu da luu, cong them cot moi chua co trong do.
+        known = [k for k in (order or []) if k in self._labels]
+        self._order = known + [k for k in self._default if k not in known]
+        self._hidden = set(hidden or [])
+
+        ctk.CTkLabel(
+            self, anchor="w", justify="left", wraplength=420, text_color="gray60",
+            text=("Bỏ tick để ẩn cột. Chọn một dòng rồi bấm ▲ ▼ để đổi thứ tự.\n"
+                  "Ẩn cột không làm mất dữ liệu."),
+        ).pack(fill="x", padx=PAD, pady=(PAD, 6))
+
+        body = ctk.CTkFrame(self, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=PAD)
+
+        self.listbox = tk.Listbox(
+            body, activestyle="none", exportselection=False, highlightthickness=0,
+        )
+        self.listbox.pack(side="left", fill="both", expand=True)
+        self.listbox.bind("<Double-1>", lambda _e: self._toggle())
+
+        side = ctk.CTkFrame(body, fg_color="transparent")
+        side.pack(side="left", fill="y", padx=(8, 0))
+        ctk.CTkButton(side, text="▲", width=44, command=lambda: self._move(-1)).pack(pady=2)
+        ctk.CTkButton(side, text="▼", width=44, command=lambda: self._move(1)).pack(pady=2)
+        ctk.CTkButton(side, text="Ẩn/Hiện", width=80, command=self._toggle).pack(pady=(12, 2))
+        ctk.CTkButton(side, text="Hiện hết", width=80, command=self._show_all).pack(pady=2)
+        ctk.CTkButton(side, text="Mặc định", width=80, fg_color="gray35",
+                      command=self._reset).pack(pady=2)
+
+        buttons = ctk.CTkFrame(self, fg_color="transparent")
+        buttons.pack(fill="x", padx=PAD, pady=PAD)
+        ctk.CTkButton(buttons, text="Hủy", width=110, fg_color="gray35",
+                      command=self._cancel).pack(side="right")
+        ctk.CTkButton(buttons, text="Áp dụng", width=110, command=self._save).pack(
+            side="right", padx=8)
+
+        self._fill()
+
+    def _fill(self, keep: int = 0) -> None:
+        self.listbox.delete(0, "end")
+        for key in self._order:
+            mark = "☐" if key in self._hidden else "☑"
+            self.listbox.insert("end", f" {mark}  {self._labels[key]}")
+        if self._order:
+            index = max(0, min(keep, len(self._order) - 1))
+            self.listbox.selection_set(index)
+            self.listbox.see(index)
+
+    def _current(self) -> int:
+        picked = self.listbox.curselection()
+        return picked[0] if picked else -1
+
+    def _move(self, step: int) -> None:
+        index = self._current()
+        target = index + step
+        if index < 0 or not 0 <= target < len(self._order):
+            return
+        self._order[index], self._order[target] = self._order[target], self._order[index]
+        self._fill(keep=target)
+
+    def _toggle(self) -> None:
+        index = self._current()
+        if index < 0:
+            return
+        key = self._order[index]
+        if key in self._hidden:
+            self._hidden.discard(key)
+        elif len(self._hidden) + 1 < len(self._order):
+            self._hidden.add(key)          # phai chua it nhat mot cot
+        else:
+            messagebox.showinfo("Cột hiển thị", "Phải chừa lại ít nhất một cột.", parent=self)
+            return
+        self._fill(keep=index)
+
+    def _show_all(self) -> None:
+        self._hidden.clear()
+        self._fill(keep=self._current())
+
+    def _reset(self) -> None:
+        self._order = list(self._default)
+        self._hidden.clear()
+        self._fill()
+
+    def _save(self) -> None:
+        self.result = (list(self._order), sorted(self._hidden))
         self.destroy()

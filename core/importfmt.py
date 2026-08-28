@@ -5,9 +5,9 @@ Cookie / Token ... Cai nao khong chac thi de trong (khoa "") cho nguoi dung chon
 
 Khoa tra ve khop voi IMPORT_FIELDS trong ui/dialogs.py:
   id, password, cookie, proxy, twofa, recovery_mail, note, group,
-  va cac truong phu tien to "x:": x:token, x:email, x:pass_email, x:phone,
-  x:user_agent, x:fb_name, x:dob, x:gender, x:friends, x:fb_groups,
-  x:recovery_mail_pass
+  recovery_mail, recovery_mail_password, recovery_mail_backup,
+  va cac truong phu tien to "x:": x:token, x:phone, x:user_agent,
+  x:fb_name, x:dob, x:gender, x:friends, x:fb_groups
 """
 
 from __future__ import annotations
@@ -126,7 +126,9 @@ def detect_fields(lines: list[str], separator: str, max_cols: int) -> list[str]:
 
         if guess == "email":
             # Email dau tien la email chinh, cai sau la mail khoi phuc.
-            guess = "x:email" if email_seen == 0 else "recovery_mail"
+            # Cot email dau tien la mail khoi phuc, cot thu hai la mail
+            # khoi phuc CUA mail khoi phuc.
+            guess = "recovery_mail" if email_seen == 0 else "recovery_mail_backup"
             email_seen += 1
         if guess == "id":
             id_col = col

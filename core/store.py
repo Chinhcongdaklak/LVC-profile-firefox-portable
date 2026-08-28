@@ -60,6 +60,10 @@ class Account:
     id: str = ""
     password: str = ""
     recovery_mail: str = ""
+    #: Mat khau cua chinh mail khoi phuc.
+    recovery_mail_password: str = ""
+    #: Mail khoi phuc CUA mail khoi phuc -- chuoi khoi phuc thuong di ba tang.
+    recovery_mail_backup: str = ""
     twofa: str = ""
     cookie: str = ""
     proxy: dict = field(default_factory=dict)
@@ -73,6 +77,14 @@ class Account:
     #: Cac truong phu (token, email, phone, user_agent, dob...) khong co cot rieng.
     #: Giu o day de nhap hang loat khong lam mat du lieu.
     extra: dict = field(default_factory=dict)
+    #: Ket qua lan test proxy gan nhat: "Live", "Die" hoac rong (chua test).
+    #: Cot "Trang thai" uu tien hien gia tri nay -- xem App._row_values.
+    proxy_status: str = ""
+    #: Thoi diem test proxy gan nhat (chi de xem lai, khong dung de tinh toan).
+    proxy_checked: str = ""
+    #: Thoi diem dang nhap bang cookie thanh cong gan nhat. Rong = chua chay.
+    #: Dung de to mau dong trong bang, va luu lai de tat tool mo lai van con.
+    cookie_ok: str = ""
     created_at: str = ""
     last_opened: str = ""
 
@@ -105,7 +117,26 @@ class Account:
             known["identity"] = {}
         if not isinstance(known.get("extra"), dict):
             known["extra"] = {}
+        cls._migrate_extra(known)
         return cls(**known)
+
+    #: Truoc day cot Email / Pass Email khi nhap hang loat bi do vao tui phu
+    #: ``extra`` -- ma bang chi tiet lai doc truong that, nen nhap xong khong
+    #: thay dau. Doc file cu thi keo chung ve dung cho.
+    _EXTRA_MOVED = {
+        "email": "recovery_mail",
+        "pass_email": "recovery_mail_password",
+        "recovery_mail_pass": "recovery_mail_password",
+    }
+
+    @classmethod
+    def _migrate_extra(cls, known: dict) -> None:
+        extra = known.get("extra") or {}
+        for source, target in cls._EXTRA_MOVED.items():
+            value = str(extra.get(source) or "").strip()
+            if value and not str(known.get(target) or "").strip():
+                known[target] = value
+                extra.pop(source, None)
 
 
 class AccountStore:
@@ -305,7 +336,13 @@ class AccountStore:
         from . import proxy as proxy_module
 
         fields = fields or ["id", "password", "recovery_mail", "twofa", "proxy", "group"]
-        text_keys = {"id", "password", "recovery_mail", "twofa", "group", "note"}
+        # Nhan moi truong chu cua Account, thay vi mot danh sach viet cung: them
+        # truong moi ma quen sua cho nay thi nhap hang loat se im lang bo qua cot
+        # do -- dung la loi da tung xay ra voi hai o mail khoi phuc.
+        text_keys = {
+            name for name, spec in Account.__dataclass_fields__.items()
+            if spec.type in ("str", str) and name not in {"created_at", "last_opened"}
+        }
         group = (group or "").strip()
         if group and group not in self.groups():
             self.group_names.append(group)

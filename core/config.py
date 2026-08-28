@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 
 
 def _base_dir() -> str:
@@ -44,6 +44,12 @@ def resource_path(*parts: str) -> str:
 # Nguoi dung doi duoc trong Cai dat (vi du de sang o dia khac cho rong).
 DEFAULT_ROOT = os.path.join(TOOL_DIR, "profile")
 
+# Noi de san installer Firefox va file extension da ky. Duong dan tuy may, suy ra
+# tu cho dat tool (hoac cho dat file .exe khi da dong goi).
+EXTENSION_DIR = os.path.join(TOOL_DIR, "extension")
+DEFAULT_XPI = os.path.join(EXTENSION_DIR, "LVCdatlich extension.xpi")
+DEFAULT_PAF = os.path.join(EXTENSION_DIR, "FirefoxPortable_154.0.1_English.paf.exe")
+
 SETTINGS_PATH = os.path.join(TOOL_DIR, "data", "settings.json")
 ACCOUNTS_PATH = os.path.join(TOOL_DIR, "data", "accounts.json")
 
@@ -62,6 +68,17 @@ class Settings:
     allow_multiple_instances: bool = True
     #: Giao dien cua tool: "light" hoac "dark".
     appearance: str = "light"
+    #: File .xpi DA DUOC MOZILLA KY, tu cai vao moi profile khi tao.
+    #: Chua ky thi Firefox ban release tu choi, khong cai duoc bang cach nao ca.
+    extension_xpi: str = DEFAULT_XPI
+    #: Thu tu cot trong bang. De trong = dung thu tu goc trong COLUMNS.
+    column_order: list = field(default_factory=list)
+    #: Cac cot dang an.
+    column_hidden: list = field(default_factory=list)
+    #: Mau cho chuc nang "Copy tuy chon dinh dang" -- nho lai lan dung truoc.
+    copy_template: str = "{id}|{password}|{recovery_mail}|{twofa}|{proxy}"
+    #: So trinh duyet mo cung luc khi dang nhap bang cookie.
+    login_threads: int = 5
     #: So profile duoc tao cung luc. Da do: hai installer paf.exe chay song song
     #: khong dam nhau, 2 profile mat 28 giay thay vi ~50 giay khi lam lan luot.
     create_threads: int = 3
@@ -69,10 +86,11 @@ class Settings:
     start_url: str = "https://www.facebook.com/"
     #: Khi mo profile, tu nap cookie da luu neu profile chua dang nhap san.
     auto_login_cookie: bool = True
-    #: Gia mui gio bang cach TIEM JS vao trang. Mac dinh TAT vi de bi cac he
-    #: chong bot phat hien "trinh duyet bi sua". Mui gio da duoc dat o muc engine
-    #: bang bien moi truong TZ luc khoi dong nen khong can shim nay.
-    use_tz_shim: bool = False
+    #: Gia mui gio bang cach TIEM JS vao trang. BAT mac dinh vi Firefox tren
+    #: Windows chi nhan bien moi truong TZ voi dung 5 gia tri co dinh (UTC,
+    #: EST5EDT, CST6CDT, MST7MDT, PST8PDT -- da do bang cach thu 40 gia tri).
+    #: Khong bat thi proxy ngoai My se de lo mui gio that cua may.
+    use_tz_shim: bool = True
 
     @classmethod
     def load(cls) -> "Settings":
@@ -87,6 +105,8 @@ class Settings:
                 pass
         if not settings.paf_path or not os.path.isfile(settings.paf_path):
             settings.paf_path = settings.autodetect_paf()
+        if not settings.extension_xpi:
+            settings.extension_xpi = DEFAULT_XPI
         settings.ensure_root()
         return settings
 
@@ -96,18 +116,20 @@ class Settings:
             json.dump(asdict(self), fh, ensure_ascii=False, indent=2)
 
     def ensure_root(self) -> None:
-        try:
-            os.makedirs(self.profiles_root, exist_ok=True)
-        except OSError:
-            pass
+        for folder in (self.profiles_root, EXTENSION_DIR):
+            try:
+                os.makedirs(folder, exist_ok=True)
+            except OSError:
+                pass
 
     def autodetect_paf(self) -> str:
         """Tim file FirefoxPortable_*.paf.exe o nhung cho hay de nhat.
 
-        Uu tien THU MUC CHUA EXE (TOOL_DIR) -- mac dinh file paf.exe se nam chung
-        thu muc voi file exe cua tool.
+        Uu tien thu muc 'extension' canh tool -- do la cho dat mac dinh.
         """
-        places = [TOOL_DIR, self.profiles_root, os.path.dirname(TOOL_DIR)]
+        if os.path.isfile(DEFAULT_PAF):
+            return DEFAULT_PAF
+        places = [EXTENSION_DIR, TOOL_DIR, self.profiles_root, os.path.dirname(TOOL_DIR)]
         for place in places:
             try:
                 names = sorted(os.listdir(place))

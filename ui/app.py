@@ -19,6 +19,7 @@ import customtkinter as ctk
 from core import config
 from core import cookies as cookie_module
 from core import geoip
+from core import proxy as proxy_module
 from core import totp
 from core.config import Settings
 from core.profiles import ProfileError, ProfileManager
@@ -28,9 +29,13 @@ from core.store import Account, AccountStore, STATUSES
 
 from .dialogs import (
     AccountDialog,
+    ColumnDialog,
+    AccountPickerDialog,
     BulkImportDialog,
     BulkProxyDialog,
     CookieDialog,
+    CopyCustomDialog,
+    FieldEditDialog,
     GroupManagerDialog,
     NoteDialog,
     ProxyDialog,
@@ -39,6 +44,7 @@ from .dialogs import (
 )
 
 PAD = 8
+DETAIL_WIDTH = 340   # be ngang bang thong tin acc ben phai
 
 # Treeview va tk.Menu khong tu doi mau theo customtkinter, phai to tay.
 THEMES = {
@@ -49,8 +55,10 @@ THEMES = {
         "head_fg": "#2b2b2b",
         "head_hover": "#dadade",
         "selected": "#1f6aa5",
-        "running_bg": "#d5efdd",
+        "logged_bg": "#d9ead3",   # da dang nhap bang cookie
+        "running_bg": "#cfe3f7",  # trinh duyet dang mo
         "missing_fg": "#8d8d8d",
+        "grid": "#c9ccd2",        # duong ke o
         "menu_bg": "#fbfbfb",
         "menu_fg": "#1c1c1c",
     },
@@ -61,8 +69,10 @@ THEMES = {
         "head_fg": "#d0d0d0",
         "head_hover": "#2a2a2a",
         "selected": "#1f6aa5",
-        "running_bg": "#1d3b2a",
+        "logged_bg": "#1d3b2a",
+        "running_bg": "#1e3550",
         "missing_fg": "#9a9a9a",
+        "grid": "#3d3d3d",
         "menu_bg": "#242424",
         "menu_fg": "#e6e6e6",
     },
@@ -74,14 +84,14 @@ COLUMNS = (
     ("password", "Mật khẩu", 120, "w"),
     ("mail", "Mail khôi phục", 190, "w"),
     ("twofa", "2FA", 90, "center"),
-    ("cookie", "Cookie", 80, "center"),
-    ("proxy", "Proxy", 210, "w"),
-    ("identity", "Múi giờ / Ngôn ngữ", 200, "w"),
     ("group", "Nhóm", 110, "w"),
-    ("status", "Trạng thái", 95, "center"),
     ("profile", "Profile", 90, "center"),
+    ("cookie", "Cookie", 80, "center"),
     ("running", "Đang chạy", 85, "center"),
+    ("status", "Trạng thái", 95, "center"),
+    ("proxy", "Proxy", 210, "w"),
     ("note", "Ghi chú", 220, "w"),
+    ("identity", "Múi giờ / Ngôn ngữ", 200, "w"),
 )
 
 
@@ -104,13 +114,15 @@ class App(ctk.CTk):
 
         self._events: queue.Queue = queue.Queue()
         self._busy = False
-        self._show_secrets = tk.BooleanVar(value=False)
+        self._show_secrets = tk.BooleanVar(value=True)
         self._rows: list[Account] = []
         self._menus: list[tk.Menu] = []
 
         self._build_header()
-        self._build_toolbar()
-        self._build_table()
+
+        self._build_toolbar(self)
+        self._build_table(self)
+        self._build_detail()
         self._build_statusbar()
         self._apply_theme()
 
@@ -123,11 +135,29 @@ class App(ctk.CTk):
     # Dung giao dien
     # ------------------------------------------------------------------
     def _set_window_icon(self) -> None:
-        """Dat icon cua so + thanh tac vu bang logo LVC."""
-        try:
-            ico = config.resource_path("assets", "logo.ico")
-            if os.path.isfile(ico):
+        """Dat icon cua so + thanh tac vu bang logo LVC.
+
+        Uu tien file .ico vi no chua san moi co (16 -> 256), Windows tu chon cai
+        vua nhat. Chi khi thieu .ico moi vien den PNG: dung song song ca hai thi
+        iconphoto de len iconbitmap va Tk cap nham co (da do: icon lon con 32px
+        con icon nho lai thanh 256px).
+        """
+        ico = config.resource_path("assets", "logo.ico")
+        if os.path.isfile(ico):
+            try:
                 self.iconbitmap(default=ico)
+                return
+            except Exception:
+                pass
+
+        try:
+            from PIL import Image, ImageTk
+
+            png = config.resource_path("assets", "logo_256.png")
+            if os.path.isfile(png):
+                # Phai giu tham chieu, neu khong anh bi thu gom rac va icon mat.
+                self._icon_photo = ImageTk.PhotoImage(Image.open(png))
+                self.iconphoto(True, self._icon_photo)
         except Exception:
             pass
 
@@ -157,8 +187,8 @@ class App(ctk.CTk):
             side="right", padx=14
         )
 
-    def _build_toolbar(self) -> None:
-        filters = ctk.CTkFrame(self, fg_color="transparent")
+    def _build_toolbar(self, parent) -> None:
+        filters = ctk.CTkFrame(parent, fg_color="transparent")
         filters.pack(fill="x", padx=PAD, pady=(PAD, 4))
 
         self.search_entry = ctk.CTkEntry(filters, placeholder_text="Tìm theo ID / mail / nhóm / ghi chú", width=320)
@@ -177,15 +207,22 @@ class App(ctk.CTk):
             filters, text="Hiện mật khẩu", variable=self._show_secrets, command=self.refresh
         ).pack(side="left", padx=12)
 
+        ctk.CTkButton(
+            filters, text="🧱 Cột hiển thị", width=130, command=self.choose_columns,
+        ).pack(side="left", padx=4)
+
         self.count_label = ctk.CTkLabel(filters, text="", text_color="gray60")
         self.count_label.pack(side="right", padx=6)
 
-        actions = ctk.CTkFrame(self, fg_color="transparent")
+        actions = ctk.CTkFrame(parent, fg_color="transparent")
         actions.pack(fill="x", padx=PAD, pady=(0, PAD))
+
+        bold = ctk.CTkFont(weight="bold")
 
         def button(text, command, color=None, width=118):
             kwargs = {"fg_color": color} if color else {}
-            btn = ctk.CTkButton(actions, text=text, width=width, command=command, **kwargs)
+            btn = ctk.CTkButton(actions, text=text, width=width, command=command,
+                                font=bold, **kwargs)
             btn.pack(side="left", padx=3)
             return btn
 
@@ -200,19 +237,35 @@ class App(ctk.CTk):
         button("⏹ Đóng", self.close_profiles, color="#7a5", width=90)
         ttk.Separator(actions, orient="vertical").pack(side="left", fill="y", padx=8)
         button("🔄 Quét thư mục", self.scan_existing, width=130)
-        ttk.Separator(actions, orient="vertical").pack(side="left", fill="y", padx=8)
-        button("🌐 Proxy hàng loạt", self.bulk_proxy, width=150)
-        button("📡 Test proxy", self.check_proxies, width=120)
-        button("🍪 Cookie", self.edit_cookie, width=100)
-        button("🔑 Mã 2FA", self.copy_2fa, width=100)
 
-    def _build_table(self) -> None:
-        wrapper = ctk.CTkFrame(self)
-        wrapper.pack(fill="both", expand=True, padx=PAD, pady=(0, PAD))
+        self.login_threads_label = ctk.CTkLabel(actions, text="Luồng cookie", font=bold)
+        self.login_threads_label.pack(side="left", padx=(10, 4))
+        self.login_threads_box = ctk.CTkOptionMenu(
+            actions, values=[str(n) for n in range(1, 9)], width=64,
+            font=bold, command=self._set_login_threads,
+        )
+        self.login_threads_box.set(str(self.settings.login_threads or 5))
+        self.login_threads_box.pack(side="left")
+
+    def _build_table(self, parent) -> None:
+        # Bang va bang chi tiet nam canh nhau. Phai dung grid chu khong pack:
+        # pack cap cho theo thu tu, bang chinh co expand=True se nuot het be ngang
+        # va bang chi tiet (pack sau) khong con lai mot pixel nao.
+        self._table_area = ctk.CTkFrame(parent, fg_color="transparent")
+        self._table_area.pack(fill="both", expand=True, padx=PAD, pady=(0, PAD))
+        self._table_area.grid_rowconfigure(0, weight=1)
+        self._table_area.grid_columnconfigure(0, weight=1)
+
+        wrapper = ctk.CTkFrame(self._table_area)
+        wrapper.grid(row=0, column=0, sticky="nsew")
 
         style = ttk.Style()
         style.theme_use("clam")
         style.configure("Accounts.Treeview", rowheight=28, borderwidth=0)
+        # Treeview khong co san duong ke o -- phai tu boc them mot phan tu ve vien
+        # vao bo cuc cua o. Xem _make_grid_element de biet vi sao khong dung
+        # phan tu "border" san co.
+        self._build_grid_layout(style)
         style.configure(
             "Accounts.Treeview.Heading",
             relief="flat",
@@ -231,6 +284,8 @@ class App(ctk.CTk):
             self.tree.heading(key, text=title, command=lambda k=key: self._sort_by(k))
             self.tree.column(key, width=width, anchor=anchor, stretch=(key == "note"))
 
+        self._apply_columns()
+
         vertical = ttk.Scrollbar(wrapper, orient="vertical", command=self.tree.yview)
         horizontal = ttk.Scrollbar(wrapper, orient="horizontal", command=self.tree.xview)
         self.tree.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
@@ -243,11 +298,16 @@ class App(ctk.CTk):
 
 
         self.tree.bind("<Double-1>", lambda _e: self.open_profiles())
+        self.tree.bind("<<TreeviewSelect>>", self._on_row_selected)
         self.tree.bind("<Button-3>", self._popup_menu)
         # Keo chuot de quet chon nhieu dong (rubber-band). Treeview khong co san.
         self._drag_anchor = None
         self.tree.bind("<Button-1>", self._drag_start)
         self.tree.bind("<B1-Motion>", self._drag_select)
+        # Ctrl+A chon het. Chi gan tren bang, khong gan toan cua so -- de Ctrl+A
+        # trong o tim kiem van la "chon het chu" nhu binh thuong.
+        self.tree.bind("<Control-a>", self._select_all_rows)
+        self.tree.bind("<Control-A>", self._select_all_rows)
 
         self._menu = self._make_menu(self)
 
@@ -255,6 +315,7 @@ class App(ctk.CTk):
         # nen de xuong duoi, tranh bam nham vao no khi dinh mo profile.
         self._menu.add_command(label="▶ Mở profile", command=self.open_profiles)
         self._menu.add_command(label="🔑 Đăng nhập với cookie", command=self.relogin_cookie)
+        # "Nhap / sua cookie" da nam trong menu con "Sua" -> bo o day cho do trung.
         self._menu.add_command(label="⏹ Đóng profile", command=self.close_profiles)
         self._menu.add_command(label="🧩 Tạo profile", command=self.create_profiles)
         self._menu.add_separator()
@@ -262,14 +323,47 @@ class App(ctk.CTk):
         # Danh sach nhom doi theo thoi gian nen dung lai moi lan bung menu.
         self._group_menu = self._make_menu(self._menu)
         self._menu.add_cascade(label="🗂 Chuyển vào nhóm", menu=self._group_menu)
-        self._menu.add_command(label="📝 Sửa ghi chú...", command=self.edit_note)
+        # Gom moi thu "sua" vao mot menu con: truoc day chi co moi "Sua ghi chu"
+        # nam le o day, con cac truong khac phai mo bang chi tiet ben phai.
+        edit_menu = self._make_menu(self._menu)
+        edit_menu.add_command(label="Sửa tất cả...", command=self.edit_account)
+        edit_menu.add_separator()
+        edit_menu.add_command(label="Sửa ID acc", command=self.edit_id)
+        edit_menu.add_command(label="Sửa mật khẩu",
+                              command=lambda: self._edit_field("password", "Mật khẩu"))
+        edit_menu.add_command(label="Sửa 2FA",
+                              command=lambda: self._edit_field("twofa", "Mã 2FA"))
+        edit_menu.add_command(label="Sửa cookie...", command=self.edit_cookie)
+        edit_menu.add_command(label="Sửa proxy...", command=self.change_proxy)
+        edit_menu.add_separator()
+        edit_menu.add_command(
+            label="Sửa email khôi phục",
+            command=lambda: self._edit_field("recovery_mail", "Email khôi phục"))
+        edit_menu.add_command(
+            label="Sửa pass email khôi phục",
+            command=lambda: self._edit_field("recovery_mail_password", "Pass email khôi phục"))
+        edit_menu.add_command(
+            label="Sửa email KP của email KP",
+            command=lambda: self._edit_field("recovery_mail_backup",
+                                             "Email khôi phục của email khôi phục"))
+        edit_menu.add_separator()
+        edit_menu.add_command(label="Sửa nhóm",
+                              command=lambda: self._edit_field("group", "Nhóm"))
+        edit_menu.add_command(
+            label="Sửa trạng thái",
+            command=lambda: self._edit_field("status", "Trạng thái", options=list(STATUSES)))
+        edit_menu.add_command(label="Sửa ghi chú...", command=self.edit_note)
+        edit_menu.add_separator()
+        edit_menu.add_command(label="Xoá cookie đã lưu", command=self.clear_cookie_field)
+        self._menu.add_cascade(label="✏️ Sửa", menu=edit_menu)
         self._menu.add_separator()
 
         self._menu.add_command(label="🌐 Đổi proxy...", command=self.change_proxy)
         self._menu.add_command(label="📡 Test proxy", command=self.check_proxies)
-        self._menu.add_command(label="🌍 Khớp múi giờ + ngôn ngữ theo proxy",
-                               command=self.match_identities)
-        self._menu.add_command(label="🌍 Bỏ khớp múi giờ", command=self.clear_identities)
+        # Hai lenh khop / bo khop mui gio da an khoi menu theo yeu cau. Muc nay
+        # van tu chay khi tao profile va khi doi proxy (xem ProfileManager), nen
+        # bo nut di khong lam mat chuc nang -- match_identities/clear_identities
+        # duoc giu lai de goi lai duoc khi can.
         self._menu.add_separator()
 
         # Gom cac lenh chep vao mot menu con cho menu chinh do dai.
@@ -281,15 +375,376 @@ class App(ctk.CTk):
         copy_menu.add_command(label="Cookie", command=lambda: self._copy_field("cookie"))
         copy_menu.add_separator()
         copy_menu.add_command(label="Ghi chú", command=lambda: self._copy_field("note"))
-        self._menu.add_cascade(label="📋 Chép", menu=copy_menu)
+        copy_menu.add_separator()
+        copy_menu.add_command(label="Tuỳ chọn định dạng...", command=self.copy_custom)
+        self._menu.add_cascade(label="📋 Copy", menu=copy_menu)
         self._menu.add_separator()
 
         self._menu.add_command(label="Mở thư mục profile", command=self.open_folder)
+        self._menu.add_command(label="🧩 Cài extension vào Firefox...", command=self.install_extension)
+        self._menu.add_command(label="🧩 Gỡ extension", command=self.remove_extension)
         self._menu.add_command(label="🧽 Xoá cache trình duyệt", command=self.clear_cache)
         self._menu.add_command(label="🧹 Xoá file cài đặt thừa", command=self.cleanup_installers)
+        self._menu.add_command(label="💾 Lưu cookie từ profile vào acc",
+                               command=self.save_cookie_from_profile)
         self._menu.add_command(label="Xuất cookie từ profile", command=self.export_cookie)
         self._menu.add_separator()
         self._menu.add_command(label="Xoá acc", command=self.delete_accounts)
+
+    # ------------------------------------------------------------------
+    # Bang chi tiet ben phai
+    # ------------------------------------------------------------------
+    def _build_detail(self) -> None:
+        """Bang thong tin acc, hien ra khi bam vao mot dong."""
+        self._detail = ctk.CTkFrame(self._table_area, width=DETAIL_WIDTH)
+        self._detail.grid_propagate(False)      # giu nguyen be ngang 330px
+        self._detail_account: Optional[Account] = None
+        self._detail_fields: dict[str, ctk.CTkBaseClass] = {}
+        # Tu theo doi trang thai an/hien: winfo_ismapped() con phu thuoc ca cua so
+        # cha da ve xong chua, khong dung de quyet dinh logic duoc.
+        self._detail_open = False
+
+        head = ctk.CTkFrame(self._detail, fg_color="transparent")
+        head.pack(fill="x", padx=10, pady=(10, 4))
+        self._detail_title = ctk.CTkLabel(
+            head, text="", anchor="w", font=ctk.CTkFont(size=14, weight="bold")
+        )
+        self._detail_title.pack(side="left")
+        ctk.CTkButton(
+            head, text="✕", width=28, fg_color="#a33", hover_color="#c44",
+            command=self.hide_detail,
+        ).pack(side="right")
+
+        body = ctk.CTkScrollableFrame(self._detail, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=6, pady=0)
+
+        def row(label: str, key: str, height: int = 0):
+            line = ctk.CTkFrame(body, fg_color="transparent")
+            line.pack(fill="x", pady=(6, 0))
+            ctk.CTkLabel(line, text=label, anchor="w", text_color="gray60",
+                         font=ctk.CTkFont(size=11)).pack(side="left")
+            ctk.CTkButton(
+                line, text="⧉", width=26, height=18,
+                fg_color="transparent", text_color="gray60", hover_color="gray30",
+                command=lambda k=key: self._copy_detail(k),
+            ).pack(side="right")
+            if height:
+                widget = ctk.CTkTextbox(body, height=height)
+            else:
+                widget = ctk.CTkEntry(body)
+            widget.pack(fill="x")
+            self._detail_fields[key] = widget
+            return widget
+
+        # Thu tu nay do nguoi dung chi dinh, moi thu mot dong tu tren xuong.
+        row("ID acc", "id")
+        self._detail_fields["id"].configure(state="disabled")
+
+        row("Mật khẩu", "password")
+
+        twofa = row("2FA (secret)", "twofa")
+        self._detail_2fa = ctk.CTkLabel(body, text="", anchor="w", text_color="gray60",
+                                        font=ctk.CTkFont(size=11))
+        self._detail_2fa.pack(fill="x")
+        twofa.bind("<KeyRelease>", lambda _e: self._tick_detail_2fa())
+
+        # Cookie de mot dong nhu cac o khac cho gon; noi dung dai thi cuon ngang,
+        # can lay ca chuoi thi bam nut chep ben canh.
+        row("Cookie", "cookie")
+        row("Proxy", "proxy")
+        row("Email khôi phục", "recovery_mail")
+        row("Pass email khôi phục", "recovery_mail_password")
+        row("Email khôi phục của email khôi phục", "recovery_mail_backup")
+
+        row("Nhóm", "group")
+
+        ctk.CTkLabel(body, text="Trạng thái", anchor="w", text_color="gray60",
+                     font=ctk.CTkFont(size=11)).pack(fill="x", pady=(6, 0))
+        self._detail_status = ctk.CTkOptionMenu(body, values=list(STATUSES))
+        self._detail_status.pack(fill="x")
+
+        ctk.CTkLabel(body, text="Múi giờ / Ngôn ngữ", anchor="w", text_color="gray60",
+                     font=ctk.CTkFont(size=11)).pack(fill="x", pady=(6, 0))
+        self._detail_identity = ctk.CTkLabel(body, text="", anchor="w", justify="left",
+                                             wraplength=280)
+        self._detail_identity.pack(fill="x")
+
+        row("Ghi chú", "note", height=60)
+
+        # Cac truong phu tu file nhap (token, phone, user agent...). Truoc day
+        # chung nam trong Account.extra ma khong hien o dau ca.
+        self._detail_extra = ctk.CTkFrame(body, fg_color="transparent")
+        self._detail_extra.pack(fill="x", pady=(10, 0))
+
+        foot = ctk.CTkFrame(self._detail, fg_color="transparent")
+        foot.pack(fill="x", padx=10, pady=8)
+        ctk.CTkButton(foot, text="💾 Lưu", command=self.save_detail).pack(
+            side="left", fill="x", expand=True
+        )
+        ctk.CTkButton(foot, text="▶ Mở", width=70, fg_color="#1f6aa5",
+                      command=self.open_profiles).pack(side="left", padx=(6, 0))
+
+        self._tick_detail_2fa()
+
+    def show_detail(self, account: Account) -> None:
+        """Do thong tin cua acc vao bang ben phai va hien no ra."""
+        self._detail_account = account
+        self._detail_title.configure(text=account.id)
+
+        values = {
+            "id": account.id,
+            "password": account.password,
+            "recovery_mail": account.recovery_mail,
+            "recovery_mail_password": account.recovery_mail_password,
+            "recovery_mail_backup": account.recovery_mail_backup,
+            "twofa": account.twofa,
+            "proxy": account.get_proxy().as_text(),
+            "group": account.group,
+            "note": account.note,
+            "cookie": account.cookie,
+        }
+        for key, widget in self._detail_fields.items():
+            text = values.get(key, "")
+            if isinstance(widget, ctk.CTkTextbox):
+                widget.delete("1.0", "end")
+                widget.insert("1.0", text)
+            else:
+                # O ID bi khoa, phai mo ra moi ghi duoc roi khoa lai.
+                locked = str(widget.cget("state")) == "disabled"
+                if locked:
+                    widget.configure(state="normal")
+                widget.delete(0, "end")
+                widget.insert(0, text)
+                if locked:
+                    widget.configure(state="disabled")
+
+        self._fill_extra(account)
+        self._detail_status.set(account.status or STATUSES[0])
+        identity = account.get_identity()
+        self._detail_identity.configure(
+            text=identity.summary() or "chưa khớp theo proxy",
+            text_color="gray75" if identity.enabled else "gray50",
+        )
+        self._tick_detail_2fa()
+
+        if not self._detail_open:
+            # Dat minsize cho cot moi giu duoc be ngang: grid_propagate(False)
+            # mot minh khong du, khung van bi bop lai theo noi dung ben trong.
+            self._table_area.grid_columnconfigure(1, minsize=DETAIL_WIDTH)
+            self._detail.grid(row=0, column=1, sticky="nsew", padx=(PAD, 0))
+            self._detail_open = True
+
+    def _fill_extra(self, account: Account) -> None:
+        """Liet ke cac truong phu con lai trong ``extra``, chi de xem va chep."""
+        for child in self._detail_extra.winfo_children():
+            child.destroy()
+        items = [(k, str(v)) for k, v in sorted(account.extra.items()) if str(v).strip()]
+        if not items:
+            return
+        ctk.CTkLabel(
+            self._detail_extra, text="Trường phụ từ file nhập", anchor="w",
+            text_color="gray60", font=ctk.CTkFont(size=11),
+        ).pack(fill="x")
+        for key, value in items:
+            line = ctk.CTkFrame(self._detail_extra, fg_color="transparent")
+            line.pack(fill="x", pady=(4, 0))
+            ctk.CTkLabel(line, text=key, anchor="w", width=90,
+                         text_color="gray60", font=ctk.CTkFont(size=11)).pack(side="left")
+            entry = ctk.CTkEntry(line)
+            entry.insert(0, value)
+            entry.configure(state="readonly")
+            entry.pack(side="left", fill="x", expand=True)
+            ctk.CTkButton(
+                line, text="⧉", width=26,
+                fg_color="transparent", text_color="gray60", hover_color="gray30",
+                command=lambda v=value: self._copy_text(v),
+            ).pack(side="left")
+
+    #: Cac o co the chen vao mau copy: (khoa, ten hien ra).
+    COPY_PLACEHOLDERS = (
+        ("id", "ID acc"),
+        ("password", "Mật khẩu"),
+        ("twofa", "2FA secret"),
+        ("twofa_code", "Mã 2FA hiện tại"),
+        ("cookie", "Cookie"),
+        ("proxy", "Proxy"),
+        ("proxy_host", "Proxy host"),
+        ("proxy_port", "Proxy port"),
+        ("proxy_user", "Proxy user"),
+        ("proxy_pass", "Proxy pass"),
+        ("recovery_mail", "Email khôi phục"),
+        ("recovery_mail_password", "Pass email KP"),
+        ("recovery_mail_backup", "Email KP của email KP"),
+        ("group", "Nhóm"),
+        ("status", "Trạng thái"),
+        ("note", "Ghi chú"),
+        ("timezone", "Múi giờ"),
+        ("language", "Ngôn ngữ"),
+        ("folder", "Tên thư mục"),
+        ("path", "Đường dẫn profile"),
+    )
+
+    def _copy_values(self, account: Account) -> dict:
+        """Gia tri cua mot acc dung cho mau copy."""
+        proxy = account.get_proxy()
+        identity = account.get_identity()
+        try:
+            code = totp.generate(account.twofa) if account.twofa else ""
+        except Exception:
+            code = ""
+        values = {
+            "id": account.id,
+            "password": account.password,
+            "twofa": account.twofa,
+            "twofa_code": code,
+            "cookie": account.cookie,
+            "proxy": proxy.as_text(),
+            "proxy_host": proxy.host,
+            "proxy_port": str(proxy.port or ""),
+            "proxy_user": proxy.username,
+            "proxy_pass": proxy.password,
+            "recovery_mail": account.recovery_mail,
+            "recovery_mail_password": account.recovery_mail_password,
+            "recovery_mail_backup": account.recovery_mail_backup,
+            "group": account.group,
+            "status": account.status,
+            "note": (account.note or "").replace("\n", " "),
+            "timezone": identity.timezone,
+            "language": (identity.accept_languages or "").split(",")[0].strip(),
+            "folder": account.folder,
+            "path": self.manager.app_dir(account),
+        }
+        # Cac truong phu tu file nhap (token, phone...) cung dung duoc trong mau.
+        for key, value in account.extra.items():
+            values.setdefault(key, str(value))
+        return values
+
+    def _render_template(self, template: str, account: Account) -> str:
+        """Thay cac o {..} trong mau bang gia tri cua acc.
+
+        O khong biet ten thi de trong chu khong nem loi, de nguoi dung go dang do
+        van thay xem truoc chu khong bi bao loi lien tuc.
+        """
+        class _Blank(dict):
+            def __missing__(self, key):
+                return ""
+
+        return template.format_map(_Blank(self._copy_values(account)))
+
+    def copy_custom(self) -> None:
+        """Copy hang loat theo dinh dang nguoi dung tu dat."""
+        selected = self._require_selection()
+        if not selected:
+            return
+        template = CopyCustomDialog(
+            self, selected, self.settings.copy_template,
+            self._render_template, self.COPY_PLACEHOLDERS,
+        ).show()
+        if not template:
+            return
+
+        self.settings.copy_template = template
+        self.settings.save()
+        lines = [self._render_template(template, a) for a in selected]
+        self.clipboard_clear()
+        self.clipboard_append("\n".join(lines))
+        self.set_status(f"Đã copy {len(lines)} dòng theo định dạng đã đặt.")
+
+    def _copy_text(self, text: str) -> None:
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self.set_status("Đã copy.")
+
+    def hide_detail(self) -> None:
+        self._detail.grid_remove()
+        # Tra cot ve 0, neu khong bang chinh se chua mot khoang trong 340px.
+        self._table_area.grid_columnconfigure(1, minsize=0)
+        self._detail_open = False
+        self._detail_account = None
+
+    def toggle_detail(self) -> None:
+        if self._detail_open:
+            self.hide_detail()
+            return
+        chosen = self._selected_accounts()
+        if chosen:
+            self.show_detail(chosen[0])
+
+    def _on_row_selected(self, _event=None) -> None:
+        """Bam mot dong thi do thong tin sang bang ben phai."""
+        chosen = self._selected_accounts()
+        if len(chosen) == 1:
+            self.show_detail(chosen[0])
+        elif self._detail_open:
+            # Chon nhieu dong thi khong biet hien acc nao.
+            self._detail_title.configure(text=f"{len(chosen)} acc đang chọn")
+            self._detail_account = None
+
+    def _copy_detail(self, key: str) -> None:
+        widget = self._detail_fields.get(key)
+        if widget is None:
+            return
+        text = (widget.get("1.0", "end") if isinstance(widget, ctk.CTkTextbox)
+                else widget.get()).strip()
+        if not text:
+            self.set_status("Ô này đang trống.")
+            return
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self.set_status(f"Đã copy {key}.")
+
+    def _tick_detail_2fa(self) -> None:
+        if not self.winfo_exists():
+            return
+        secret = self._detail_fields["twofa"].get().strip() if self._detail_fields else ""
+        if secret:
+            try:
+                self._detail_2fa.configure(
+                    text=f"Mã hiện tại: {totp.generate(secret)}  ({totp.seconds_remaining()}s)"
+                )
+            except Exception:
+                self._detail_2fa.configure(text="secret không hợp lệ")
+        else:
+            self._detail_2fa.configure(text="")
+        self.after(1000, self._tick_detail_2fa)
+
+    def save_detail(self) -> None:
+        """Ghi lai thay doi tu bang ben phai."""
+        account = self._detail_account
+        if account is None:
+            messagebox.showinfo("Lưu", "Chọn đúng một acc rồi hãy lưu.", parent=self)
+            return
+
+        text = lambda k: (
+            self._detail_fields[k].get("1.0", "end")
+            if isinstance(self._detail_fields[k], ctk.CTkTextbox)
+            else self._detail_fields[k].get()
+        ).strip()
+
+        try:
+            proxy = Proxy() if not text("proxy") else proxy_module.parse(text("proxy"))
+        except ValueError as exc:
+            messagebox.showerror("Proxy", str(exc), parent=self)
+            return
+
+        account.password = text("password")
+        account.recovery_mail = text("recovery_mail")
+        account.recovery_mail_password = text("recovery_mail_password")
+        account.recovery_mail_backup = text("recovery_mail_backup")
+        account.twofa = text("twofa")
+        account.group = text("group")
+        account.note = text("note")
+        account.cookie = text("cookie")
+        account.status = self._detail_status.get()
+
+        if proxy != account.get_proxy():
+            # Doi proxy keo theo mui gio + ngon ngu, di duong rieng cho dung.
+            self._apply_proxy_change([(account, proxy)])
+        else:
+            self.store.save()
+            self.refresh()
+        self.show_detail(account)
+        self.set_status(f"Đã lưu {account.id}.")
 
     def _make_menu(self, parent) -> tk.Menu:
         """Tao menu chuot phai va nho lai de con to mau khi doi giao dien."""
@@ -315,11 +770,13 @@ class App(ctk.CTk):
             background=colors["head_bg"],
             foreground=colors["head_fg"],
         )
+        self._apply_grid_lines(style, colors["grid"])
         style.map("Accounts.Treeview",
                   background=[("selected", colors["selected"])],
                   foreground=[("selected", "#ffffff")])
         style.map("Accounts.Treeview.Heading", background=[("active", colors["head_hover"])])
 
+        self.tree.tag_configure("logged", background=colors["logged_bg"])
         self.tree.tag_configure("running", background=colors["running_bg"])
         self.tree.tag_configure("missing", foreground=colors["missing_fg"])
 
@@ -328,6 +785,49 @@ class App(ctk.CTk):
                 bg=colors["menu_bg"], fg=colors["menu_fg"],
                 activebackground=colors["selected"], activeforeground="#ffffff",
             )
+
+    @staticmethod
+    def _build_grid_layout(style) -> None:
+        """Ke bang lien mach kieu Excel: moi ranh gioi MOT net, khong phai moi o mot khung.
+
+        Cach hay gap la boc ca o trong phan tu "border". Nhung nhu vay moi o co
+        vien rieng du bon canh: hai o canh nhau thanh hai net song song cach nhau
+        mot khe ho -- nhin ra mot ro cac cai hop chu khong phai cai luoi (da do
+        bang anh chup: net o x=88 va x=98, ho 8 pixel o giua).
+
+        O day chi ve HAI canh: mot vach o day o va mot vach o ben phai o. Vach
+        cua o nay dong thoi la ranh gioi voi o ben canh -> ca bang lien mach.
+        Vach day phai dat TRUOC vach phai de duong ke ngang chay het chieu rong o.
+
+        Da thu ca cach dung phan tu anh (chu dong duoc do day 1 pixel) nhung Tk ve
+        anh cho tung o rat cham: bang 13 cot x 17 dong mat 6 giay moi lan ve, con
+        cach nay chi 0,5 giay.
+        """
+        # Lay phan tu vien cua theme "alt", khong phai "clam" hay "default":
+        #   clam    -- net day 4 pixel, dam qua
+        #   default -- net manh 2 pixel nhung ve MAU DEN, khong nghe bordercolor
+        #   alt     -- net manh 2 pixel VA to dung mau minh dat -> chon cai nay
+        for name in ("qlfp.hline", "qlfp.vline"):
+            try:
+                style.element_create(name, "from", "alt", "border")
+            except tk.TclError:
+                pass          # da tao o lan truoc (chi xay ra khi mo lai cua so)
+        # Hai vach nam NGOAI phan dem chu: de trong phan dem thi vach bi thut vao
+        # vai pixel moi ben, duong ke ngang dut mot khuc o moi ranh cot.
+        style.layout("Accounts.Treeview.Cell", [
+            ("qlfp.hline", {"side": "bottom", "sticky": "ew"}),
+            ("qlfp.vline", {"side": "right", "sticky": "ns"}),
+            ("Treedata.padding", {"sticky": "nswe", "children": [
+                ("Treeitem.text", {"sticky": "nswe"}),
+            ]}),
+        ])
+
+    @staticmethod
+    def _apply_grid_lines(style, color: str) -> None:
+        """To mau hai vach ke theo giao dien sang/toi."""
+        style.configure("Accounts.Treeview.Cell", bordercolor=color,
+                        lightcolor=color, darkcolor=color,
+                        borderwidth=1, relief="solid", padding=(6, 0))
 
     def _build_statusbar(self) -> None:
         bar = ctk.CTkFrame(self, height=30, corner_radius=0)
@@ -359,7 +859,7 @@ class App(ctk.CTk):
         self.tree.delete(*self.tree.get_children())
         for index, account in enumerate(self._rows, start=1):
             self.tree.insert("", "end", iid=account.id, values=self._row_values(index, account),
-                             tags=self._row_tags(account))
+                             tags=self._row_tags(account, index))
         for item in selected:
             if self.tree.exists(item):
                 self.tree.selection_add(item)
@@ -367,25 +867,39 @@ class App(ctk.CTk):
         self.count_label.configure(text=f"{len(self._rows)}/{len(self.store)} acc")
 
     def _row_values(self, index: int, account: Account) -> tuple:
+        """Gia tri tung o, tra ra dung thu tu COLUMNS.
+
+        Dung tu dien chu khong phai tuple viet tay: doi thu tu cot trong COLUMNS
+        thi bang van dung, khong con canh o nay nhay sang cot kia.
+        """
         show = self._show_secrets.get()
         proxy = account.get_proxy()
         installed = self.manager.is_installed(account)
         cookie_count = self._cookie_count(account)
-        return (
-            index,
-            account.id,
-            (account.password or "") if show else ("•" * min(len(account.password), 10) or "—"),
-            account.recovery_mail or "—",
-            "có" if account.twofa else "—",
-            f"{cookie_count}" if cookie_count else "—",
-            proxy.display(mask=not show) or "—",
-            self._identity_cell(account),
-            account.group or "—",
-            account.status or "—",
-            "đã tạo" if installed else "chưa tạo",
-            "▶" if installed and self.manager.is_running(account) else "",
-            (account.note or "").replace("\n", " ")[:120],
-        )
+        cells = {
+            "stt": index,
+            "id": account.id,
+            "password": (account.password or "") if show
+                        else ("•" * min(len(account.password), 10) or "—"),
+            "mail": account.recovery_mail or "—",
+            "twofa": "có" if account.twofa else "—",
+            "cookie": f"{cookie_count}" if cookie_count else "—",
+            "proxy": proxy.display(mask=not show) or "—",
+            "identity": self._identity_cell(account),
+            "group": account.group or "—",
+            "status": self._status_cell(account),
+            "profile": "đã tạo" if installed else "chưa tạo",
+            "running": "▶" if installed and self.manager.is_running(account) else "",
+            "note": (account.note or "").replace(chr(10), " ")[:120],
+        }
+        return tuple(cells[key] for key, *_ in COLUMNS)
+
+    @staticmethod
+    def _status_cell(account: Account) -> str:
+        """Cot "Trạng thái": kết quả test proxy nếu đã test, chưa thì trạng thái acc."""
+        if account.proxy_status:
+            return account.proxy_status
+        return account.status or "—"
 
     @staticmethod
     def _identity_cell(account: Account) -> str:
@@ -395,12 +909,18 @@ class App(ctk.CTk):
         language = (identity.accept_languages or "").split(",")[0].strip()
         return " · ".join(p for p in (identity.timezone, language) if p)
 
-    def _row_tags(self, account: Account) -> tuple:
-        if not self.manager.is_installed(account):
-            return ("missing",)
-        if self.manager.is_running(account):
+    def _row_tags(self, account: Account, index: int = 0) -> tuple:
+        """Mau nen noi len trang thai dang nhap cookie.
+
+        Xanh la = da dang nhap bang cookie thanh cong. Trang = chua chay.
+        Dong dang mo trinh duyet uu tien mau xanh duong de con phan biet.
+        """
+        installed = self.manager.is_installed(account)
+        if installed and self.manager.is_running(account):
             return ("running",)
-        return ()
+        if account.cookie_ok:
+            return ("logged",)
+        return () if installed else ("missing",)
 
     @staticmethod
     def _cookie_count(account: Account) -> int:
@@ -435,12 +955,24 @@ class App(ctk.CTk):
             return []
         return selected
 
+    #: Bit trang thai phim bo tro trong su kien chuot cua Tk.
+    SHIFT_HELD = 0x0001
+    CTRL_HELD = 0x0004
+
     def _drag_start(self, event) -> None:
         """Ghi lai dong bam xuong lam moc cho thao tac keo chon."""
         # Bam tren tieu de cot / vung thay doi do rong -> khong phai keo chon.
         if self.tree.identify_region(event.x, event.y) in ("heading", "separator"):
             self._drag_anchor = None
             return
+
+        # Giu Ctrl/Shift thi de Treeview tu xu ly (cong don / chon khoang).
+        # Khong nhuong thi chi can nhich chuot 1px la _drag_select ghi de len
+        # lua chon vua cong don, coi nhu Ctrl+click khong dung duoc.
+        if event.state & (self.SHIFT_HELD | self.CTRL_HELD):
+            self._drag_anchor = None
+            return
+
         self._drag_anchor = self.tree.identify_row(event.y)
 
     def _drag_select(self, event) -> None:
@@ -458,6 +990,58 @@ class App(ctk.CTk):
         self.tree.selection_set(items[lo:hi + 1])
         # Keo toi bien tren/duoi thi cuon theo cho chon duoc dong ngoai tam nhin.
         self.tree.see(current)
+
+    def _apply_columns(self) -> None:
+        """Dat thu tu va an/hien cot theo cai dat.
+
+        Dung displaycolumns cua Treeview: no nhan danh sach cot theo DUNG thu tu
+        hien thi, nen khong phai dung lai ca bang.
+        """
+        keys = [key for key, *_ in COLUMNS]
+        order = [k for k in (self.settings.column_order or []) if k in keys]
+        order += [k for k in keys if k not in order]
+        hidden = {k for k in (self.settings.column_hidden or []) if k in keys}
+
+        shown = [k for k in order if k not in hidden]
+        if not shown:                      # an het thi bang thanh vo dung
+            shown = keys
+        self.tree.configure(displaycolumns=shown)
+
+    def choose_columns(self) -> None:
+        """Cho nguoi dung chon cot nao hien va sap lai thu tu."""
+        columns = [(key, title) for key, title, *_ in COLUMNS]
+        picked = ColumnDialog(
+            self, columns, self.settings.column_order, self.settings.column_hidden
+        ).show()
+        if picked is None:
+            return
+        self.settings.column_order, self.settings.column_hidden = picked
+        self.settings.save()
+        self._apply_columns()
+        self.set_status(
+            f"Đang hiện {len(self.settings.column_order) - len(self.settings.column_hidden)}"
+            f"/{len(COLUMNS)} cột."
+        )
+
+    def _set_login_threads(self, value: str) -> None:
+        """Doi so trinh duyet mo cung luc khi dang nhap cookie."""
+        try:
+            self.settings.login_threads = max(1, min(8, int(value)))
+        except ValueError:
+            return
+        self.settings.save()
+        self.set_status(
+            f"Đăng nhập cookie sẽ mở {self.settings.login_threads} trình duyệt cùng lúc."
+        )
+
+    def _select_all_rows(self, _event=None) -> str:
+        """Ctrl+A: chon toan bo dong dang hien (theo bo loc hien tai)."""
+        items = self.tree.get_children("")
+        if items:
+            self.tree.selection_set(items)
+            self.tree.focus(items[0])
+            self.set_status(f"Đã chọn {len(items)} acc.")
+        return "break"
 
     def _popup_menu(self, event) -> None:
         item = self.tree.identify_row(event.y)
@@ -540,9 +1124,9 @@ class App(ctk.CTk):
 
     def _running_check(self) -> None:
         if not self._busy:
-            for account in self._rows:
+            for index, account in enumerate(self._rows, start=1):
                 if self.tree.exists(account.id):
-                    self.tree.item(account.id, tags=self._row_tags(account))
+                    self.tree.item(account.id, tags=self._row_tags(account, index))
                     self.tree.set(account.id, "running",
                                   "▶" if self.manager.is_installed(account) and self.manager.is_running(account) else "")
         self._schedule_running_check()
@@ -617,6 +1201,113 @@ class App(ctk.CTk):
         ).show()
         if name:
             self.assign_group(name)
+
+    #: Ten hien thi cua tung truong, dung trong loi bao sau khi sua.
+    FIELD_LABELS = {
+        "password": "mật khẩu",
+        "twofa": "mã 2FA",
+        "recovery_mail": "email khôi phục",
+        "recovery_mail_password": "pass email khôi phục",
+        "recovery_mail_backup": "email khôi phục của email khôi phục",
+        "group": "nhóm",
+        "status": "trạng thái",
+        "cookie": "cookie",
+    }
+
+    def _edit_field(self, key: str, label: str, multiline: bool = False,
+                    options: Optional[list] = None) -> None:
+        """Sua nhanh MOT truong cho cac acc dang chon.
+
+        Chon nhieu acc thi ghi de cung mot gia tri cho tat ca -- dung khi ca lo
+        cung mot mat khau, cung mot nhom, cung mot trang thai.
+        """
+        selected = self._require_selection()
+        if not selected:
+            return
+        values = [str(getattr(account, key, "") or "") for account in selected]
+        result = FieldEditDialog(self, selected, "Sửa " + label.lower(), label,
+                                 values, multiline=multiline, options=options).show()
+        if result is None:
+            return                    # bam Huy; de trong van la mot thay doi hop le
+
+        changed = 0
+        for account in selected:
+            if str(getattr(account, key, "") or "") != result:
+                setattr(account, key, result)
+                changed += 1
+        self.store.save()
+        self.refresh()
+        ten = self.FIELD_LABELS.get(key, label.lower())
+        self.set_status(
+            f"Đã sửa {ten} cho {changed} acc." if changed
+            else f"Không có gì thay đổi ({ten} vẫn như cũ)."
+        )
+
+    def edit_id(self) -> None:
+        """Doi ID acc -- chi cho sua tung acc mot vi ID la khoa dinh danh.
+
+        Thu muc profile duoc dat ten theo ID, nen doi ID khi da tao profile la
+        acc mat lien ket voi thu muc cu. Bao truoc chu khong am tham lam.
+        """
+        selected = self._require_selection()
+        if not selected:
+            return
+        if len(selected) > 1:
+            messagebox.showinfo(
+                "Sửa ID acc",
+                "ID acc là khoá phân biệt từng acc nên chỉ sửa được một acc mỗi lần.",
+                parent=self,
+            )
+            return
+        account = selected[0]
+        moi = FieldEditDialog(self, selected, "Sửa ID acc", "ID acc",
+                              [account.id]).show()
+        if moi is None or moi == account.id:
+            return
+        if not moi:
+            messagebox.showerror("Sửa ID acc", "ID acc không được để trống.", parent=self)
+            return
+        if any(a is not account and a.id == moi for a in self.store.accounts):
+            messagebox.showerror("Sửa ID acc", f"Đã có acc mang ID '{moi}'.", parent=self)
+            return
+        if self.manager.is_installed(account):
+            if not messagebox.askyesno(
+                "Sửa ID acc",
+                f"Acc '{account.id}' đã có profile trong thư mục '{account.folder}'."
+                + chr(10) * 2
+                + f"Đổi ID thành '{moi}' thì tool sẽ tìm profile ở thư mục mới và coi như "
+                  f"acc này chưa có profile. Thư mục cũ vẫn còn nguyên trên đĩa."
+                + chr(10) * 2 + "Vẫn đổi?",
+                parent=self,
+            ):
+                return
+        cu = account.id
+        account.id = moi
+        self.store.save()
+        self.refresh()
+        self.set_status(f"Đã đổi ID acc {cu} thành {moi}.")
+
+    def clear_cookie_field(self) -> None:
+        """Xoa cookie da luu trong acc (khong dung toi profile tren dia)."""
+        selected = self._require_selection()
+        if not selected:
+            return
+        co = [a for a in selected if (a.cookie or "").strip()]
+        if not co:
+            self.set_status("Các acc đã chọn vốn không có cookie.")
+            return
+        if not messagebox.askyesno(
+            "Xoá cookie đã lưu",
+            f"Xoá cookie đã lưu của {len(co)} acc?" + chr(10) * 2
+            + "Chỉ xoá cookie trong bảng, profile trên đĩa vẫn giữ nguyên phiên đăng nhập.",
+            parent=self,
+        ):
+            return
+        for account in co:
+            account.cookie = ""
+        self.store.save()
+        self.refresh()
+        self.set_status(f"Đã xoá cookie đã lưu của {len(co)} acc.")
 
     def edit_note(self) -> None:
         selected = self._require_selection()
@@ -825,31 +1516,74 @@ class App(ctk.CTk):
             )
             return
 
+        # Phai vao thang Facebook thi trinh duyet moi bao lai duoc ket qua
+        # (xem ProfileManager.verify_cookie_login). Trang khoi dong khac thi bo qua.
         url = self.settings.start_url
+        if "facebook.com" not in (url or "").lower():
+            url = "https://www.facebook.com/"
+        workers = max(1, min(8, self.settings.login_threads or 5))
+        workers = min(workers, len(usable))
 
         def work():
+            lock = threading.Lock()
+            ok, dead, errors = [], [], []
             done = 0
-            for number, account in enumerate(usable, start=1):
-                self.set_status(f"[{number}/{len(usable)}] Nạp cookie cho {account.id}...")
-                if self.manager.is_running(account):
-                    self.manager.close(account)
-                    time.sleep(1.5)
-                if not self.manager.is_initialized(account):
-                    try:
-                        self.manager.initialize(account)
-                    except ProfileError:
-                        continue
+
+            def login(account: Account) -> None:
+                nonlocal done
                 try:
-                    written = self._apply_cookie(account, replace=True)
-                except cookie_module.CookieError:
-                    written = 0
-                if written:
-                    done += 1
-                self.manager.launch(account, url=url)
-                self.store.mark_opened(account.id)
-                time.sleep(1.2)
+                    if self.manager.is_running(account):
+                        self.manager.close(account)
+                        time.sleep(1.5)
+                    if not self.manager.is_initialized(account):
+                        self.manager.initialize(account)
+                    self._apply_cookie(account, replace=True)
+
+                    self.manager.clear_login_probe(account)
+                    self.manager.launch(account, url=url)
+                    self.store.mark_opened(account.id)
+                    # Vao duoc thi dong luon de nhuong cho acc tiep theo.
+                    if self.manager.verify_cookie_login(account):
+                        account.cookie_ok = time.strftime("%Y-%m-%d %H:%M")
+                        with lock:
+                            ok.append(account.id)
+                    else:
+                        # Xoa dau da dang nhap: dong tro lai mau trang.
+                        account.cookie_ok = ""
+                        with lock:
+                            dead.append(account.id)
+                    self.manager.close(account)
+                except (ProfileError, cookie_module.CookieError, OSError) as exc:
+                    with lock:
+                        errors.append(f"{account.id}: {exc}".replace(chr(10), " ")[:150])
+                finally:
+                    with lock:
+                        done += 1
+                        self.set_status(
+                            f"[{done}/{len(usable)}] xong {account.id} — "
+                            f"vào được {len(ok)}, cookie chết {len(dead)}"
+                        )
+
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                list(pool.map(login, usable))
+
+            self.store.save()
+            self._post(self.refresh)
             tail = f" (bỏ qua {skipped} acc thiếu cookie/profile)" if skipped else ""
-            self.set_status(f"Đã đăng nhập bằng cookie {done}/{len(usable)} acc{tail}.")
+            self.set_status(
+                f"Vào được {len(ok)}/{len(usable)} acc, cookie chết {len(dead)}{tail}."
+            )
+            if dead or errors:
+                report = ""
+                if dead:
+                    report += ("Cookie đã chết (Facebook xoá phiên), cần đăng nhập tay:\n"
+                               + ", ".join(dead[:15]))
+                    if len(dead) > 15:
+                        report += f" ... (+{len(dead) - 15})"
+                if errors:
+                    report += ("\n\nLỗi:\n" + "\n".join(errors[:8]))
+                self._post(lambda: messagebox.showwarning(
+                    "Đăng nhập với cookie", report.strip(), parent=self))
 
         self._run_async(work, "Đăng nhập với cookie xong.")
 
@@ -989,6 +1723,10 @@ class App(ctk.CTk):
         live: list[Account] = []
         restart: list[Account] = []
         for account, proxy in pairs:
+            # Proxy moi thi ket qua test cu khong con y nghia -> tra cot "Trang
+            # thai" ve trang thai acc cho toi khi test lai.
+            account.proxy_status = ""
+            account.proxy_checked = ""
             try:
                 outcome = self.manager.set_proxy(account, proxy)
             except ProfileError:
@@ -1058,6 +1796,11 @@ class App(ctk.CTk):
         self._run_async(work, "Đã " + " và ".join(done) + ".")
 
     def check_proxies(self) -> None:
+        """Test proxy cua cac acc dang chon, ghi Live/Die vao cot "Trang thai".
+
+        Ket qua duoc luu vao acc chu khong chi hien mot lan roi mat, nen tat tool
+        mo lai van con thay proxy nao da chet.
+        """
         selected = self._require_selection()
         if not selected:
             return
@@ -1069,20 +1812,36 @@ class App(ctk.CTk):
         def work():
             lines = []
             ip_of: dict[str, str] = {}   # acc id -> exit IP (de tim trung dai)
+            song = 0
             for number, account in enumerate(targets, start=1):
                 self.set_status(f"[{number}/{len(targets)}] Đang kiểm tra proxy của {account.id}...")
                 ok, detail = test_proxy(account.get_proxy())
+                account.proxy_status = "Live" if ok else "Die"
+                account.proxy_checked = time.strftime("%Y-%m-%d %H:%M")
                 lines.append(f"{'✔' if ok else '✖'} {account.id}: {detail}")
                 if ok:
+                    song += 1
                     ip = _extract_exit_ip(detail)
                     if ip:
                         ip_of[account.id] = ip
+                # Hien ngay tung dong xong, khong bat nguoi dung doi het ca lo.
+                self._post(self.refresh)
+
+            self.store.save()
+            self._post(self.refresh)
+            self.set_status(
+                f"Proxy sống {song}/{len(targets)}, chết {len(targets) - song}."
+            )
 
             warning = _duplicate_subnet_report(ip_of)
-            report = "\n".join(lines)
-            if warning:
-                report += "\n\n" + warning
-            self._post(lambda: messagebox.showinfo("Kết quả test proxy", report, parent=self))
+            chet = [line for line in lines if line.startswith("✖")]
+            # Chi bung hop thoai khi that su co gi can doc: proxy chet hoac trung dai.
+            if chet or warning:
+                report = chr(10).join(chet)
+                if warning:
+                    report = (report + chr(10) * 2 + warning) if report else warning
+                self._post(lambda: messagebox.showinfo(
+                    "Kết quả test proxy", report, parent=self))
 
         self._run_async(work, "Kiểm tra proxy xong.")
 
@@ -1133,6 +1892,46 @@ class App(ctk.CTk):
             self.manager.profile_dir(account), parsed, replace_all=replace
         )
 
+    def save_cookie_from_profile(self) -> None:
+        """Lay cookie dang song trong profile ghi nguoc vao acc.
+
+        Dung sau khi dang nhap tay: phien cu chet thi cookie da luu cung chet,
+        phai chep lai cookie moi thi lan sau "Dang nhap voi cookie" moi an.
+        """
+        selected = self._require_selection()
+        if not selected:
+            return
+        usable = [a for a in selected if self.manager.is_installed(a)]
+        if not usable:
+            messagebox.showinfo("Lưu cookie", "Các acc đã chọn chưa có profile.", parent=self)
+            return
+
+        saved, empty, running = 0, [], []
+        for account in usable:
+            if self.manager.is_running(account):
+                # Firefox giu cookie trong bo nho, chua ghi het xuong file.
+                running.append(account.id)
+            found = cookie_module.read_from_profile(self.manager.profile_dir(account))
+            names = {c.name for c in found}
+            if "c_user" not in names:
+                empty.append(account.id)
+                continue
+            account.cookie = cookie_module.to_json(found)
+            saved += 1
+        self.store.save()
+        self.refresh()
+
+        report = f"Đã lưu cookie của {saved}/{len(usable)} acc."
+        if empty:
+            report += ("\n\nChưa đăng nhập (không thấy c_user), bỏ qua:\n"
+                       + ", ".join(empty[:10]))
+        if running:
+            report += ("\n\nĐang mở nên cookie có thể chưa đầy đủ — đóng trình duyệt "
+                       "rồi lưu lại cho chắc:\n" + ", ".join(running[:10]))
+        if empty or running:
+            messagebox.showwarning("Lưu cookie", report, parent=self)
+        self.set_status(report.splitlines()[0])
+
     def export_cookie(self) -> None:
         selected = self._require_selection(single=True)
         if not selected:
@@ -1172,7 +1971,7 @@ class App(ctk.CTk):
             return
         self.clipboard_clear()
         self.clipboard_append(code)
-        self.set_status(f"Đã chép mã 2FA của {account.id}: {code} (còn {totp.seconds_remaining()}s)")
+        self.set_status(f"Đã copy mã 2FA của {account.id}: {code} (còn {totp.seconds_remaining()}s)")
 
     def _copy_field(self, field: str) -> None:
         selected = self._selected_accounts()
@@ -1181,7 +1980,103 @@ class App(ctk.CTk):
         values = [str(getattr(account, field, "") or "") for account in selected]
         self.clipboard_clear()
         self.clipboard_append("\n".join(values))
-        self.set_status(f"Đã chép {field} của {len(values)} acc.")
+        self.set_status(f"Đã copy {field} của {len(values)} acc.")
+
+    def install_extension(self) -> None:
+        """Cài file .xpi đã ký vào profile của các acc đã chọn."""
+        selected = self._require_selection()
+        if not selected:
+            return
+        usable = [a for a in selected if self.manager.is_installed(a)]
+        if not usable:
+            messagebox.showinfo("Extension", "Các acc đã chọn chưa có profile.", parent=self)
+            return
+
+        xpi = (self.settings.extension_xpi or "").strip()
+        if not os.path.isfile(xpi):
+            xpi = filedialog.askopenfilename(
+                parent=self,
+                title="Chọn file extension đã ký (.xpi)",
+                filetypes=[("Firefox extension", "*.xpi")],
+            )
+            if not xpi:
+                return
+
+        # Kiem tra chu ky mot lan truoc khi dung toi profile nao.
+        try:
+            addon_id, version = self.manager.read_extension_info(xpi)
+        except ProfileError as exc:
+            messagebox.showerror("Extension", str(exc), parent=self)
+            return
+
+        running = [a.id for a in usable if self.manager.is_running(a)]
+        question = f"Cài {addon_id} v{version} vào {len(usable)} acc?"
+        if running:
+            question += ("\n\nCác acc sau đang mở, sẽ được đóng trước khi cài "
+                         "(Firefox chỉ quét thư mục extension lúc khởi động):\n"
+                         + ", ".join(running[:8]))
+        if not messagebox.askyesno("Extension", question, parent=self):
+            return
+
+        self.settings.extension_xpi = xpi
+        self.settings.save()
+
+        def work():
+            done, errors = 0, []
+            for number, account in enumerate(usable, start=1):
+                self.set_status(f"[{number}/{len(usable)}] Cài extension cho {account.id}...")
+                if self.manager.is_running(account):
+                    self.manager.close(account)
+                    time.sleep(1.5)
+                try:
+                    self.manager.install_extension(account, xpi)
+                    done += 1
+                except (ProfileError, OSError) as exc:
+                    errors.append(f"{account.id}: {exc}")
+            if errors:
+                report = (f"Cài được {done}/{len(usable)}.\n\nLỗi:\n" + "\n".join(errors[:8]))
+                self._post(lambda: messagebox.showwarning("Extension", report, parent=self))
+
+        self._run_async(
+            work,
+            f"Đã cài {addon_id} v{version}. Mở lại trình duyệt để Firefox nhận addon.",
+        )
+
+    def remove_extension(self) -> None:
+        """Gỡ extension khỏi profile của các acc đã chọn."""
+        selected = self._require_selection()
+        if not selected:
+            return
+        found = {}
+        for account in selected:
+            for name in self.manager.installed_extensions(account):
+                found.setdefault(name[:-4], []).append(account)
+        if not found:
+            messagebox.showinfo(
+                "Extension", "Các acc đã chọn chưa cài extension nào.", parent=self
+            )
+            return
+
+        names = ", ".join(sorted(found))
+        if not messagebox.askyesno(
+            "Extension",
+            f"Gỡ {names} khỏi {len(selected)} acc?\n\nAcc đang mở sẽ được đóng trước.",
+            parent=self,
+        ):
+            return
+
+        def work():
+            removed = 0
+            for addon_id, accounts in found.items():
+                for account in accounts:
+                    if self.manager.is_running(account):
+                        self.manager.close(account)
+                        time.sleep(1.5)
+                    if self.manager.remove_extension(account, addon_id):
+                        removed += 1
+            self.set_status(f"Đã gỡ extension khỏi {removed} profile.")
+
+        self._run_async(work, "Gỡ extension xong.")
 
     def clear_cache(self) -> None:
         """Xoá cache trình duyệt của các acc đã chọn, giữ nguyên đăng nhập."""
