@@ -27,6 +27,7 @@ import platform
 import re
 import secrets
 import subprocess
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
@@ -55,6 +56,15 @@ MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEbPEMw/yK2v+S8hAmKtjEpRPqzekb
 -----END PUBLIC KEY-----"""
 
 _TIMEOUT = 30
+
+#: Thu lai khi may chu tra ve mot trong cac ma nay -- deu la loi ha tang thoang
+#: qua chu khong phai tu choi that. Do thuc te: goi 24 lan thi lan thu 2 dinh
+#: 502, lan thu 3 da binh thuong lai.
+_RETRY_STATUS = {502, 503, 504}
+_RETRIES = 3
+#: Cho bao lau truoc lan thu thu 2 va thu 3. Tong toi da ~3 giay, du de qua mot
+#: nhip hong ma nguoi dung khong thay man dang nhap treo lau.
+_RETRY_WAIT = (1.0, 2.0)
 
 
 class LicenseClient:
@@ -121,18 +131,51 @@ class LicenseClient:
     # ------------------------------------------------------------------
     # Buoc 1: dang nhap tai khoan
     # ------------------------------------------------------------------
+    def _post(self, build):
+        """Gui yeu cau, thu lai khi ha tang loi thoang qua.
+
+        `build` duoc goi LAI moi lan thu, de payload co nonce va timestamp moi
+        thay vi gui trung y het.
+
+        CHI thu lai khi mat mang hoac 502/503/504 -- do la luc may chu khong
+        goi duoc lop ben trong cua no, da do la vai giay sau lai binh thuong.
+        KHONG thu lai khi 401 (sai mat khau) hay 429 (dang bi khoa): go lai lien
+        tuc chi lam dinh khoa chong do 5 phut, hai nguoi dung chu khong duoc gi.
+        Cung khong thu lai khi 3xx -- do la luc da nghi bi chuyen huong, thu
+        them chi tang so lan gui mat khau di lung tung.
+
+        Tra ve (response, exc): mot trong hai la None.
+        """
+        response = exc = None
+        for attempt in range(_RETRIES):
+            if attempt:
+                time.sleep(_RETRY_WAIT[attempt - 1])
+            url, kwargs = build()
+            try:
+                response, exc = self.session.post(url, **kwargs), None
+            except requests.RequestException as err:
+                response, exc = None, err
+                continue
+            if response.status_code not in _RETRY_STATUS:
+                break
+        return response, exc
+
     def authenticate(self, username: str, password: str) -> dict:
-        try:
-            response = self.session.post(
-                f"{API_URL}/api/v1/auth/login",
+        response, exc = self._post(lambda: (
+            f"{API_URL}/api/v1/auth/login",
+            dict(
                 data={"username": username, "password": password},
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
                 timeout=_TIMEOUT,
-                verify=True,  # kiem chung chi TLS -- chong MITM
-            )
-        except requests.RequestException as exc:
+                verify=True,            # kiem chung chi TLS -- chong MITM
+                allow_redirects=False,  # xem _REDIRECT_MSG
+            ),
+        ))
+        if response is None:
             return {"success": False, "message": _network_message(exc)}
 
+        if _is_redirect(response):
+            return {"success": False, "message": _REDIRECT_MSG}
         if response.status_code != 200:
             return {"success": False,
                     "message": _server_message(response, "Sai tài khoản hoặc mật khẩu.")}
@@ -154,25 +197,24 @@ class LicenseClient:
         if not self.auth_token or not self.user_info:
             return {"success": False, "message": "Chưa đăng nhập tài khoản."}
 
-        payload = self._encrypt({
-            "license_key": license_key,
-            "device_id": self.device_id,
-            "device_name": platform.node(),
-            "device_info": self.device_info,
-            "tool_code": TOOL_CODE,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "nonce": secrets.token_hex(16),
-        })
-        auth_payload = self._encrypt({
-            "user": self.user_info["username"],
-            "user_id": _user_id_from_token(self.auth_token) or self.user_info["username"],
-            "token": self.auth_token,
-            "expires_at": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
-        })
-
-        try:
-            response = self.session.post(
-                f"{API_URL}/api/v1/verify/secure-verify",
+        def build():
+            # Dung trong ham vi moi lan thu lai phai co nonce va timestamp moi.
+            payload = self._encrypt({
+                "license_key": license_key,
+                "device_id": self.device_id,
+                "device_name": platform.node(),
+                "device_info": self.device_info,
+                "tool_code": TOOL_CODE,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "nonce": secrets.token_hex(16),
+            })
+            auth_payload = self._encrypt({
+                "user": self.user_info["username"],
+                "user_id": _user_id_from_token(self.auth_token) or self.user_info["username"],
+                "token": self.auth_token,
+                "expires_at": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+            })
+            return f"{API_URL}/api/v1/verify/secure-verify", dict(
                 json={
                     "encrypted_payload": payload,
                     "tool_code": TOOL_CODE,
@@ -180,10 +222,15 @@ class LicenseClient:
                 },
                 timeout=_TIMEOUT,
                 verify=True,
+                allow_redirects=False,
             )
-        except requests.RequestException as exc:
+
+        response, exc = self._post(build)
+        if response is None:
             return {"success": False, "message": _network_message(exc)}
 
+        if _is_redirect(response):
+            return {"success": False, "message": _REDIRECT_MSG}
         if response.status_code != 200:
             return {"success": False,
                     "message": _server_message(response, "Kích hoạt thất bại.")}
@@ -288,6 +335,18 @@ def scrub(text: str) -> str:
     _verify_signature -- khong co khoa rieng thi khong ky gia duoc.
     """
     return _LEAK_RE.sub("…", text or "").strip()
+
+
+#: Khong di theo chuyen huong. requests mac dinh tu nhay theo 3xx, ma 307/308
+#: giu nguyen method va body -- ai chiem duoc DNS chi can tra ve mot cai 307 la
+#: tool tu gui username + password sang may cua ho. Buoc kich hoat key con co
+#: chu ky ECDSA che, nhung buoc dang nhap thi khong, nen phai chan o day.
+_REDIRECT_MSG = ("Máy chủ trả về lệnh chuyển hướng bất thường. Đã dừng để "
+                 "không gửi thông tin đăng nhập đi nơi khác.")
+
+
+def _is_redirect(response: requests.Response) -> bool:
+    return 300 <= response.status_code < 400
 
 
 def _network_message(exc: Exception) -> str:
