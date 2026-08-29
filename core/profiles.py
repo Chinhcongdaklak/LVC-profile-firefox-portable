@@ -639,8 +639,7 @@ class ProfileManager:
 
     def restart(self, account: Account, wait: float = 2.0) -> None:
         """Dong roi mo lai trinh duyet cua acc de ap dung cau hinh moi."""
-        self.close(account)
-        time.sleep(wait)
+        self.close(account, wait=max(wait, 5.0))
         self.launch(account)
 
     def _set_taskbar_id(self, account: Account) -> None:
@@ -792,10 +791,35 @@ class ProfileManager:
         # lai LO hon. De trong thi Firefox bao mui gio OS sach (vd Asia/Ho_Chi_Minh).
         return subprocess.Popen(args, cwd=os.path.dirname(exe))
 
-    def close(self, account: Account) -> int:
+    def close(self, account: Account, wait: float = 0.0) -> int:
+        """Dong trinh duyet cua acc. ``wait`` > 0 thi cho toi khi that su dong han.
+
+        Vi sao can cho: TerminateProcess chi RA LENH ket lieu roi tra ve ngay.
+        Neu mo acc ke tiep lien thi trinh duyet cu van con tren man hinh -- chay
+        5 luong ma thay 7-8 cua so chinh la vi vay.
+        """
         killed = procutil.terminate_under(self.app_dir(account), "firefox.exe")
         self.relays.stop(account.id)
+        if wait > 0:
+            self.wait_closed(account, wait)
         return killed
+
+    def wait_closed(self, account: Account, timeout: float = 10.0) -> bool:
+        """Cho toi khi khong con tien trinh nao cua acc nay chay nua.
+
+        Firefox de lai tien trinh noi dung con; co cai vua sinh ra dung luc minh
+        chup danh sach nen thoat duoc lan ket lieu dau. Ket lieu lai sau moi vong
+        cho toi khi sach han.
+        """
+        app = self.app_dir(account)
+        deadline = time.time() + timeout
+        while True:
+            if not procutil.find_under(app, "firefox.exe"):
+                return True
+            if time.time() >= deadline:
+                return False
+            procutil.terminate_under(app, "firefox.exe")
+            time.sleep(0.25)
 
     def delete(self, account: Account, remove_folder: bool = True) -> None:
         self.close(account)

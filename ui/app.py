@@ -1532,9 +1532,10 @@ class App(ctk.CTk):
             def login(account: Account) -> None:
                 nonlocal done
                 try:
-                    if self.manager.is_running(account):
-                        self.manager.close(account)
-                        time.sleep(1.5)
+                    # Dong han trinh duyet cu TRUOC khi mo cai moi. Cho that su
+                    # dong xong, khong thi trinh duyet dang tat va trinh duyet
+                    # vua mo cung nam tren man hinh -> nhin ra nhieu hon so luong.
+                    self.manager.close(account, wait=10.0)
                     if not self.manager.is_initialized(account):
                         self.manager.initialize(account)
                     self._apply_cookie(account, replace=True)
@@ -1552,11 +1553,17 @@ class App(ctk.CTk):
                         account.cookie_ok = ""
                         with lock:
                             dead.append(account.id)
-                    self.manager.close(account)
                 except (ProfileError, cookie_module.CookieError, OSError) as exc:
                     with lock:
                         errors.append(f"{account.id}: {exc}".replace(chr(10), " ")[:150])
                 finally:
+                    # PHAI dong o day chu khong phai trong try: truoc day chi mot
+                    # loi sau khi mo la trinh duyet do nam lai mai mai, luong duoc
+                    # tra ve cho acc khac mo them cua so -> vuot qua so luong.
+                    try:
+                        self.manager.close(account, wait=10.0)
+                    except OSError:
+                        pass
                     with lock:
                         done += 1
                         self.set_status(
