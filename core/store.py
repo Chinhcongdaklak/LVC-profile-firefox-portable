@@ -24,6 +24,34 @@ def safe_folder_name(account_id: str) -> str:
     return name or "unnamed"
 
 
+#: Dau ngan cach chac chan la "danh sach": xuong dong, phay, cham phay, tab.
+_LIST_SEPARATORS = re.compile(r"[\r\n,;\t|]+")
+#: UID Facebook -- chuoi so dai. Dung de doan xem khoang trang la ngan cach
+#: danh sach hay chi la khoang trang giua cac tu trong mot cum tu.
+_LOOKS_LIKE_UID = re.compile(r"^\d{5,}$")
+
+
+def split_terms(keyword: str) -> list[str]:
+    """Tach o tim kiem thanh cac tu khoa rieng.
+
+    Quy tac de go mot cum tu van tim dung nhu truoc:
+      * co xuong dong / phay / cham phay / tab  -> chac chan la danh sach, tach ra;
+      * cac phan cach nhau bang khoang trang MA TAT CA deu la UID (chuoi so dai)
+        -> cung la danh sach, tach ra;
+      * con lai giu nguyen ca chuoi lam MOT tu khoa, de "cong test facebook" van
+        tim dung cum do chu khong phai moi acc co chu "test".
+    """
+    raw = (keyword or "").strip().lower()
+    if not raw:
+        return []
+    if _LIST_SEPARATORS.search(raw):
+        return [p.strip() for p in _LIST_SEPARATORS.split(raw) if p.strip()]
+    parts = raw.split()
+    if len(parts) > 1 and all(_LOOKS_LIKE_UID.match(p) for p in parts):
+        return parts
+    return [raw]
+
+
 @dataclass
 class Identity:
     """Mui gio va ngon ngu cua mot profile, suy ra tu quoc gia cua IP proxy."""
@@ -268,19 +296,25 @@ class AccountStore:
         return moved
 
     def search(self, keyword: str = "", group: str = "", status: str = "") -> list[Account]:
-        keyword = (keyword or "").strip().lower()
+        """Loc danh sach acc. ``keyword`` co the la NHIEU tu khoa cung luc.
+
+        Dan mot danh sach UID (xuong dong, dau phay hay cach nhau bang khoang
+        trang) thi tra ve tat ca acc khop BAT KY UID nao trong do -- xem
+        ``split_terms`` de biet luc nao mot chuoi duoc coi la nhieu tu khoa.
+        """
+        terms = split_terms(keyword)
         result = []
         for account in self.accounts:
             if group and account.group != group:
                 continue
             if status and account.status != status:
                 continue
-            if keyword:
+            if terms:
                 haystack = " ".join([
                     account.id, account.recovery_mail, account.group,
                     account.note, account.get_proxy().as_text(),
                 ]).lower()
-                if keyword not in haystack:
+                if not any(term in haystack for term in terms):
                     continue
             result.append(account)
         return result

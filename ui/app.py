@@ -20,6 +20,7 @@ from core import config
 from core import cookies as cookie_module
 from core import geoip
 from core import proxy as proxy_module
+from core import store as store_module
 from core import totp
 from core.config import Settings
 from core.profiles import ProfileError, ProfileManager
@@ -191,9 +192,15 @@ class App(ctk.CTk):
         filters = ctk.CTkFrame(parent, fg_color="transparent")
         filters.pack(fill="x", padx=PAD, pady=(PAD, 4))
 
-        self.search_entry = ctk.CTkEntry(filters, placeholder_text="Tìm theo ID / mail / nhóm / ghi chú", width=320)
+        self.search_entry = ctk.CTkEntry(
+            filters, width=400,
+            placeholder_text="Tìm ID / mail / nhóm / ghi chú — dán nhiều UID cũng được",
+        )
         self.search_entry.pack(side="left")
         self.search_entry.bind("<KeyRelease>", lambda _e: self.refresh())
+        # Dan mot cot UID tu Excel se keo theo ky tu xuong dong; o mot dong khong
+        # hien duoc chung. Doi thanh dau phay cho nhin ra danh sach.
+        self.search_entry.bind("<<Paste>>", self._paste_search)
 
         self.group_filter = ctk.CTkOptionMenu(filters, values=["Tất cả nhóm"], width=150, command=lambda _v: self.refresh())
         self.group_filter.pack(side="left", padx=6)
@@ -864,7 +871,38 @@ class App(ctk.CTk):
             if self.tree.exists(item):
                 self.tree.selection_add(item)
 
-        self.count_label.configure(text=f"{len(self._rows)}/{len(self.store)} acc")
+        self.count_label.configure(text=self._count_text())
+
+    def _paste_search(self, _event=None) -> str:
+        """Dan vao o tim kiem: gop nhieu dong thanh mot danh sach ngan bang dau phay."""
+        try:
+            text = self.clipboard_get()
+        except tk.TclError:
+            return "break"
+        parts = [p.strip() for p in re.split(r"[\r\n\t;,]+", text) if p.strip()]
+        gop = ", ".join(parts)
+        try:
+            if self.search_entry.select_present():
+                self.search_entry.delete("sel.first", "sel.last")
+        except tk.TclError:
+            pass
+        self.search_entry.insert("insert", gop)
+        self.refresh()
+        return "break"          # chan Tk dan them lan nua
+
+    def _count_text(self) -> str:
+        """Chu o goc phai: bao nhieu acc dang hien, va UID nao dan vao ma khong co."""
+        base = f"{len(self._rows)}/{len(self.store)} acc"
+        terms = store_module.split_terms(self.search_entry.get())
+        if len(terms) < 2:
+            return base
+        thay = set()
+        for account in self._rows:
+            kho = " ".join([account.id, account.recovery_mail, account.group,
+                            account.note, account.get_proxy().as_text()]).lower()
+            thay.update(t for t in terms if t in kho)
+        thieu = len(terms) - len(thay)
+        return f"{base} · tìm {len(terms)} từ khoá" + (f", {thieu} không thấy" if thieu else "")
 
     def _row_values(self, index: int, account: Account) -> tuple:
         """Gia tri tung o, tra ra dung thu tu COLUMNS.
