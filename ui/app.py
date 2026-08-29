@@ -19,6 +19,7 @@ import customtkinter as ctk
 from core import config
 from core import cookies as cookie_module
 from core import geoip
+from core import licensing
 from core import proxy as proxy_module
 from core import store as store_module
 from core import totp
@@ -28,6 +29,7 @@ from core.proxy import Proxy
 from core.proxy_relay import RelayManager, test_proxy
 from core.store import Account, AccountStore, STATUSES
 
+from . import login
 from .dialogs import (
     AccountDialog,
     ColumnDialog,
@@ -106,6 +108,15 @@ class App(ctk.CTk):
         self.minsize(1100, 600)
         self._set_window_icon()
 
+        # Cong dang nhap: an cua so chinh, cho dang nhap tai khoan + key tool
+        # xong moi dung giao dien. An truoc chu khong dung cua so goc rieng vi
+        # Tk chi nen co mot goc (xem ui/login.py).
+        self.withdraw()
+        self.session = login.gate(self)
+        if self.session is None:
+            self.destroy()
+            return
+
         self.settings = Settings.load()
         self.settings.save()  # ghi lai duong dan paf.exe tim duoc o lan chay dau
         ctk.set_appearance_mode(self.settings.appearance)
@@ -131,6 +142,24 @@ class App(ctk.CTk):
         self.after(100, self._drain_events)
         self.refresh()
         self._schedule_running_check()
+        self._show_after_login()
+
+    def _show_after_login(self) -> None:
+        """Hien cua so chinh sau khi qua cong dang nhap.
+
+        Khong chi goi deiconify() la du: customtkinter ghi nho rang withdraw()
+        da duoc goi TRUOC khi cua so kip hien lan dau, va trong mainloop() no
+        an cua so mot lan nua de doi mau thanh tieu de roi chi hien lai neu co
+        do chua bat. De nguyen thi tool chay nhung khong co cua so nao ca.
+        Xoa co di de mainloop() di dung duong binh thuong (van doi mau tieu de
+        theo sang/toi). Dat trong try vi day la thuoc tinh noi bo cua thu vien,
+        ban khac co the bo -- luc do rieng deiconify() van du.
+        """
+        try:
+            self._withdraw_called_before_window_exists = False
+        except Exception:
+            pass
+        self.deiconify()
 
     # ------------------------------------------------------------------
     # Dung giao dien
@@ -187,6 +216,20 @@ class App(ctk.CTk):
         ctk.CTkButton(header, text="Cài đặt", width=90, command=self.open_settings).pack(
             side="right", padx=14
         )
+        ctk.CTkButton(
+            header, text="Đăng xuất", width=90, fg_color="gray50",
+            hover_color="gray40", command=self.sign_out,
+        ).pack(side="right", padx=(0, 4))
+
+        self.account_label = ctk.CTkLabel(header, text="", text_color="gray60")
+        self.account_label.pack(side="right", padx=8)
+        self._update_account_label()
+
+    def _update_account_label(self) -> None:
+        """Ghi ten dang nhap va han key len header (doi lai sau khi dang nhap lai)."""
+        info = licensing.summarize(self.session)
+        self.account_label.configure(
+            text=f"👤 {info['username']}   •   Hạn key: {info['expiry']}")
 
     def _build_toolbar(self, parent) -> None:
         filters = ctk.CTkFrame(parent, fg_color="transparent")
@@ -2265,6 +2308,31 @@ class App(ctk.CTk):
         self._run_async(work, "Chuyển profile xong.")
 
     # ------------------------------------------------------------------
+    def sign_out(self) -> None:
+        """Xoa dang nhap da luu roi quay ve man dang nhap.
+
+        Khong dong han tool: an cua so chinh roi mo lai cong dang nhap ngay
+        trong tien trinh nay, dang nhap xong thi hien lai. Danh sach acc va
+        profile la cua may chu khong phai cua tai khoan LVC nen khong can dung
+        lai gi -- chi doi ten hien tren header.
+        """
+        if not messagebox.askyesno(
+                "Đăng xuất",
+                "Xoá tài khoản và key tool đã lưu trên máy này?\n"
+                "Bạn sẽ quay lại màn hình đăng nhập.",
+                parent=self):
+            return
+        login.sign_out()
+
+        self.withdraw()
+        session = login.gate(self)
+        if session is None:      # dong luon man dang nhap = thoat tool
+            self._on_close()
+            return
+        self.session = session
+        self._update_account_label()
+        self._show_after_login()
+
     def _on_close(self) -> None:
         # Proxy nam trong mozilla.cfg cua tung profile, khong con di qua relay cua
         # tool nua -- dong tool khong con lam trinh duyet mat mang.
@@ -2318,4 +2386,7 @@ def _duplicate_subnet_report(ip_of: dict) -> str:
 
 
 def run() -> None:
-    App().mainloop()
+    app = App()
+    if app.session is None:   # nguoi dung dong cong dang nhap
+        return
+    app.mainloop()

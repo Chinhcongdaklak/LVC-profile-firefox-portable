@@ -1,24 +1,18 @@
 @echo off
 REM Dong goi tool "LVC Manager Profile" thanh mot file .exe duy nhat.
-REM Dat exe canh: data\, profile\, va FirefoxPortable_*.paf.exe
+REM Uu tien python trong .venv de dung dung bo thu vien da kiem thu.
+REM Truyen tham so vao build.py:  build.bat --debug   (ban co console de soi loi)
 cd /d "%~dp0"
 
+if exist ".venv\Scripts\python.exe" (
+    set "PY=.venv\Scripts\python.exe"
+) else (
+    set "PY=python"
+    echo Khong thay .venv, dung python he thong.
+)
+
 echo === Cai thu vien neu chua co ===
-pip install --quiet pyinstaller customtkinter pillow
+"%PY%" -m pip install --quiet --disable-pip-version-check pyinstaller -r requirements.txt
 
-echo === Dang build ===
-python -m PyInstaller --noconfirm --clean --onefile --windowed ^
-  --name "LVC Manager Profile" ^
-  --icon "assets/logo.ico" ^
-  --add-data "core/assets;core/assets" ^
-  --add-data "assets;assets" ^
-  --collect-data customtkinter ^
-  --hidden-import customtkinter ^
-  main.py
-
-echo === Chep exe ra thu muc tool ===
-copy /Y "dist\LVC Manager Profile.exe" "LVC Manager Profile.exe"
-
-echo.
-echo XONG. File: LVC Manager Profile.exe
+"%PY%" build.py %*
 pause
