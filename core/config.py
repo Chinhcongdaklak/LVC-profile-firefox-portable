@@ -23,6 +23,21 @@ def _base_dir() -> str:
 TOOL_DIR = _base_dir()
 
 
+def _user_data_dir() -> str:
+    """Thu muc rieng cua tool trong ho so nguoi dung Windows.
+
+    Danh cho phien dang nhap va key tool. KHONG dat canh tool: cap nhat tool la
+    ghi de ca thu muc, dat o do thi moi lan cap nhat lai mat dang nhap. Ngoai ra
+    %LOCALAPPDATA% moi tai khoan Windows mot ban rieng, dung voi cach DPAPI ma
+    hoa theo tai khoan (xem core/secret_store.py).
+    """
+    base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    return os.path.join(base, "LVC Manager Profile")
+
+
+USER_DATA_DIR = _user_data_dir()
+
+
 def resource_path(*parts: str) -> str:
     """Duong dan toi mot file tai nguyen di kem (vd assets/logo.png).
 

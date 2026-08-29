@@ -1,1 +1,6 @@
 customtkinter>=5.2.2
+# Icon cua so + logo tren thanh tieu de (ui/app.py, ui/login.py).
+pillow>=10.0
+# Dang nhap tai khoan / kich hoat key tool (core/licensing.py).
+requests>=2.31
+cryptography>=42.0
