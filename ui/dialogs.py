@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import time
+import re
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from typing import Optional
@@ -345,10 +346,18 @@ _IMPORT_COLUMNS = 10  # so o chon dinh dang hien ra
 
 
 class BulkImportDialog(BaseDialog):
-    """Nhap nhieu acc: chon dinh dang tung cot + nhom se dua vao."""
+    """Nhap nhieu acc: chon dinh dang tung cot + nhom se dua vao.
 
-    def __init__(self, parent, groups: Optional[list[str]] = None):
-        super().__init__(parent, "Nhập hàng loạt", 900, 720)
+    ``mode="update"`` la hop "Sua custom": van o dan + chon dinh dang + xem
+    truoc y het, nhung khong THEM acc moi ma THAY gia tri cac cot da chon cho
+    acc co san (khop theo Uid). Cot de "(bo qua)" va o trong thi giu nguyen.
+    """
+
+    def __init__(self, parent, groups: Optional[list[str]] = None,
+                 mode: str = "import"):
+        self.mode = mode
+        tieu_de = "Nhập hàng loạt" if mode == "import" else "Sửa hàng loạt (custom)"
+        super().__init__(parent, tieu_de, 900, 720)
         self.minsize(760, 600)
         self._groups = groups or []
         self._fmt_touched = False   # nguoi dung da tu sua dinh dang chua
@@ -402,11 +411,36 @@ class BulkImportDialog(BaseDialog):
         )
         self.separator.pack(side="left", padx=6)
 
-        ctk.CTkLabel(cfg, text="Đưa vào nhóm:").pack(side="left", padx=(16, 0))
-        self.group_box = ctk.CTkComboBox(cfg, values=[NO_GROUP, *self._groups], width=170)
-        self.group_box.set(NO_GROUP)
-        self.group_box.pack(side="left", padx=6)
-        ctk.CTkButton(cfg, text="➕ Nhóm mới", width=110, command=self._new_group).pack(side="left")
+        self.group_box = None
+        self.ua_vars: dict = {}
+        if self.mode == "import":
+            ctk.CTkLabel(cfg, text="Đưa vào nhóm:").pack(side="left", padx=(16, 0))
+            self.group_box = ctk.CTkComboBox(cfg, values=[NO_GROUP, *self._groups], width=170)
+            self.group_box.set(NO_GROUP)
+            self.group_box.pack(side="left", padx=6)
+            ctk.CTkButton(cfg, text="➕ Nhóm mới", width=110, command=self._new_group).pack(side="left")
+
+            # --- Tich chon category User Agent gan cho acc moi (iOS/Android/TV/Mac/Win) ---
+            from core import useragent
+            loai_ua = list(useragent.cac_loai().keys())
+            ua_row = ctk.CTkFrame(self, fg_color="transparent")
+            ua_row.pack(fill="x", padx=PAD, pady=(0, 2))
+            if loai_ua:
+                ctk.CTkLabel(ua_row, text="Gán User Agent (mỗi acc 1 UA ngẫu nhiên):").pack(side="left")
+                for ten in loai_ua:
+                    var = tk.BooleanVar(value=False)
+                    ctk.CTkCheckBox(ua_row, text=ten, variable=var, width=70).pack(side="left", padx=6)
+                    self.ua_vars[ten] = var
+            else:
+                ctk.CTkLabel(
+                    ua_row, text="Chưa có file User Agent trong thư mục useragent/.",
+                    text_color="gray60",
+                ).pack(side="left")
+        else:
+            ctk.CTkLabel(
+                cfg, text="Khớp theo cột Uid — chỉ THAY các cột đã chọn, ô trống giữ nguyên.",
+                text_color="gray60",
+            ).pack(side="left", padx=(16, 0))
 
         # --- 3) Bang xem truoc ---
         ctk.CTkLabel(self, text="Xem trước:").pack(anchor="w", padx=PAD, pady=(4, 0))
@@ -427,7 +461,8 @@ class BulkImportDialog(BaseDialog):
         buttons = ctk.CTkFrame(self, fg_color="transparent")
         buttons.pack(fill="x", padx=PAD, pady=(0, PAD))
         ctk.CTkButton(buttons, text="Hủy", width=100, fg_color="gray35", command=self._cancel).pack(side="right")
-        ctk.CTkButton(buttons, text="Nhập", width=100, command=self._submit).pack(side="right", padx=6)
+        ctk.CTkButton(buttons, text=("Nhập" if self.mode == "import" else "Cập nhật"),
+                      width=100, command=self._submit).pack(side="right", padx=6)
 
         # Doan dinh dang ngay tu du lieu mau + dung bang xem truoc.
         self.after(200, self._auto_detect)
@@ -520,11 +555,12 @@ class BulkImportDialog(BaseDialog):
             return
         separator = self.separator.get()
         sep = {"Tab": "\t", "Space": " "}.get(separator, separator)
-        group = self.group_box.get().strip()
+        group = self.group_box.get().strip() if self.group_box is not None else ""
         if group == NO_GROUP:
             group = ""
-        # (text, separator, fields, group)
-        self.result = (self.textbox.get("1.0", "end"), sep, fields, group)
+        ua_loai = [ten for ten, var in self.ua_vars.items() if var.get()]
+        # (text, separator, fields, group, ua_loai)
+        self.result = (self.textbox.get("1.0", "end"), sep, fields, group, ua_loai)
         self.destroy()
 
 
@@ -1085,22 +1121,7 @@ class SettingsDialog(BaseDialog):
         self.appearance_box.set(APPEARANCE_LABELS.get(settings.appearance, "Sáng"))
         self.appearance_box.grid(row=8, column=1, sticky="w", padx=PAD, pady=8)
 
-        ctk.CTkLabel(frame, text="Số luồng tạo profile").grid(
-            row=9, column=0, sticky="w", padx=PAD, pady=8
-        )
-        thread_row = ctk.CTkFrame(frame, fg_color="transparent")
-        thread_row.grid(row=9, column=1, sticky="w", padx=PAD, pady=8)
-        self.threads_box = ctk.CTkOptionMenu(
-            thread_row, values=[str(n) for n in range(1, 9)], width=80
-        )
-        self.threads_box.set(str(settings.create_threads or 3))
-        self.threads_box.pack(side="left")
-        ctk.CTkLabel(
-            thread_row,
-            text="acc cùng lúc — nhiều quá thì máy chậm",
-            text_color="gray60",
-            font=ctk.CTkFont(size=11),
-        ).pack(side="left", padx=8)
+        # (Bo o "So luong tao profile": so luong DUNG CHUNG dat o o "Luong" tren bang acc — ADR-015.)
 
         ctk.CTkLabel(frame, text="Trang mở khi bấm “Mở”").grid(
             row=11, column=0, sticky="w", padx=PAD, pady=8
@@ -1182,7 +1203,6 @@ class SettingsDialog(BaseDialog):
         self.settings.auto_login_cookie = bool(self.autologin_var.get())
         self.settings.use_tz_shim = bool(self.tzshim_var.get())
         self.settings.appearance = APPEARANCES.get(self.appearance_box.get(), "light")
-        self.settings.create_threads = max(1, min(8, int(self.threads_box.get() or 3)))
         self.settings.start_url = self.starturl_entry.get().strip()
         self.result = self.settings
         self.destroy()
@@ -1211,7 +1231,7 @@ class CopyCustomDialog(BaseDialog):
         self.entry.bind("<KeyRelease>", lambda _e: self._preview())
 
         ctk.CTkLabel(
-            body, text="Bấm để chèn vào mẫu:", anchor="w",
+            body, text="Bấm để chèn trường (tự ngăn cách bằng dấu |):", anchor="w",
             text_color="gray60", font=ctk.CTkFont(size=11),
         ).pack(fill="x", pady=(6, 2))
 
@@ -1248,7 +1268,13 @@ class CopyCustomDialog(BaseDialog):
         self._preview()
 
     def _insert(self, key: str) -> None:
-        self.entry.insert(self.entry.index("insert"), "{" + key + "}")
+        """Chèn trường vào mẫu, TỰ ngăn cách các trường bằng dấu ``|``.
+
+        Bấm liên tiếp id, password, proxy -> ``{id}|{password}|{proxy}`` (không dính vào nhau)."""
+        pos = self.entry.index("insert")
+        truoc = self.entry.get()[:pos]
+        sep = "|" if truoc and not truoc.endswith("|") else ""
+        self.entry.insert(pos, sep + "{" + key + "}")
         self.entry.focus_set()
         self._preview()
 
@@ -1280,28 +1306,103 @@ class CopyCustomDialog(BaseDialog):
         self.destroy()
 
 
+#: Be ngang cot trong hop thoai chon tai khoan.
+ID_W = 190
+GROUP_W = 170
+
+
+_TACH_TU_KHOA = re.compile(r"[\s,;]+")
+
+
+def tach_tu_khoa(text: str) -> list:
+    """Tach o tim thanh cac tu khoa: cach nhau boi khoang trang / xuong dong / phay / cham phay.
+    Bo trung, giu thu tu, ve chu thuong. Dan ca danh sach UID mot luc cung duoc."""
+    ra, seen = [], set()
+    for tu in _TACH_TU_KHOA.split((text or "").strip().lower()):
+        if tu and tu not in seen:
+            seen.add(tu)
+            ra.append(tu)
+    return ra
+
+
+def _hay_acc(account) -> str:
+    return f"{account.id} {getattr(account, 'group', '')} {getattr(account, 'note', '')}".lower()
+
+
+def _khop(account, tu: str) -> bool:
+    """Tu khoa toan so -> chi doi trong ID acc (dan UID); tu khoa khac -> id + nhom + ghi chu."""
+    if tu.isdigit():
+        return tu in str(account.id).lower()
+    return tu in _hay_acc(account)
+
+
+def loc_acc(accounts, text: str) -> list:
+    """Acc HIEN theo o tim: khong tu khoa -> tat ca; co -> khop BAT KY tu khoa nao (OR), giu thu tu bang."""
+    tus = tach_tu_khoa(text)
+    if not tus:
+        return list(accounts)
+    return [a for a in accounts if any(_khop(a, tu) for tu in tus)]
+
+
+def uid_khong_thay(accounts, text: str) -> list:
+    """Cac tu khoa toan so (UID) khong khop ID acc nao — de bao nguoi dung thieu acc."""
+    return [tu for tu in tach_tu_khoa(text)
+            if tu.isdigit() and not any(_khop(a, tu) for a in accounts)]
+
+
+TAT_CA_NHOM = "Tất cả nhóm"
+
+
 class AccountPickerDialog(BaseDialog):
-    """Chon tai khoan tu danh sach, co o tim va nut chon nhanh."""
+    """Chon tai khoan tu danh sach: o tim (nhieu UID), LOC NHOM, va KEO CHUOT chon nhieu acc."""
 
     def __init__(self, parent, accounts, picked_ids):
-        super().__init__(parent, "Chọn tài khoản", 560, 620)
+        super().__init__(parent, "Chọn tài khoản", 820, 620)
+        self.minsize(640, 420)
         self._accounts = list(accounts)
         self._vars = {}
+        # Trang thai keo chuot chon nhieu (dat truoc _fill).
+        self._drag_active = False
+        self._drag_target = True
 
         head = ctk.CTkFrame(self, fg_color="transparent")
         head.pack(fill="x", padx=PAD, pady=(PAD, 4))
-        self.search = ctk.CTkEntry(head, placeholder_text="Tìm theo ID hoặc nhóm")
+        self.search = ctk.CTkEntry(
+            head, placeholder_text="Tìm theo ID / nhóm / ghi chú — dán nhiều UID cách nhau bằng "
+                                   "khoảng trắng hoặc dấu phẩy")
         self.search.pack(side="left", fill="x", expand=True)
         self.search.bind("<KeyRelease>", lambda _e: self._fill())
 
         tools = ctk.CTkFrame(self, fg_color="transparent")
         tools.pack(fill="x", padx=PAD, pady=(0, 4))
+        # LOC NHOM: chon 1 nhom -> chi hien acc nhom do; "Chọn tất cả" luc do = chon ca nhom.
+        ctk.CTkLabel(tools, text="Nhóm:", text_color="gray60").pack(side="left")
+        nhoms = sorted({(a.group or "").strip() for a in self._accounts if (a.group or "").strip()})
+        self.group_filter = ctk.CTkOptionMenu(
+            tools, width=190, values=[TAT_CA_NHOM] + nhoms,
+            command=lambda _v=None: self._fill())
+        self.group_filter.set(TAT_CA_NHOM)
+        self.group_filter.pack(side="left", padx=(4, 12))
         self.count = ctk.CTkLabel(tools, text="", text_color="gray60")
         self.count.pack(side="left")
         ctk.CTkButton(tools, text="Bỏ chọn", width=90, fg_color="gray35",
                       command=lambda: self._set_all(False)).pack(side="right")
         ctk.CTkButton(tools, text="Chọn tất cả", width=100,
                       command=lambda: self._set_all(True)).pack(side="right", padx=6)
+
+        ctk.CTkLabel(self, text="Mẹo: kéo chuột dọc theo các dòng để chọn/bỏ nhiều acc một lúc.",
+                     text_color="gray50").pack(anchor="w", padx=PAD)
+
+        # Hang tieu de cot, nam ngoai vung cuon de luon nhin thay.
+        dam = ctk.CTkFont(weight="bold")
+        tieu_de = ctk.CTkFrame(self, fg_color="transparent")
+        tieu_de.pack(fill="x", padx=PAD)
+        ctk.CTkLabel(tieu_de, text="ID acc", font=dam, width=ID_W, anchor="w").pack(
+            side="left", padx=(28, 0))
+        ctk.CTkLabel(tieu_de, text="Nhóm", font=dam, width=GROUP_W, anchor="w").pack(
+            side="left")
+        ctk.CTkLabel(tieu_de, text="Ghi chú", font=dam, anchor="w").pack(
+            side="left", fill="x", expand=True)
 
         self.body = ctk.CTkScrollableFrame(self, fg_color="transparent")
         self.body.pack(fill="both", expand=True, padx=PAD)
@@ -1321,31 +1422,89 @@ class AccountPickerDialog(BaseDialog):
         self._fill()
         self.search.focus_set()
 
+    def _dang_hien(self) -> list:
+        """Acc khop o tim (loc_acc — nhieu UID) VA thuoc nhom da chon o o loc nhom."""
+        ds = loc_acc(self._accounts, self.search.get())
+        nhom = self.group_filter.get()
+        if nhom and nhom != TAT_CA_NHOM:
+            ds = [a for a in ds if (a.group or "").strip() == nhom]
+        return ds
+
     def _fill(self) -> None:
-        keyword = self.search.get().strip().lower()
+        """Ve lai danh sach. Moi dong la mot hang: o tick + ID, nhom, ghi chu.
+
+        Khong nhet nhom vao chinh chu cua o tick nua: nhu vay cot khong thang
+        hang, ma ghi chu thi dai ngan khac nhau nen cang loan.
+
+        Moi hang gan ``_acc_id`` + bind chuot (Button-1/B1-Motion/ButtonRelease-1) de
+        KEO CHUOT chon nhieu acc mot luc (winfo_containing tim acc duoi con tro).
+        """
         for child in self.body.winfo_children():
             child.destroy()
-        for account in self._accounts:
-            haystack = f"{account.id} {account.group}".lower()
-            if keyword and keyword not in haystack:
-                continue
-            label = account.id + (f"   ({account.group})" if account.group else "")
-            ctk.CTkCheckBox(
-                self.body, text=label, variable=self._vars[account.id],
-            ).pack(anchor="w", pady=1)
+        for account in self._dang_hien():
+            hang = ctk.CTkFrame(self.body, fg_color="transparent")
+            hang.pack(fill="x", pady=1)
+            hang._acc_id = account.id                       # de tim acc duoi con tro khi keo
+            ctk.CTkCheckBox(hang, text=account.id, width=ID_W,
+                            variable=self._vars[account.id]).pack(side="left")
+            lb_nhom = ctk.CTkLabel(hang, text=account.group or "—", width=GROUP_W, anchor="w",
+                                   text_color="gray60")
+            lb_nhom.pack(side="left")
+            ghi_chu = (account.note or "").replace(chr(10), " ").strip()
+            lb_ghi = ctk.CTkLabel(hang, text=ghi_chu or "—", anchor="w", justify="left",
+                                  text_color="gray60")
+            lb_ghi.pack(side="left", fill="x", expand=True)
+            # Keo chuot tren PHAN NHAN (khong phai o tick) -> chon/bo nhieu dong lien tiep.
+            for w in (hang, lb_nhom, lb_ghi):
+                w.bind("<Button-1>", lambda e, a=account.id: self._drag_start(a))
+                w.bind("<B1-Motion>", self._drag_move)
+                w.bind("<ButtonRelease-1>", self._drag_end)
         self._count()
+
+    def _acc_duoi_chuot(self, x_root: int, y_root: int):
+        """Acc id cua hang nam duoi con tro (di len cay master tim ``_acc_id``)."""
+        w = self.winfo_containing(x_root, y_root)
+        while w is not None:
+            aid = getattr(w, "_acc_id", None)
+            if aid:
+                return aid
+            w = getattr(w, "master", None)
+        return None
+
+    def _drag_start(self, acc_id: str) -> None:
+        var = self._vars.get(acc_id)
+        if var is None:
+            return
+        self._drag_active = True
+        self._drag_target = not var.get()      # keo tu dong dau: dao trang thai dong do
+        var.set(self._drag_target)
+
+    def _drag_move(self, event) -> None:
+        if not self._drag_active:
+            return
+        aid = self._acc_duoi_chuot(event.x_root, event.y_root)
+        if aid is not None:
+            var = self._vars.get(aid)
+            if var is not None and var.get() != self._drag_target:
+                var.set(self._drag_target)
+
+    def _drag_end(self, _event=None) -> None:
+        self._drag_active = False
 
     def _count(self) -> None:
         picked = sum(1 for v in self._vars.values() if v.get())
-        self.count.configure(text=f"đã chọn {picked}/{len(self._vars)}")
+        chu = f"đã chọn {picked}/{len(self._vars)}"
+        text = self.search.get()
+        if tach_tu_khoa(text):
+            chu += f" · hiện {len(self._dang_hien())}"
+            thieu = uid_khong_thay(self._accounts, text)
+            if thieu:
+                chu += f" · không thấy: {', '.join(thieu[:8])}" + (" …" if len(thieu) > 8 else "")
+        self.count.configure(text=chu)
 
     def _set_all(self, value: bool) -> None:
         """Chi doi nhung dong dang hien -- neu khong o tim thanh vo nghia."""
-        keyword = self.search.get().strip().lower()
-        for account in self._accounts:
-            haystack = f"{account.id} {account.group}".lower()
-            if keyword and keyword not in haystack:
-                continue
+        for account in self._dang_hien():
             self._vars[account.id].set(value)
 
     def _save(self) -> None:
@@ -1448,3 +1607,179 @@ class ColumnDialog(BaseDialog):
     def _save(self) -> None:
         self.result = (list(self._order), sorted(self._hidden))
         self.destroy()
+
+
+#: Cot cua cua so "Quan ly acc" (mo tu tab Auto dang / Tao fanpage): (khoa, tieu de, rong, canh).
+QLACC_COLUMNS = (
+    ("stt", "STT", 44, "center"),
+    ("id", "UID acc", 150, "w"),
+    ("name", "Name acc", 170, "w"),
+    ("note", "Ghi chú", 200, "w"),
+    ("proxy", "Proxy", 190, "w"),
+    ("group", "Nhóm", 110, "w"),
+    ("status", "Tình trạng acc", 120, "center"),
+)
+
+
+def qlacc_row(index: int, account) -> tuple:
+    """Gia tri 1 dong cua so Quan ly acc (ham thuan, thuoc kiem duoc)."""
+    try:
+        proxy = account.get_proxy().display(mask=True) or "—"
+    except Exception:  # noqa: BLE001
+        proxy = "—"
+    extra = getattr(account, "extra", None) or {}
+    return (
+        index,
+        account.id,
+        (extra.get("fb_name") or extra.get("name") or "—"),
+        (getattr(account, "note", "") or "").replace(chr(10), " ")[:120] or "—",
+        proxy,
+        getattr(account, "group", "") or "—",
+        getattr(account, "status", "") or "Chưa rõ",
+    )
+
+
+class AccountManagerDialog(BaseDialog):
+    """Cua so QUAN LY ACC cho cac acc mot tab dang dung (Auto dang nhom/fanpage, Tao fanpage).
+
+    Bang 7 cot: STT · UID acc · Name acc · Ghi chú · Proxy · Nhóm · Tình trạng acc.
+    Double-click o Ghi chú -> sua ghi chu ngay; nut "Mo tab Quan ly acc" -> nhay sang tab chinh
+    va chon dung cac acc nay de sua sau hon. ``accounts`` = list Account (thu tu giu nguyen).
+    """
+
+    def __init__(self, app, accounts: list, tieu_de: str = "Quản lý acc", *,
+                 lay_accs=None, on_them=None, on_xoa=None, tinh_trang=None):
+        """``lay_accs``: callable -> list Account (doc lai sau khi them/bo); ``on_them``: callable() mo
+        picker them acc; ``on_xoa``: callable(list id) bo acc khoi tab; ``tinh_trang``: callable(id) -> chu
+        noi them vao cot Tinh trang (vd trang thai job: checkpoint/bo/loi)."""
+        super().__init__(app, f"{tieu_de} ({len(accounts)} acc)", 1000, 560)
+        self.minsize(760, 380)
+        self.app = app
+        self.accounts = list(accounts)
+        self._lay_accs = lay_accs
+        self._on_them = on_them
+        self._on_xoa = on_xoa
+        self._tinh_trang = tinh_trang
+
+        top = ctk.CTkFrame(self, fg_color="transparent")
+        top.pack(fill="x", padx=PAD, pady=(PAD, 4))
+        ctk.CTkLabel(top, text="Double-click ô Ghi chú để sửa · double-click dòng khác để mở acc ở tab Quản lý acc.",
+                     text_color="gray60").pack(side="left")
+        ctk.CTkButton(top, text="🔄 Làm mới", width=90, command=self.refresh).pack(side="right")
+        ctk.CTkButton(top, text="📋 Mở tab Quản lý acc", width=170,
+                      command=lambda: self._mo_tab_chinh(None)).pack(side="right", padx=6)
+        if on_them is not None:
+            ctk.CTkButton(top, text="➕ Thêm acc", width=100, command=self._them).pack(side="right", padx=(0, 6))
+        if on_xoa is not None:
+            ctk.CTkButton(top, text="🗑 Bỏ acc đã chọn", width=130, fg_color="#a33",
+                          command=self._xoa).pack(side="right", padx=(0, 6))
+
+        wrap = ctk.CTkFrame(self)
+        wrap.pack(fill="both", expand=True, padx=PAD, pady=(0, 4))
+        self.tree = ttk.Treeview(wrap, columns=[c[0] for c in QLACC_COLUMNS], show="headings",
+                                 style="Accounts.Treeview", selectmode="extended")
+        for k, t, w, a in QLACC_COLUMNS:
+            self.tree.heading(k, text=t)
+            self.tree.column(k, width=w, minwidth=40, anchor=a, stretch=(k != "stt"))
+        sb = ttk.Scrollbar(wrap, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=sb.set)
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        sb.grid(row=0, column=1, sticky="ns")
+        wrap.grid_rowconfigure(0, weight=1)
+        wrap.grid_columnconfigure(0, weight=1)
+        self.tree.bind("<Double-1>", self._double)
+
+        self.count_label = ctk.CTkLabel(self, text="", text_color="gray60")
+        self.count_label.pack(anchor="w", padx=PAD)
+        ctk.CTkButton(self, text="Đóng", width=100, fg_color="gray35",
+                      command=self._cancel).pack(side="right", padx=PAD, pady=(0, PAD))
+        self.refresh()
+
+    def refresh(self) -> None:
+        if self._lay_accs is not None:
+            try:
+                self.accounts = [a for a in self._lay_accs() if a is not None]
+            except Exception:  # noqa: BLE001
+                pass
+        self.tree.delete(*self.tree.get_children())
+        for i, acc in enumerate(self.accounts, start=1):
+            row = list(qlacc_row(i, acc))
+            if self._tinh_trang is not None:
+                try:
+                    them = self._tinh_trang(acc.id) or ""
+                except Exception:  # noqa: BLE001
+                    them = ""
+                if them:
+                    row[6] = f"{row[6]} {them}".strip()
+            self.tree.insert("", "end", iid=acc.id, values=tuple(row))
+        self.count_label.configure(text=f"{len(self.accounts)} acc")
+        try:
+            self.title(self.title().split(" (")[0] + f" ({len(self.accounts)} acc)")
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _them(self) -> None:
+        if self._on_them is None:
+            return
+        self._on_them()
+        self.refresh()
+
+    def _xoa(self) -> None:
+        if self._on_xoa is None:
+            return
+        ids = list(self.tree.selection())
+        if not ids:
+            messagebox.showinfo("Bỏ acc", "Chọn acc trong bảng trước.", parent=self)
+            return
+        if not messagebox.askyesno("Bỏ acc", f"Bỏ {len(ids)} acc khỏi tab này? (acc vẫn còn trong Quản lý acc)", parent=self):
+            return
+        self._on_xoa(ids)
+        self.refresh()
+
+    def _acc(self, iid: str):
+        for a in self.accounts:
+            if a.id == iid:
+                return a
+        return None
+
+    def _double(self, event) -> None:
+        iid = self.tree.identify_row(event.y)
+        if not iid:
+            return
+        col = self.tree.identify_column(event.x)          # "#4" = Ghi chu
+        if col == "#4":
+            acc = self._acc(iid)
+            if acc is None:
+                return
+            moi = SimplePromptDialog(self, "Ghi chú", f"Ghi chú cho {acc.id}:", initial=acc.note or "").show()
+            if moi is None:
+                return
+            acc.note = moi
+            try:
+                self.app.store.save()
+            except Exception:  # noqa: BLE001
+                pass
+            self.refresh()
+            try:
+                self.app.refresh()
+            except Exception:  # noqa: BLE001
+                pass
+            return
+        self._mo_tab_chinh([iid])
+
+    def _mo_tab_chinh(self, ids) -> None:
+        """Nhay sang tab Quan ly acc va chon cac acc (mac dinh: het acc trong cua so)."""
+        ids = list(ids) if ids else [a.id for a in self.accounts]
+        try:
+            self.app.tabs.set("📋 Quản lý acc")
+            acc_tabs = getattr(self.app, "acc_tabs", None)
+            if acc_tabs is not None:
+                acc_tabs.set("📘 Facebook")      # acc cua cac tab dang bai la acc Facebook
+            tree = self.app.tree
+            co = [i for i in ids if tree.exists(i)]
+            tree.selection_set(co)
+            if co:
+                tree.see(co[0])
+        except Exception:  # noqa: BLE001
+            pass
+        self._cancel()

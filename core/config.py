@@ -68,6 +68,10 @@ DEFAULT_PAF = os.path.join(EXTENSION_DIR, "FirefoxPortable_154.0.1_English.paf.e
 SETTINGS_PATH = os.path.join(TOOL_DIR, "data", "settings.json")
 ACCOUNTS_PATH = os.path.join(TOOL_DIR, "data", "accounts.json")
 
+# Thu muc tam NAM TRONG tool (khong dung temp he thong): file .part cua yt-dlp,
+# cookie Netscape tam, media tai thu... de gon mot cho, de don va khong ranh temp OS.
+TEMP_DIR = os.path.join(TOOL_DIR, "data", "temp")
+
 APP_FOLDER_NAME = "FirefoxPortable"
 LAUNCHER_NAME = "FirefoxPortable.exe"
 
@@ -101,11 +105,23 @@ class Settings:
     start_url: str = "https://www.facebook.com/"
     #: Khi mo profile, tu nap cookie da luu neu profile chua dang nhap san.
     auto_login_cookie: bool = True
+    #: Tool tu mo cung Windows (muc HKCU Run). Cong tac goc duoi trai; MAC DINH BAT.
+    mo_cung_windows: bool = True
+    #: Thu muc luu anh/video khi quet bai nhom. Rong = data/post_media canh tool.
+    scan_save_dir: str = ""
     #: Gia mui gio bang cach TIEM JS vao trang. BAT mac dinh vi Firefox tren
     #: Windows chi nhan bien moi truong TZ voi dung 5 gia tri co dinh (UTC,
     #: EST5EDT, CST6CDT, MST7MDT, PST8PDT -- da do bang cach thu 40 gia tri).
     #: Khong bat thi proxy ngoai My se de lo mui gio that cua may.
     use_tz_shim: bool = True
+    #: Tai khoan NordVPN dung chung khi cai addon NordVPN cho acc X (luu de dien san).
+    nordvpn_user: str = ""
+    nordvpn_pass: str = ""
+    #: Vi tri NordVPN mac dinh khi cai (nguoi dung doi duoc). Bang rong = de NordVPN tu chon.
+    nordvpn_country: str = "United States"
+    nordvpn_state: str = "New York"
+    #: O "Luong" RIENG cua tab X.com (so acc X chay cung luc). Nguoi dung chot mac dinh 2.
+    x_threads: int = 2
 
     @classmethod
     def load(cls) -> "Settings":

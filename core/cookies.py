@@ -214,7 +214,14 @@ def write_to_profile(profile_dir: str, cookies: list[Cookie], replace_all: bool 
             raise CookieError("cookies.sqlite không có bảng moz_cookies.")
 
         if replace_all:
-            connection.execute("DELETE FROM moz_cookies")
+            # CHI xoa cookie thuoc cac domain dang ghi (vd facebook.com + subdomain). Truoc day
+            # DELETE het moi domain -> mat ca phien cac site khac; va day la buoc "ghi de" nen
+            # phai goi khi da chac profile khong giu phien moi hon (core/phien.so_phien).
+            for goc in {c.normalized_host().lstrip(".") for c in cookies if c.normalized_host()}:
+                connection.execute(
+                    "DELETE FROM moz_cookies WHERE host = ? OR host = ? OR host LIKE ?",
+                    (goc, "." + goc, "%." + goc),
+                )
 
         scale = expiry_scale(connection, columns)
         now_us = int(time.time() * 1_000_000)

@@ -93,7 +93,9 @@ class ProfileManager:
         return os.path.isfile(os.path.join(self.profile_dir(account), "cookies.sqlite"))
 
     def is_running(self, account: Account) -> bool:
-        return bool(procutil.find_under(self.app_dir(account), "firefox.exe"))
+        # use_cache: goi hang loat (moi acc mot lan) tren luong giao dien -> dung
+        # chung mot anh chup tien trinh, tranh treo khi co nhieu acc.
+        return bool(procutil.find_under(self.app_dir(account), "firefox.exe", use_cache=True))
 
     # ---- tao profile --------------------------------------------------
     def create(
@@ -504,6 +506,7 @@ class ProfileManager:
             label=account.folder,
             identity=account.get_identity(),
             use_shim=getattr(self.settings, "use_tz_shim", False),
+            user_agent=(account.extra.get("user_agent") or "").strip(),
         )
         # Moi profile mot icon rieng tren thanh tac vu (khong gom chung).
         self._set_taskbar_id(account)
@@ -580,6 +583,31 @@ class ProfileManager:
             return None
         return bool(data.get("ok")), bool(data.get("final"))
 
+    def read_login_probe_why(self, account: Account) -> str:
+        """Truong ``why`` cua ket qua tham do (vd URL checkpoint/login) -- de bao ly do cookie chet."""
+        try:
+            with open(self.login_probe_path(account), encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            return ""
+        return str(data.get("why") or "") if isinstance(data, dict) else ""
+
+    def read_probe_cookies(self, account: Account) -> str:
+        """Chuoi cookie facebook do trinh duyet tu bao ra khi thay dang nhap.
+
+        Rong neu chua co ket qua, ket qua bao "chet", hoac probe doi cu chua kem
+        cookie. Dung de LAY LAI cookie sau khi nguoi dung dang nhap tay: doc kho
+        cookie trong bo nho nen moi ngay, khong dinh do tre ghi cookies.sqlite.
+        """
+        try:
+            with open(self.login_probe_path(account), encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            return ""
+        if not isinstance(data, dict) or not data.get("ok"):
+            return ""
+        return str(data.get("cookies") or "")
+
     def verify_cookie_login(
         self,
         account: Account,
@@ -609,6 +637,11 @@ class ProfileManager:
             if probe is not None:
                 vao_duoc, da_chot = probe
                 if not vao_duoc:
+                    # Checkpoint MEM: agent fbskip dang bam "Bo qua" -> cho trang chuyen tiep
+                    # (probe se bao lai ok). Het gio van checkpoint -> chet.
+                    if "checkpoint" in self.read_login_probe_why(account).lower() and time.time() < deadline:
+                        time.sleep(0.5)
+                        continue
                     return False        # chac chan chet -> khoi cho them
                 if da_chot:
                     return True         # da xem lai mot lan nua -> vao duoc that
@@ -756,7 +789,8 @@ class ProfileManager:
             raise ProfileError("Khởi tạo profile không thành công (chưa thấy cookies.sqlite).")
         status("Khởi tạo xong.")
 
-    def launch(self, account: Account, url: str = "") -> subprocess.Popen:
+    def launch(self, account: Account, url: str = "",
+               on_status: Optional[Callable[[str], None]] = None) -> subprocess.Popen:
         """Mo profile bang cach chay THANG firefox.exe (khong qua launcher).
 
         Vi sao khong qua FirefoxPortable.exe: launcher ghi de gia tri TaskBarID
@@ -766,13 +800,18 @@ class ProfileManager:
         rieng (xem _set_taskbar_id) va tach thanh icon rieng.
 
         ``url`` (neu co) mo thang tab do khi khoi dong (vd vao Facebook).
+
+        Acc CHUA co profile -> TU DONG tao roi mo (yeu cau nguoi dung 2026-09-17):
+        mo profile / dang nhap cookie|web / bat chuyen nghiep / dang bai / tao
+        fanpage deu tu tao profile khi thieu; da co thi chay binh thuong.
         """
+        if not self.is_installed(account):
+            if on_status:
+                on_status(f"Acc {account.id}: chưa có profile — tự tạo trước khi mở...")
+            self.create(account, on_status=on_status)
+
         exe = self.firefox_exe(account)
         if not exe:
-            if not self.is_installed(account):
-                raise ProfileError(
-                    f"Chưa có profile cho acc '{account.id}'. Bấm 'Tạo profile' trước."
-                )
             raise ProfileError(f"Không tìm thấy firefox.exe trong {self.app_dir(account)}.")
 
         self.configure(account)          # ghi mozilla.cfg, ini, AUMID rieng...
@@ -789,6 +828,29 @@ class ProfileManager:
         # HANH chu khong doc TZ; ep TZ chi lam Firefox bao mot mui gio tong hop
         # kieu "Etc/GMT-7" -- gia tri gan nhu khong nguoi that nao co, thanh ra
         # lai LO hon. De trong thi Firefox bao mui gio OS sach (vd Asia/Ho_Chi_Minh).
+        procutil.clear_snapshot_cache()     # trang thai "▶" tuoi ngay sau khi mo
+        return subprocess.Popen(args, cwd=os.path.dirname(exe))
+
+    def launch_debug(self, account: Account, url: str, port: int,
+                     on_status: Optional[Callable[[str], None]] = None) -> subprocess.Popen:
+        """Mo profile kem cong WebDriver BiDi (--remote-debugging-port) de tool
+        chay JS boc bai nhom. Dong phien cu truoc vi 1 profile chi chay 1 instance.
+
+        Acc chua co profile -> tu dong tao truoc khi mo (nhu ``launch``)."""
+        if not self.is_installed(account):
+            if on_status:
+                on_status(f"Acc {account.id}: chưa có profile — tự tạo trước khi mở...")
+            self.create(account, on_status=on_status)
+        exe = self.firefox_exe(account)
+        if not exe:
+            raise ProfileError(f"Không tìm thấy firefox.exe cho acc '{account.id}'.")
+        self.close(account, wait=3.0)
+        self.configure(account)
+        self._set_taskbar_id(account)
+        profile = self.profile_dir(account)
+        args = [exe, "-no-remote", "-profile", profile,
+                "--remote-debugging-port", str(port), url]
+        procutil.clear_snapshot_cache()     # trang thai "▶" tuoi ngay sau khi mo
         return subprocess.Popen(args, cwd=os.path.dirname(exe))
 
     def close(self, account: Account, wait: float = 0.0) -> int:
@@ -802,6 +864,28 @@ class ProfileManager:
         self.relays.stop(account.id)
         if wait > 0:
             self.wait_closed(account, wait)
+        procutil.clear_snapshot_cache()     # trang thai "▶" tuoi ngay sau khi dong
+        return killed
+
+    def running_count(self) -> int:
+        """So tien trinh firefox.exe dang chay tu thu muc profile cua tool."""
+        return len(procutil.find_under(self.settings.profiles_root, "firefox.exe"))
+
+    def close_all(self, wait: float = 10.0) -> int:
+        """Ket lieu MOI Firefox do tool mo, khong can biet cua acc nao.
+
+        Quet theo thu muc goc chu khong duyet tung acc: nhanh hon, va don duoc ca
+        profile co tren dia ma khong con trong bang.
+        """
+        root = self.settings.profiles_root
+        killed = procutil.terminate_under(root, "firefox.exe")
+        self.relays.stop_all()
+        deadline = time.time() + wait
+        while procutil.find_under(root, "firefox.exe"):
+            if time.time() >= deadline:
+                break
+            procutil.terminate_under(root, "firefox.exe")   # tien trinh con moi sinh
+            time.sleep(0.25)
         return killed
 
     def wait_closed(self, account: Account, timeout: float = 10.0) -> bool:

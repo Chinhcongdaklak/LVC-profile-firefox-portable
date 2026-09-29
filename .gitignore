@@ -25,3 +25,18 @@ __pycache__/
 *.pyo
 .venv/
 venv/
+
+# congcode2 (bo dieu khien SDLC): trang thai + anh bang chung khong commit
+.congcode2/state.json
+.congcode2/anh/
+
+# Ban sao cu (3GB), khong dua len git
+backup ban cu/
+
+# Ghi chu + thuoc noi bo (co UID acc test) -- khong dua len repo cong khai
+.congcode/
+.congcode2/
+content/
+
+# Profile Firefox cua acc X (cookie, phien dang nhap) -- TUYET DOI khong dua len git.
+profile_x/

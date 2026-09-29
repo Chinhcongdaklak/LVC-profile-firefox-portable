@@ -26,6 +26,8 @@ from core import licensing
 from core.licensing import LicenseClient, Vault
 
 PAD = 8
+#: Mat mang luc tu dang nhap bang phien da luu -> cho bay nhieu giay roi thu lai.
+AUTO_LOGIN_THU_LAI_GIAY = 30
 
 
 class LoginWindow(ctk.CTkToplevel):
@@ -366,6 +368,15 @@ class LoginWindow(ctk.CTkToplevel):
         def done(result: dict) -> None:
             if result.get("success"):
                 self._finish(result.get("license", {}), remember_session=True)
+                return
+            if result.get("mang"):
+                # MAT MANG luc mo tool (vd mo cung Windows khi mang chua len): GIU
+                # phien va TU THU LAI -- khong thi tool dung o man dang nhap mai mai,
+                # trang dat lich/auto dang khong bao gio chay. Van KHONG cho chay offline.
+                self._set_status(
+                    f"{result.get('message', 'Mất mạng.')} Tự thử lại sau "
+                    f"{AUTO_LOGIN_THU_LAI_GIAY} giây...", "#c48a1a")
+                self.after(AUTO_LOGIN_THU_LAI_GIAY * 1000, self._try_auto_login)
                 return
             # Phien cu khong dung nua: bo di de lan sau khong thu lai vo ich,
             # nhung giu tai khoan/key da go de nguoi dung khong phai nhap lai.

@@ -2,25 +2,30 @@
 
 from __future__ import annotations
 
-import ipaddress
+import inspect
 import os
 import queue
 import re
 import subprocess
+import sys
 import threading
 import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
-from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Optional
 
 import customtkinter as ctk
 
 from core import config
 from core import cookies as cookie_module
-from core import geoip
 from core import licensing
 from core import proxy as proxy_module
+from core import autostart
+from core import autoup as autoup_module
+from core import fbbusiness
+from core import fblocale
+from core import fbpage
+from core import fbupload
 from core import store as store_module
 from core import totp
 from core.config import Settings
@@ -30,10 +35,10 @@ from core.proxy_relay import RelayManager, test_proxy
 from core.store import Account, AccountStore, STATUSES
 
 from . import login
+from .autoup_tab import AutoUpTab
 from .dialogs import (
     AccountDialog,
     ColumnDialog,
-    AccountPickerDialog,
     BulkImportDialog,
     BulkProxyDialog,
     CookieDialog,
@@ -47,6 +52,10 @@ from .dialogs import (
 )
 
 PAD = 8
+
+#: Nhan hai che do giao dien tren thanh tieu de.
+SANG = "☀ Sáng"
+TOI = "🌙 Tối"
 DETAIL_WIDTH = 340   # be ngang bang thong tin acc ben phai
 
 # Treeview va tk.Menu khong tu doi mau theo customtkinter, phai to tay.
@@ -92,6 +101,7 @@ COLUMNS = (
     ("cookie", "Cookie", 80, "center"),
     ("running", "Đang chạy", 85, "center"),
     ("status", "Trạng thái", 95, "center"),
+    ("pro", "Chuyên nghiệp", 105, "center"),
     ("proxy", "Proxy", 210, "w"),
     ("note", "Ghi chú", 220, "w"),
     ("identity", "Múi giờ / Ngôn ngữ", 200, "w"),
@@ -123,19 +133,126 @@ class App(ctk.CTk):
         self.store = AccountStore()
         self.relays = RelayManager()
         self.manager = ProfileManager(self.settings, self.relays)
+        # Nap REGISTRY MO-DUN (ADR-028): moi chuc nang la 1 mo-dun trong core/modun,
+        # tool goi theo ma qua App.goi_modun. Them mo-dun = them 1 file, khong sua App.
+        try:
+            from core.modun import tat_ca as _modun_tat_ca
+            _modun_tat_ca.nap()
+        except Exception as exc:  # noqa: BLE001 - registry hong khong duoc lam tool khong mo
+            print("nap mo-dun loi:", exc)
 
         self._events: queue.Queue = queue.Queue()
-        self._busy = False
+        # Khoa theo TUNG ACC (khong con _busy toan tool): tac vu tren acc khac nhau
+        # chay song song, chi chan khi trung acc dang ban. _busy_accs = id acc dang
+        # co tac vu chay; _task_count = so tac vu dang chay (de an/hien thanh tien trinh).
+        self._busy_accs: set = set()
+        self._busy_lock = threading.Lock()
+        self._task_count = 0
         self._show_secrets = tk.BooleanVar(value=True)
         self._rows: list[Account] = []
         self._menus: list[tk.Menu] = []
 
-        self._build_header()
+        # Bo canh gio tu dang video. Tao TRUOC khi dung tab vi tab doc no ra.
+        self.autoup = autoup_module.AutoUpManager(
+            os.path.dirname(self.store.path), log=lambda m: self._post(
+                lambda: self.set_status(m[:160])))
+        self._wire_uploader()
 
-        self._build_toolbar(self)
-        self._build_table(self)
-        self._build_detail()
+        # Auto dang X: manager RIENG (data/x_autoup) -> job X khong tron voi job Facebook.
+        # platform="x": job nhan ca anh/bai chu (effective_kind "auto"), khong lay ten
+        # file lam noi dung, va JobPanel hien hang "Dang len" kieu X.
+        self.autoup_x = autoup_module.AutoUpManager(
+            os.path.join(os.path.dirname(self.store.path), "x_autoup"),
+            log=lambda m: self._post(lambda: self.set_status(m[:160])),
+            platform="x")
+        self._wire_uploader_x()
+
+        # Don muc "Firefox tu khoi dong cung Windows" do cac profile tu ghi vao.
+        # Khong hoi han gi: de nguyen thi bat may len la ca chuc cua so tu mo.
+        self._clean_autostart(quiet=True)
+
+        self._build_header()
+        # Thanh tieu de va thanh trang thai nam ngoai tab (chung cho ca hai tab).
         self._build_statusbar()
+
+        self.tabs = ctk.CTkTabview(self, anchor="w")
+        self.tabs.pack(fill="both", expand=True, padx=PAD, pady=(0, 4))
+        tab_acc = self.tabs.add("📋 Quản lý acc")
+        tab_page = self.tabs.add("🎬 Auto đăng fanpage")
+        tab_group = self.tabs.add("👥 Auto đăng nhóm")
+        tab_x_dang = self.tabs.add("🐦 Auto đăng X")
+        # Lan 4 (ADR-009): tab "Quet bai nhom" cu bo; tab Thu nghiem AI doi ten thanh
+        # "Quet bai" -- quet -> gui vao Auto dang nhom -> xao o do -> dang theo lich.
+        tab_ailab = self.tabs.add("🔎 Quét bài")
+        tab_chat = self.tabs.add("💬 Nhắn tin AI")
+        tab_create = self.tabs.add("🏗 Tạo fanpage")
+        tab_tuongtac = self.tabs.add("🤝 Tương tác")
+        tab_rename = self.tabs.add("✏️ Đổi tên file")
+        tab_xoabai = self.tabs.add("🗑 Xoá bài viết")
+
+        # "Quan ly acc" co HAI TAB CON: Facebook (bang acc nhu cu) va X.com (danh
+        # sach acc + thu muc profile RIENG, khong tron voi acc Facebook).
+        from .x_acc_tab import XAccTab, X_TAB_TITLE
+        self.acc_tabs = ctk.CTkTabview(tab_acc, anchor="w")
+        self.acc_tabs.pack(fill="both", expand=True)
+        tab_fb = self.acc_tabs.add("📘 Facebook")
+        tab_x = self.acc_tabs.add(X_TAB_TITLE)
+        self._build_toolbar(tab_fb)
+        self._build_table(tab_fb)
+        self._build_detail()
+        self.x_acc_tab = XAccTab(tab_x, self)
+        self.x_acc_tab.pack(fill="both", expand=True)
+        self.acc_tabs.set("📘 Facebook")
+        # "Auto dang fanpage" co HAI TAB CON: Cong khai (dang ngay) va Dat lich
+        # (hen gio). Cung la AutoUpTab, chi khac loai trang -> danh sach trang
+        # RIENG cho tung tab con, khong tron vao nhau.
+        self.fanpage_tabs = ctk.CTkTabview(tab_page, anchor="w")
+        self.fanpage_tabs.pack(fill="both", expand=True)
+        tab_congkhai = self.fanpage_tabs.add("🌐 Công khai")
+        tab_datlich = self.fanpage_tabs.add("🕒 Đặt lịch")
+        self.autoup_tab = AutoUpTab(tab_congkhai, self, kind="page")
+        self.autoup_tab.pack(fill="both", expand=True)
+        self.thu_lich_tab = AutoUpTab(tab_datlich, self, kind="lich")
+        self.thu_lich_tab.pack(fill="both", expand=True)
+        self.fanpage_tabs.set("🌐 Công khai")
+        self.group_tab = AutoUpTab(tab_group, self, kind="group")
+        self.group_tab.pack(fill="both", expand=True)
+        # "Auto dang X" giong het "Auto dang fanpage": 2 tab con Cong khai + Dat lich.
+        # Dung manager RIENG self.autoup_x -> job X khong tron voi job Facebook.
+        self.x_fanpage_tabs = ctk.CTkTabview(tab_x_dang, anchor="w")
+        self.x_fanpage_tabs.pack(fill="both", expand=True)
+        x_congkhai = self.x_fanpage_tabs.add("🌐 Công khai")
+        x_datlich = self.x_fanpage_tabs.add("🕒 Đặt lịch")
+        # Chon acc tu tab Quan ly acc X (store + profile RIENG cua X, khong dinh acc FB).
+        self.x_autoup_tab = AutoUpTab(x_congkhai, self, kind="page", manager=self.autoup_x,
+                                      acc_store=self.x_acc_tab.store,
+                                      profiles=self.x_acc_tab.manager)
+        self.x_autoup_tab.pack(fill="both", expand=True)
+        self.x_lich_tab = AutoUpTab(x_datlich, self, kind="lich", manager=self.autoup_x,
+                                    acc_store=self.x_acc_tab.store,
+                                    profiles=self.x_acc_tab.manager)
+        self.x_lich_tab.pack(fill="both", expand=True)
+        self.x_fanpage_tabs.set("🌐 Công khai")
+        from .ai_lab_tab import AiLabTab
+        self.ai_lab_tab = AiLabTab(tab_ailab, self)
+        self.ai_lab_tab.pack(fill="both", expand=True)
+        from .chat_tab import ChatTab
+        self.chat_tab = ChatTab(tab_chat, self)
+        self.chat_tab.pack(fill="both", expand=True)
+        from .create_page_tab import CreatePageTab
+        self.create_page_tab = CreatePageTab(tab_create, self)
+        self.create_page_tab.pack(fill="both", expand=True)
+        from .tuong_tac_tab import TuongTacTab
+        self.tuong_tac_tab = TuongTacTab(tab_tuongtac, self)
+        self.tuong_tac_tab.pack(fill="both", expand=True)
+        from .rename_tab import RenameTab
+        self.rename_tab = RenameTab(tab_rename, self)
+        self.rename_tab.pack(fill="both", expand=True)
+        from .xoa_bai_tab import XoaBaiTab
+        self.xoa_bai_tab = XoaBaiTab(tab_xoabai, self)
+        self.xoa_bai_tab.pack(fill="both", expand=True)
+        self.autoup.start()
+        self.autoup_x.start()
         self._apply_theme()
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -191,6 +308,258 @@ class App(ctk.CTk):
         except Exception:
             pass
 
+    def _clean_autostart(self, quiet: bool = False) -> None:
+        """Xoa muc "Firefox tu khoi dong cung Windows" ma cac profile tu ghi vao.
+
+        Firefox 154 tu ghi mot muc vao registry Run cho MOI profile no chay lan
+        dau. Tool tao 20 acc la 20 muc -> bat may len 20 cua so Firefox cung mo.
+        Da chan bang lockPref trong mozilla.cfg cho profile moi; ham nay don
+        nhung cai da bi ghi tu truoc. Chay moi lan mo tool, khong hoi gi.
+        """
+        try:
+            da_xoa = autostart.clean(self.settings.profiles_root)
+        except Exception:
+            return                      # registry hong thi thoi, khong chan tool
+        if quiet:
+            if da_xoa:
+                self._post(lambda: self.set_status(
+                    f"Đã bỏ {len(da_xoa)} mục Firefox tự khởi động cùng Windows."))
+            return
+
+        khac = autostart.others(self.settings.profiles_root)
+        phan = [f"Đã bỏ {len(da_xoa)} mục tự khởi động của các profile trong tool."]
+        if khac:
+            ten = chr(10).join("  " + e.path for e in khac[:10])
+            phan.append("Còn những mục này KHÔNG phải của tool nên tôi không đụng vào:"
+                        + chr(10) + ten)
+            phan.append("Muốn bỏ thì xoá tay trong Task Manager > Startup apps.")
+        messagebox.showinfo("Dọn tự khởi động",
+                            (chr(10) * 2).join(phan), parent=self)
+
+    def _wire_uploader(self) -> None:
+        """Cai cach dang cho TUNG cong viec: Graph API, hoac qua trinh duyet."""
+
+        def factory(job):
+            def dang(path: str, caption: str) -> str:
+                cfg = job.config
+                # Acc dang LUOT NAY -- co the la acc2 khi dang luan phien.
+                acc_id = job.pick_account()
+                # Gan MAU TUONG TAC -> xem reel + like TRUOC khi dang (khong dung delay cua tab).
+                mau = getattr(cfg, "tuong_tac_mau", None)
+                if mau and acc_id:
+                    acc_tt = self.store.get(acc_id)
+                    if acc_tt is not None:
+                        from core import tuong_tac_mau as _ttm
+                        try:
+                            _ttm.chay_truoc(self.manager, acc_tt, mau,
+                                            log=lambda m: self.set_status(m))
+                        except Exception as exc:  # noqa: BLE001
+                            self.set_status(f"Tương tác trước khi đăng lỗi (bỏ qua): {exc}")
+                if cfg.is_group:
+                    return self._upload_to_group(cfg, path, caption, acc_id)
+                if not cfg.page_id:
+                    raise fbupload.UploadError("Chưa nhập ID fanpage.")
+                if cfg.is_lich:
+                    # Trang ĐẶT LỊCH: không đăng ngay — hẹn bài vào giờ của khung.
+                    hen = job.lich_gio_hen()
+                    if not hen:
+                        raise fbupload.UploadError(
+                            "Trang đặt lịch nhưng không đọc được giờ hẹn của khung.")
+                    return self._upload_via_browser(cfg, path, caption, acc_id, lich=hen)
+                if cfg.method == "browser":
+                    return self._upload_via_browser(cfg, path, caption, acc_id)
+                return fbupload.upload_video(cfg.page_id, cfg.token, path,
+                                             description=caption)
+            return dang
+
+        self.autoup.set_uploader_factory(factory)
+
+        def kham(job):
+            """Kham sang: mo composer cua trang nay xem giao dien con quen khong."""
+            cfg = job.config
+            acc_id = job.pick_account()
+            acc = self.store.get(acc_id) if acc_id else None
+            if acc is None:
+                return False, "chưa chọn acc"
+            if not self.manager.is_installed(acc):
+                return False, f"acc {acc.id} chưa có profile"
+            asset = self._resolve_page(cfg, acc)
+            return fbbusiness.health_check(self.manager, acc, asset)
+
+        self.autoup.canary = kham
+
+    def _wire_uploader_x(self) -> None:
+        """Cach dang cho job X: mo Firefox profile X cua acc, agent xpost dien
+        composer x.com/home roi bam Dang (core/xpost.py).
+
+        Acc lay tu tab Quan ly acc X. Ham nay chay LUC KHOI TAO, truoc khi
+        x_acc_tab ton tai -> phai voi toi x_acc_tab LUOI, ben trong dang().
+        """
+        def factory(job):
+            def dang(path: str, caption: str) -> str:
+                tab = getattr(self, "x_acc_tab", None)
+                if tab is None:
+                    raise fbupload.UploadError("Tab Quản lý acc X chưa sẵn sàng.")
+                if job.config.is_lich:
+                    raise fbupload.UploadError(
+                        "Tab Đặt lịch X chưa hỗ trợ — X không có Business Suite. "
+                        "Dùng tab Công khai: mốc giờ / giãn cách phút chính là lịch đăng.")
+                acc_id = job.pick_account()
+                if not acc_id:
+                    raise fbupload.UploadError("Chưa chọn acc X cho trang này.")
+                acc = tab.store.get(acc_id)
+                if acc is None:
+                    raise fbupload.UploadError(
+                        f"Acc X {acc_id} không còn trong bảng Quản lý acc X.")
+                from core import xpost
+                return xpost.upload(tab.manager, acc, path, caption,
+                                    log=lambda m: self.set_status(m[:160]))
+            return dang
+        self.autoup_x.set_uploader_factory(factory)
+
+    def _upload_to_group(self, cfg, path: str, caption: str,
+                         account_id: str = "") -> str:
+        """Dang video vao mot nhom Facebook bang acc da chon."""
+        if not cfg.group_id:
+            raise fbupload.UploadError("Chưa dán link nhóm.")
+        acc_id = account_id or cfg.account_id
+        acc = self.store.get(acc_id) if acc_id else None
+        if acc is None:
+            raise fbupload.UploadError("Chưa chọn acc đăng.")
+        if not self.manager.is_installed(acc):
+            raise fbupload.UploadError(f"Acc {acc.id} chưa có profile.")
+
+        # Giao dien tieng la thi cac buoc khong con giong nhung gi da do.
+        fblocale.ensure_supported(acc, self.manager.profile_dir(acc))
+        self.store.save()
+        # GOP nhieu media 1 bai + uu tien BAN XAO (anh da xao thay anh goc):
+        # _gather_medias tra [file_chinh, ...]; [0] moi la file chinh thuc su (co
+        # the la anh da xao, khong phai ``path`` goc).
+        medias = self._gather_medias(path)
+        primary = medias[0] if medias else path
+        from core import reauth
+
+        def _dang_nhom():
+            # Acc bị logout khi đăng nhóm -> tự đăng nhập lại (cookie -> web) rồi đăng lại.
+            return reauth.chay_lai_neu_logout(
+                self.manager, acc,
+                lambda: fbbusiness.upload_group(
+                    self.manager, acc, cfg.group_id, primary, caption=caption,
+                    kind=fbupload.kind_of(primary),   # tu nhan dien: video / anh / chu
+                    publish=True, log=lambda m: None,
+                    medias=medias if len(medias) > 1 else None),
+                store=self.store, settings=self.settings,
+                log=lambda m: self.set_status(f"{acc.id}: {m}"))
+
+        try:
+            # Giao dien dang o thu tieng la -> doi sang tieng Anh roi dang lai.
+            return fblocale.chay_lai_neu_la_ngon_ngu(
+                self.manager, acc, _dang_nhom,
+                log=lambda m: self.set_status(f"{acc.id}: {m}"))
+        except fbbusiness.BusinessError as exc:
+            raise fbupload.UploadError(str(exc)) from exc
+
+    @staticmethod
+    def _gather_medias(path: str) -> list:
+        """Danh sach media cua mot bai. [0] = file CHINH (video_path), [] = 1 file thuong.
+
+        Uu tien BAN XAO: neu co '<base>_xao/' (AI) thi dung ANH DA XAO (video giu
+        nguyen). Khong thi dung '<base>_media/' (album/anh kem video goc).
+        """
+        from core import fbupload
+        base = os.path.splitext(path)[0]
+
+        def files_in(folder, skip=()):
+            out = []
+            try:
+                for name in sorted(os.listdir(folder)):
+                    if name in skip:
+                        continue
+                    fp = os.path.join(folder, name)
+                    if os.path.isfile(fp):
+                        out.append(fp)
+            except OSError:
+                pass
+            return out
+
+        xao = base + "_xao"
+        if os.path.isdir(xao):
+            imgs = [f for f in files_in(xao, skip=("caption.txt",))
+                    if not fbupload.is_text(f)]
+            if fbupload.kind_of(path) == "video":
+                return [path, *imgs] if imgs else []      # video goc + anh da xao
+            return imgs if imgs else []                   # anh da xao thay anh goc
+
+        sub = base + "_media"
+        if os.path.isdir(sub):
+            extras = files_in(sub)
+            return [path, *extras] if extras else []
+        return []
+
+    def _upload_via_browser(self, cfg, path: str, caption: str,
+                            account_id: str = "", lich=None) -> str:
+        """Dang qua business.facebook.com bang chinh acc da chon.
+
+        ``lich`` khac None -> KHONG dang ngay ma bat "Đặt lịch" + hen dung gio.
+        """
+        acc_id = account_id or cfg.account_id
+        acc = self.store.get(acc_id) if acc_id else None
+        if acc is None:
+            raise fbupload.UploadError(
+                "Chưa chọn acc — cách đăng qua Business Suite cần phiên đăng nhập.")
+        if not self.manager.is_installed(acc):
+            raise fbupload.UploadError(f"Acc {acc.id} chưa có profile.")
+
+        # Cookie `locale` KHONG quyet dinh ngon ngu (da do that: cookie vi_VN ma
+        # giao dien la es/he) -> chi sua cookie cho dong bo, con ngon ngu THAT do
+        # agent kiem ngay tren trang va bao "NGÔN NGỮ LẠ" de doi qua giao dien.
+        ma, da_doi = fblocale.ensure_supported(acc, self.manager.profile_dir(acc))
+        if da_doi:
+            self.store.save()
+            self._post(self.refresh)
+
+        asset = self._resolve_page(cfg, acc)
+        from core import reauth
+
+        def _dang():
+            # Acc bị logout khi đăng fanpage -> tự đăng nhập lại (cookie -> web) rồi đăng lại.
+            return reauth.chay_lai_neu_logout(
+                self.manager, acc,
+                lambda: fbbusiness.upload(
+                    self.manager, acc, asset, path, caption=caption,
+                    publish=True, log=lambda m: None, lich=lich),
+                store=self.store, settings=self.settings,
+                log=lambda m: self.set_status(f"{acc.id}: {m}"))
+
+        try:
+            # Giao dien dang o thu tieng la -> doi sang tieng Anh roi dang lai.
+            return fblocale.chay_lai_neu_la_ngon_ngu(
+                self.manager, acc, _dang,
+                log=lambda m: self.set_status(f"{acc.id}: {m}"))
+        except fbbusiness.BusinessError as exc:
+            raise fbupload.UploadError(str(exc)) from exc
+
+    def _resolve_page(self, cfg, acc) -> str:
+        """ID fanpage ma Business Suite dung, quy doi neu can roi nho lai.
+
+        Phai lam o DAY chu khong chi o hai nut "Nhan dien" va "Mo Business": mot
+        fanpage co hai so khac nhau, dan so cong khai vao thi Business Suite chi
+        hien trang "Sorry, this content isn't available right now". Da gap dung
+        loi do khi bam "Dang thu 1 video" voi so chua quy doi.
+
+        Quy doi xong thi ghi lai vao cau hinh, cac lan dang sau khoi hoi lai.
+        """
+        if cfg.asset_id:
+            return cfg.asset_id             # da quy doi tu truoc
+        asset, ten, loi = fbpage.resolve_asset_id(cfg.page_id, acc.cookie)
+        if not asset:
+            raise fbupload.UploadError(loi or "Không nhận diện được fanpage.")
+        cfg.asset_id, cfg.page_name = asset, ten
+        for job in self.autoup.jobs:
+            if job.config is cfg:
+                job.save()
+        return asset
+
     def _build_header(self) -> None:
         header = ctk.CTkFrame(self, corner_radius=0, height=56)
         header.pack(fill="x")
@@ -216,6 +585,11 @@ class App(ctk.CTk):
         ctk.CTkButton(header, text="Cài đặt", width=90, command=self.open_settings).pack(
             side="right", padx=14
         )
+        # Doi sang/toi ngay tren thanh tieu de, khong phai vao Cai dat.
+        self.theme_box = ctk.CTkSegmentedButton(
+            header, values=[SANG, TOI], width=150, command=self._pick_theme)
+        self.theme_box.set(TOI if self.settings.appearance == "dark" else SANG)
+        self.theme_box.pack(side="right", padx=(0, 6))
         ctk.CTkButton(
             header, text="Đăng xuất", width=90, fg_color="gray50",
             hover_color="gray40", command=self.sign_out,
@@ -224,6 +598,12 @@ class App(ctk.CTk):
         self.account_label = ctk.CTkLabel(header, text="", text_color="gray60")
         self.account_label.pack(side="right", padx=8)
         self._update_account_label()
+
+    def _pick_theme(self, value: str) -> None:
+        """Doi giao dien sang/toi va nho lai cho lan mo sau."""
+        self.settings.appearance = "dark" if value == TOI else "light"
+        self.settings.save()
+        self._apply_theme()
 
     def _update_account_label(self) -> None:
         """Ghi ten dang nhap va han key len header (doi lai sau khi dang nhap lai)."""
@@ -276,19 +656,16 @@ class App(ctk.CTk):
             btn.pack(side="left", padx=3)
             return btn
 
+        # Bỏ các nút Sửa / Tạo profile / Nhóm / Xoá / Mở / Check / Bài viết nhóm khỏi thanh công cụ
+        # (yêu cầu người dùng 2026-09-17) — các chức năng này vẫn dùng được qua menu CHUỘT PHẢI.
         button("➕ Thêm acc", self.add_account)
         button("📥 Nhập hàng loạt", self.bulk_import, width=140)
-        button("✏️ Sửa", self.edit_account, width=80)
-        button("🧩 Tạo profile", self.create_profiles, color="#2f7d4f", width=130)
-        button("🗂 Nhóm", self.manage_groups, width=95)
-        button("🗑 Xoá", self.delete_accounts, color="#a33", width=80)
         ttk.Separator(actions, orient="vertical").pack(side="left", fill="y", padx=8)
-        button("▶ Mở", self.open_profiles, color="#1f6aa5", width=80)
         button("⏹ Đóng", self.close_profiles, color="#7a5", width=90)
-        ttk.Separator(actions, orient="vertical").pack(side="left", fill="y", padx=8)
         button("🔄 Quét thư mục", self.scan_existing, width=130)
 
-        self.login_threads_label = ctk.CTkLabel(actions, text="Luồng cookie", font=bold)
+        # MOT o "Luong" dung chung cho: dang nhap cookie, tao profile, bat chuyen nghiep, dang nhap web.
+        self.login_threads_label = ctk.CTkLabel(actions, text="Luồng", font=bold)
         self.login_threads_label.pack(side="left", padx=(10, 4))
         self.login_threads_box = ctk.CTkOptionMenu(
             actions, values=[str(n) for n in range(1, 9)], width=64,
@@ -332,7 +709,11 @@ class App(ctk.CTk):
         )
         for key, title, width, anchor in COLUMNS:
             self.tree.heading(key, text=title, command=lambda k=key: self._sort_by(k))
-            self.tree.column(key, width=width, anchor=anchor, stretch=(key == "note"))
+            # stretch=False cho MOI cot: cot nao co stretch se bi bop lai khi bang
+            # hep di -- bam vao mot dong la bang thong tin ben phai chiem cho va
+            # cot do teo mat. Khong co cot nao gian thi be ngang cot giu nguyen,
+            # thieu cho thi da co thanh cuon ngang.
+            self.tree.column(key, width=width, anchor=anchor, stretch=False)
 
         self._apply_columns()
 
@@ -365,18 +746,36 @@ class App(ctk.CTk):
         # nen de xuong duoi, tranh bam nham vao no khi dinh mo profile.
         self._menu.add_command(label="▶ Mở profile", command=self.open_profiles)
         self._menu.add_command(label="🔑 Đăng nhập với cookie", command=self.relogin_cookie)
+        self._menu.add_command(label="🌐 Đăng nhập web (id|pass|2fa)", command=self.login_web_selected)
         # "Nhap / sua cookie" da nam trong menu con "Sua" -> bo o day cho do trung.
         self._menu.add_command(label="⏹ Đóng profile", command=self.close_profiles)
         self._menu.add_command(label="🧩 Tạo profile", command=self.create_profiles)
+        self._menu.add_command(label="💼 Bật chế độ chuyên nghiệp",
+                               command=self.enable_professional_selected)
+        # Doi User Agent: mot muc con moi category (iOS/Android/TV/Mac/Win...)
+        from core import useragent as _ua
+        ua_menu = self._make_menu(self._menu)
+        _loai = list(_ua.cac_loai().keys())
+        if _loai:
+            for _ten in _loai:
+                ua_menu.add_command(label=_ten,
+                                    command=lambda l=_ten: self.change_user_agent(l))
+            ua_menu.add_separator()
+        ua_menu.add_command(label="Xoá User Agent (dùng mặc định)",
+                            command=lambda: self.change_user_agent(""))
+        self._menu.add_cascade(label="🕶 Đổi user agent", menu=ua_menu)
         self._menu.add_separator()
 
         # Danh sach nhom doi theo thoi gian nen dung lai moi lan bung menu.
         self._group_menu = self._make_menu(self._menu)
         self._menu.add_cascade(label="🗂 Chuyển vào nhóm", menu=self._group_menu)
+        # "Quan ly nhom" (doi ten / xoa nhom) truoc day o nut thanh cong cu; nut da bo -> dua vao day.
+        self._menu.add_command(label="🗂 Quản lý nhóm...", command=self.manage_groups)
         # Gom moi thu "sua" vao mot menu con: truoc day chi co moi "Sua ghi chu"
         # nam le o day, con cac truong khac phai mo bang chi tiet ben phai.
         edit_menu = self._make_menu(self._menu)
         edit_menu.add_command(label="Sửa tất cả...", command=self.edit_account)
+        edit_menu.add_command(label="Sửa custom (hàng loạt)...", command=self.bulk_update)
         edit_menu.add_separator()
         edit_menu.add_command(label="Sửa ID acc", command=self.edit_id)
         edit_menu.add_command(label="Sửa mật khẩu",
@@ -402,14 +801,35 @@ class App(ctk.CTk):
         edit_menu.add_command(
             label="Sửa trạng thái",
             command=lambda: self._edit_field("status", "Trạng thái", options=list(STATUSES)))
+        pro_menu = self._make_menu(edit_menu)
+        pro_menu.add_command(label="Đánh dấu ĐÃ bật",
+                             command=lambda: self.set_pro_mode(store_module.PRO_BAT))
+        pro_menu.add_command(label="Đánh dấu CHƯA bật",
+                             command=lambda: self.set_pro_mode(store_module.PRO_CHUA))
+        edit_menu.add_cascade(label="Chuyên nghiệp (cột)", menu=pro_menu)
         edit_menu.add_command(label="Sửa ghi chú...", command=self.edit_note)
+        edit_menu.add_separator()
+        lang_menu = self._make_menu(edit_menu)
+        for ma, ten in fblocale.LANGUAGES.items():
+            lang_menu.add_command(label=ten,
+                                  command=lambda m=ma: self.set_fb_language(m))
+        edit_menu.add_cascade(label="Ngôn ngữ Facebook", menu=lang_menu)
         edit_menu.add_separator()
         edit_menu.add_command(label="Xoá cookie đã lưu", command=self.clear_cookie_field)
         self._menu.add_cascade(label="✏️ Sửa", menu=edit_menu)
         self._menu.add_separator()
 
+        # 🧩 MO-DUN: menu SINH TU REGISTRY (ADR-028) — cascade theo nhom, moi muc = 1 mo-dun.
+        # Them mo-dun moi vao core/modun la tu hien o day, khong sua App.
+        self._menu.add_cascade(label="🧩 Mô-đun", menu=self._menu_modun(self._menu))
+        self._menu.add_separator()
+
         self._menu.add_command(label="🌐 Đổi proxy...", command=self.change_proxy)
-        self._menu.add_command(label="📡 Test proxy", command=self.check_proxies)
+        check_menu = self._make_menu(self._menu)
+        check_menu.add_command(label="Check proxy", command=self.check_proxies)
+        check_menu.add_command(label="Check cookie", command=self.check_cookies)
+        check_menu.add_command(label="Check tường (live/die)", command=self.check_walls)
+        self._menu.add_cascade(label="🔍 Check", menu=check_menu)
         # Hai lenh khop / bo khop mui gio da an khoi menu theo yeu cau. Muc nay
         # van tu chay khi tao profile va khi doi proxy (xem ProfileManager), nen
         # bo nut di khong lam mat chuc nang -- match_identities/clear_identities
@@ -435,6 +855,8 @@ class App(ctk.CTk):
         self._menu.add_command(label="🧩 Gỡ extension", command=self.remove_extension)
         self._menu.add_command(label="🧽 Xoá cache trình duyệt", command=self.clear_cache)
         self._menu.add_command(label="🧹 Xoá file cài đặt thừa", command=self.cleanup_installers)
+        self._menu.add_command(label="🚫 Dọn Firefox tự khởi động cùng Windows",
+                               command=lambda: self._clean_autostart(quiet=False))
         self._menu.add_command(label="💾 Lưu cookie từ profile vào acc",
                                command=self.save_cookie_from_profile)
         self._menu.add_command(label="Xuất cookie từ profile", command=self.export_cookie)
@@ -880,11 +1302,89 @@ class App(ctk.CTk):
                         borderwidth=1, relief="solid", padding=(6, 0))
 
     def _build_statusbar(self) -> None:
-        bar = ctk.CTkFrame(self, height=30, corner_radius=0)
+        bar = ctk.CTkFrame(self, height=34, corner_radius=0)
         bar.pack(fill="x", side="bottom")
+        # Nut tat het trinh duyet: de o goc duoi ben trai, luon nhin thay o ca
+        # hai tab (thanh trang thai nam ngoai tab).
+        # Goc duoi ben trai: cong tac "Mo cung Windows" (mac dinh BAT) — qua mo-dun mo_cung_windows.
+        self.mo_cung_win_var = tk.BooleanVar(value=bool(getattr(self.settings, "mo_cung_windows", True)))
+        self.mo_cung_win_switch = ctk.CTkSwitch(
+            bar, text="🚀 Mở cùng Windows", variable=self.mo_cung_win_var,
+            command=self._doi_mo_cung_windows, width=150)
+        self.mo_cung_win_switch.pack(side="left", padx=(10, 8), pady=3)
+        self.kill_button = ctk.CTkButton(
+            bar, text="🛑 Tắt hết Firefox", width=150, fg_color="#a33",
+            hover_color="#c44", font=ctk.CTkFont(weight="bold"),
+            command=self.kill_all_browsers,
+        )
+        self.kill_button.pack(side="left", padx=(0, 6), pady=3)
+        # Ap trang thai da luu ngay luc mo (lan dau = mac dinh bat -> dang ky khoi dong).
+        self.after(300, self._ap_mo_cung_windows)
         self.status_label = ctk.CTkLabel(bar, text="Sẵn sàng.", anchor="w")
-        self.status_label.pack(side="left", padx=12, pady=4)
+        self.status_label.pack(side="left", padx=6, pady=4)
         self.progress = ctk.CTkProgressBar(bar, width=180, mode="indeterminate")
+
+        # GIUA thanh duoi: nut hen gio tat may (dung place de canh giua bat ke widget hai ben).
+        self._shutdown_at = None        # datetime se tat (None = chua hen)
+        self.shutdown_button = ctk.CTkButton(
+            bar, text="⏻ Hẹn giờ tắt máy", width=170, fg_color="#7a5",
+            hover_color="#8b6", font=ctk.CTkFont(weight="bold"),
+            command=self.open_shutdown_dialog)
+        self.shutdown_button.place(relx=0.5, rely=0.5, anchor="center")
+        self._tick_shutdown()
+
+    def _ap_mo_cung_windows(self) -> None:
+        """Dong bo khoa Run cua Windows voi cai dat (goi luc mo tool, khong hoi)."""
+        from core import modun as modun_module
+        bat = bool(self.mo_cung_win_var.get())
+        try:
+            kq = modun_module.chay("mo_cung_windows", modun_module.ngu_canh_tu(self), [], bat=bat)
+            if kq.loi:
+                self.set_status(f"Mở cùng Windows: {kq.loi[0][1]}")
+        except Exception as exc:  # noqa: BLE001
+            self.set_status(f"Mở cùng Windows: lỗi {exc}")
+
+    def _doi_mo_cung_windows(self) -> None:
+        """Nguoi dung gat cong tac goc duoi trai."""
+        from core import modun as modun_module
+        bat = bool(self.mo_cung_win_var.get())
+        kq = modun_module.chay("mo_cung_windows", modun_module.ngu_canh_tu(self), [], bat=bat)
+        if kq.loi:
+            self.mo_cung_win_var.set(not bat)          # khong ghi duoc -> tra cong tac ve cu
+            messagebox.showwarning("Mở cùng Windows", kq.loi[0][1], parent=self)
+            return
+        self.set_status("🚀 " + kq.ghi_chu)
+
+    # ------------------------------------------------------------------ hen tat may
+    def open_shutdown_dialog(self) -> None:
+        """Mo hop 'Hen gio tat may' (nut o GIUA thanh duoi)."""
+        from ui.shutdown_dialog import ShutdownDialog
+        dang = self._shutdown_at.strftime("%H:%M") if self._shutdown_at else None
+        ShutdownDialog(self, dang_hen=dang, on_changed=self._shutdown_changed)
+
+    def _shutdown_changed(self, giay) -> None:
+        """Dialog bao vua dat (giay > 0) hoac vua huy (None) -> nho gio + doi nut."""
+        if giay:
+            from datetime import datetime, timedelta
+            self._shutdown_at = datetime.now() + timedelta(seconds=int(giay))
+        else:
+            self._shutdown_at = None
+        self._tick_shutdown()
+
+    def _tick_shutdown(self) -> None:
+        """Moi 20s: cap nhat chu tren nut theo lich con lai (het gio thi ve mac dinh)."""
+        btn = getattr(self, "shutdown_button", None)
+        if btn is not None:
+            from datetime import datetime
+            at = self._shutdown_at
+            if at and at > datetime.now():
+                con = int((at - datetime.now()).total_seconds()) // 60
+                btn.configure(text=f"⏻ Tắt máy {at.strftime('%H:%M')} (còn {con}′)",
+                              fg_color="#a33", hover_color="#c44")
+            else:
+                self._shutdown_at = None
+                btn.configure(text="⏻ Hẹn giờ tắt máy", fg_color="#7a5", hover_color="#8b6")
+        self.after(20000, self._tick_shutdown)
 
     # ------------------------------------------------------------------
     # Du lieu / bang
@@ -969,6 +1469,7 @@ class App(ctk.CTk):
             "identity": self._identity_cell(account),
             "group": account.group or "—",
             "status": self._status_cell(account),
+            "pro": store_module.nhan_pro(account),
             "profile": "đã tạo" if installed else "chưa tạo",
             "running": "▶" if installed and self.manager.is_running(account) else "",
             "note": (account.note or "").replace(chr(10), " ")[:120],
@@ -977,7 +1478,10 @@ class App(ctk.CTk):
 
     @staticmethod
     def _status_cell(account: Account) -> str:
-        """Cot "Trạng thái": kết quả test proxy nếu đã test, chưa thì trạng thái acc."""
+        """Cot "Trạng thái": uu tien trang thai acc FB (check cookie/tuong), roi
+        den ket qua test proxy, cuoi cung la trang thai nhap tay."""
+        if account.status and account.status != "Chưa rõ":
+            return account.status
         if account.proxy_status:
             return account.proxy_status
         return account.status or "—"
@@ -1104,15 +1608,24 @@ class App(ctk.CTk):
             f"/{len(COLUMNS)} cột."
         )
 
+    def _so_luong(self) -> int:
+        """So luong DUNG CHUNG (o "Luong" tren bang): dang nhap cookie, tao profile,
+        bat chuyen nghiep, dang nhap web. Nguon duy nhat, kep 1..8 (ADR-015)."""
+        try:
+            return max(1, min(8, int(self.settings.login_threads or 5)))
+        except (TypeError, ValueError):
+            return 5
+
     def _set_login_threads(self, value: str) -> None:
-        """Doi so trinh duyet mo cung luc khi dang nhap cookie."""
+        """Doi o "Luong" dung chung (so acc chay cung luc)."""
         try:
             self.settings.login_threads = max(1, min(8, int(value)))
         except ValueError:
             return
         self.settings.save()
         self.set_status(
-            f"Đăng nhập cookie sẽ mở {self.settings.login_threads} trình duyệt cùng lúc."
+            f"Luồng dùng chung = {self.settings.login_threads}: đăng nhập cookie / tạo profile / "
+            "bật chuyên nghiệp / đăng nhập web sẽ chạy chừng đó acc cùng lúc."
         )
 
     def _select_all_rows(self, _event=None) -> str:
@@ -1139,6 +1652,15 @@ class App(ctk.CTk):
         selected = self._selected_accounts()
         current = {a.group.strip() for a in selected}
 
+        # "Nhóm mới" + "Bỏ khỏi nhóm" ĐƯA LÊN ĐẦU (yêu cầu người dùng) — hay dùng, khỏi kéo xuống cuối.
+        self._group_menu.add_command(
+            label="➕ Nhóm mới...", command=self.assign_new_group
+        )
+        self._group_menu.add_command(
+            label="✖ Bỏ khỏi nhóm", command=lambda: self.assign_group("")
+        )
+        if self.store.groups():
+            self._group_menu.add_separator()
         for name in self.store.groups():
             # Cham danh dau nhom ma toan bo acc dang chon deu thuoc ve.
             mark = "● " if current == {name} else "○ "
@@ -1146,14 +1668,6 @@ class App(ctk.CTk):
                 label=mark + name,
                 command=lambda n=name: self.assign_group(n),
             )
-        if self.store.groups():
-            self._group_menu.add_separator()
-        self._group_menu.add_command(
-            label="➕ Nhóm mới...", command=self.assign_new_group
-        )
-        self._group_menu.add_command(
-            label="✖ Bỏ khỏi nhóm", command=lambda: self.assign_group("")
-        )
 
     # ------------------------------------------------------------------
     # Chay tac vu nen
@@ -1173,43 +1687,243 @@ class App(ctk.CTk):
     def set_status(self, message: str) -> None:
         self._post(lambda: self.status_label.configure(text=message))
 
-    def _run_async(self, work: Callable[[], None], done_message: str = "Xong.") -> None:
-        if self._busy:
-            messagebox.showinfo("Đang bận", "Một tác vụ khác đang chạy, vui lòng đợi.", parent=self)
-            return
-        self._busy = True
-        self.progress.pack(side="right", padx=12)
-        self.progress.start()
+    def _run_async(self, work: Callable[[], None], done_message: str = "Xong.",
+                   accs: Optional[list] = None) -> None:
+        """Chay ``work`` o luong nen, KHOA theo tung acc.
+
+        ``accs``: danh sach id acc (hoac Account) tac vu se dung. Chi chan khi CO
+        acc dang ban trong tac vu khac -> bao ro acc nao, con lai cho chay song
+        song. ``accs=None`` = tac vu khong dung profile (vd test proxy) -> luon
+        chay, khong khoa acc nao.
+        """
+        # work co nhan tham so? work(accs) = tac vu batch -> chay tren acc RANH, bo
+        # acc ban. work() = tac vu don/toan cuc -> chan khi trung bat ky acc nao.
+        nhan_acc = False
+        try:
+            nhan_acc = len(inspect.signature(work).parameters) >= 1
+        except (TypeError, ValueError):
+            nhan_acc = False
+        acc_objs = list(accs or [])
+        ids = {getattr(a, "id", a) for a in acc_objs}
+
+        def _ten(tap):
+            xs = sorted(str(x) for x in tap)
+            return ", ".join(xs[:6]) + (f" (+{len(xs) - 6})" if len(xs) > 6 else "")
+
+        with self._busy_lock:
+            ban = ids & self._busy_accs
+            if ban:
+                ranh = ids - ban
+                if nhan_acc and ranh:
+                    # Chay tren acc RANH, bo acc dang ban (bao cho nguoi dung biet).
+                    run_ids = ranh
+                    run_objs = [a for a in acc_objs if getattr(a, "id", a) in ranh]
+                    self._post(lambda t=_ten(ban), n=len(run_ids), b=len(ban): messagebox.showinfo(
+                        "Bỏ qua acc đang bận",
+                        f"{b} acc đang chạy tác vụ khác nên bỏ qua: {t}.\n\n"
+                        f"Vẫn chạy trên {n} acc còn lại.",
+                        parent=self))
+                else:
+                    # Het acc ranh, hoac tac vu don/toan cuc -> chan.
+                    self._post(lambda t=_ten(ban): messagebox.showinfo(
+                        "Acc đang bận",
+                        f"Các acc này đang chạy tác vụ khác: {t}.\n\n"
+                        "Chờ xong hoặc bỏ chọn acc đó rồi thao tác acc khác — "
+                        "acc không bận vẫn dùng được bình thường.",
+                        parent=self))
+                    return
+            else:
+                run_ids = ids
+                run_objs = acc_objs
+            self._busy_accs |= run_ids
+            self._task_count += 1
+            if self._task_count == 1:
+                self.progress.pack(side="right", padx=12)
+                self.progress.start()
 
         def runner():
             try:
-                work()
-                self.set_status(done_message)
+                work(run_objs) if nhan_acc else work()
+                if done_message:      # rong = giu thong bao do work tu dat (vd KetQua.tom_tat)
+                    self.set_status(done_message)
             except Exception as exc:  # loi cua tac vu nen phai hien ra cho nguoi dung
                 message = str(exc)
                 self.set_status(f"Lỗi: {message}")
                 self._post(lambda: messagebox.showerror("Lỗi", message, parent=self))
             finally:
-                self._post(self._finish_async)
+                self._post(lambda: self._finish_async(run_ids))
 
         threading.Thread(target=runner, daemon=True).start()
 
-    def _finish_async(self) -> None:
-        self._busy = False
-        self.progress.stop()
-        self.progress.pack_forget()
+    def _finish_async(self, ids: Optional[set] = None) -> None:
+        with self._busy_lock:
+            if ids:
+                self._busy_accs -= ids
+            self._task_count = max(0, self._task_count - 1)
+            het = self._task_count == 0
+        if het:
+            self.progress.stop()
+            self.progress.pack_forget()
         self.refresh()
+
+    # ------------------------------------------------------------------
+    # Dieu khien MO-DUN (ADR-028): tool goi dung mo-dun theo ma khi nguoi dung bam lenh
+    # ------------------------------------------------------------------
+    def goi_modun(self, ma: str, accs: list, *, done_message: str = "",
+                  so_luong: Optional[int] = None, tieu_de: str = "", khoa: bool = True,
+                  tu_tao_profile: bool = False, **tham_so) -> None:
+        """Chay mo-dun ``ma`` (core/modun) tren ``accs`` o luong nen, khoa per-acc.
+
+        Dung NguCanh tu App (manager/store/settings, log=set_status, post=_post, so_luong
+        = o "Luong" tru khi truyen), goi ``modun.chay``; KetQua -> thanh trang thai, luu store,
+        ve lai bang; co loi tung acc -> hop thoai tom tat. Lenh menu chi con 1 dong goi ham nay.
+        ``khoa=False``: tac vu khong dung profile (vd test proxy) -> khong khoa acc, chay song song
+        voi moi thu (nhung mo-dun van nhan du ``accs``).
+
+        ``tu_tao_profile=True``: acc CHUA co profile -> tu tao (mo-dun tao_profile) TRUOC khi
+        chay mo-dun chinh (yeu cau nguoi dung 2026-09-17). Danh cho cac mo-dun tu loc acc theo
+        is_installed / lam viec voi profile truoc khi mo (cookie/web/pro/mo profile); tao khong
+        duoc thi bao loi acc do, cac acc con lai van chay.
+        """
+        from core import modun as modun_module
+        m = modun_module.lay(ma)
+        ten = tieu_de or m.ten
+        nc = modun_module.ngu_canh_tu(self, so_luong=so_luong)
+
+        def work(accs_chay):
+            if not khoa:
+                accs_chay = list(accs)      # khong khoa -> _run_async khong dua acc, tu lay du
+            loi_tao: list = []
+            if tu_tao_profile:
+                thieu = [a for a in accs_chay if not self.manager.is_installed(a)]
+                if thieu:
+                    self.set_status(f"{ten}: tạo profile cho {len(thieu)} acc chưa có...")
+                    kq_tao = modun_module.chay("tao_profile", nc, thieu)
+                    self._post(self.refresh)
+                    loi_tao = list(kq_tao.loi)          # acc tao profile khong duoc
+                    van_thieu = {i for i, _ in loi_tao}
+                    accs_chay = [a for a in accs_chay if a.id not in van_thieu]
+                    if not accs_chay:
+                        self.set_status(f"{ten}: không tạo được profile nào.")
+                        if loi_tao:
+                            dong = [f"{i}: {ly}" for i, ly in loi_tao[:12]]
+                            self._post(lambda: messagebox.showwarning(
+                                ten, "Không tạo được profile cho acc:\n" + "\n".join(dong),
+                                parent=self))
+                        return
+            kq = modun_module.chay(ma, nc, accs_chay, **tham_so)
+            for i, ly in loi_tao:
+                kq.them_loi(i, f"tạo profile lỗi: {ly}")
+            try:
+                self.store.save()
+            except Exception:  # noqa: BLE001
+                pass
+            self._post(self.refresh)
+            self.set_status(f"{ten}: {kq.tom_tat()}")
+            if kq.loi:
+                dong = [f"{i}: {ly}" for i, ly in kq.loi[:12]]
+                them = f"\n... (+{len(kq.loi) - 12})" if len(kq.loi) > 12 else ""
+                self._post(lambda: messagebox.showwarning(
+                    ten,
+                    f"Xong {kq.so_ok}/{kq.so_ok + kq.so_loi} acc"
+                    + (f" — {kq.ghi_chu}" if kq.ghi_chu else "") + ".\n\nChưa xong / lỗi:\n"
+                    + "\n".join(dong) + them,
+                    parent=self))
+
+        self._run_async(work, done_message, accs=accs if khoa else None)
+
+    # ---- Menu Mo-dun sinh tu registry ----------------------------------------
+    #: Ten nhom hien tren menu (ma nhom -> nhan).
+    TEN_NHOM = {"acc": "👤 Acc", "proxy": "🌐 Proxy", "fanpage": "🏗 Fanpage",
+                "dang_bai": "📤 Đăng bài", "khac": "🧰 Khác"}
+    #: Mo-dun can NHAP THAM SO / co luong rieng -> uy quyen cho lenh/tab UI da co (thu thap tham so
+    #: roi moi goi_modun). Khong co trong day -> chay thang tren acc dang chon (co hoi xac nhan).
+    def _uy_quyen_modun(self) -> dict:
+        tab = self.tabs.set
+        return {
+            "dang_nhap_cookie": self.relogin_cookie, "dang_nhap_web": self.login_web_selected,
+            "tao_profile": self.create_profiles, "check_tuong": self.check_walls,
+            "bat_chuyen_nghiep": self.enable_professional_selected,
+            "mo_profile": self.open_profiles, "dong_profile": self.close_profiles,
+            "xoa_acc": self.delete_accounts, "doi_proxy": self.change_proxy,
+            "check_proxy": self.check_proxies, "khop_mui_gio": self.match_identities,
+            "bo_khop_mui_gio": self.clear_identities, "xoa_cache": self.clear_cache,
+            "extension": self.install_extension,
+            "doi_user_agent": None,                         # cascade category rieng (ben duoi)
+            "tao_fanpage_acc": lambda: tab("🏗 Tạo fanpage"), "tao_fanpage_bm": lambda: tab("🏗 Tạo fanpage"),
+            "add_page_bm": lambda: tab("🏗 Tạo fanpage"), "tao_bm": lambda: tab("🏗 Tạo fanpage"),
+            "dang_fanpage_tu_dong": lambda: self.mo_tab_fanpage("🌐 Công khai"),
+            "dang_nhom_tu_dong": lambda: tab("👥 Auto đăng nhóm"),
+            "quet_bai": lambda: tab("🔎 Quét bài"), "nhan_tin_ai": lambda: tab("💬 Nhắn tin AI"),
+            "tuong_tac": lambda: tab("🤝 Tương tác"),
+            "doi_ten_file": lambda: tab("✏️ Đổi tên file"),
+            "xoa_bai": lambda: tab("🗑 Xoá bài viết"),
+            "mo_cung_windows": self._gat_mo_cung_windows,   # cong tac goc duoi trai
+        }
+
+    def mo_tab_fanpage(self, con: str = "🌐 Công khai") -> None:
+        """Mo tab "Auto dang fanpage" roi chon dung TAB CON (Cong khai / Dat lich)."""
+        self.tabs.set("🎬 Auto đăng fanpage")
+        try:
+            self.fanpage_tabs.set(con)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _gat_mo_cung_windows(self) -> None:
+        """Muc menu Mo-dun -> dao cong tac 'Mo cung Windows' roi ap."""
+        self.mo_cung_win_var.set(not self.mo_cung_win_var.get())
+        self._doi_mo_cung_windows()
+
+    def _menu_modun(self, parent) -> tk.Menu:
+        """Dung menu Mo-dun TU registry: cascade theo nhom, moi mo-dun 1 muc. Khong hardcode ma."""
+        from core import modun as modun_module
+        from core import useragent
+        root = self._make_menu(parent)
+        uy = self._uy_quyen_modun()
+        for nhom in modun_module.NHOM:
+            ds = modun_module.danh_sach(nhom)
+            if not ds:
+                continue
+            sub = self._make_menu(root)
+            for m in ds:
+                if m.ma == "doi_user_agent":
+                    ua = self._make_menu(sub)
+                    for ten in useragent.cac_loai():
+                        ua.add_command(label=ten, command=lambda l=ten: self.change_user_agent(l))
+                    ua.add_command(label="Xoá User Agent", command=lambda: self.change_user_agent(""))
+                    sub.add_cascade(label=m.ten, menu=ua)
+                    continue
+                lenh = uy.get(m.ma, "generic")
+                if lenh == "generic":
+                    sub.add_command(label=m.ten, command=lambda ma=m.ma: self.chay_modun_tren_chon(ma))
+                elif lenh is not None:
+                    sub.add_command(label=m.ten, command=lenh)
+            root.add_cascade(label=self.TEN_NHOM.get(nhom, nhom), menu=sub)
+        return root
+
+    def chay_modun_tren_chon(self, ma: str) -> None:
+        """Chay mo-dun KHONG can tham so tren cac acc dang chon (hoi xac nhan truoc)."""
+        from core import modun as modun_module
+        selected = self._require_selection()
+        if not selected:
+            return
+        m = modun_module.lay(ma)
+        if not messagebox.askyesno(m.ten, f"{m.ten} cho {len(selected)} acc?"
+                                   + (f"\n\n{m.mo_ta}" if m.mo_ta else ""), parent=self):
+            return
+        self.goi_modun(ma, selected, tieu_de=m.ten)
 
     def _schedule_running_check(self) -> None:
         self.after(4000, self._running_check)
 
     def _running_check(self) -> None:
-        if not self._busy:
-            for index, account in enumerate(self._rows, start=1):
-                if self.tree.exists(account.id):
-                    self.tree.item(account.id, tags=self._row_tags(account, index))
-                    self.tree.set(account.id, "running",
-                                  "▶" if self.manager.is_installed(account) and self.manager.is_running(account) else "")
+        # Cap nhat cot '▶' luon luon (khong con khoa toan tool) — nhieu tac vu co
+        # the dang chay tren cac acc khac nhau, van muon thay acc nao dang mo.
+        for index, account in enumerate(self._rows, start=1):
+            if self.tree.exists(account.id):
+                self.tree.item(account.id, tags=self._row_tags(account, index))
+                self.tree.set(account.id, "running",
+                              "▶" if self.manager.is_installed(account) and self.manager.is_running(account) else "")
         self._schedule_running_check()
 
     # ------------------------------------------------------------------
@@ -1368,6 +2082,69 @@ class App(ctk.CTk):
         self.refresh()
         self.set_status(f"Đã đổi ID acc {cu} thành {moi}.")
 
+    def set_fb_language(self, code: str) -> None:
+        """Doi ngon ngu giao dien Facebook cua cac acc dang chon.
+
+        Sua ca cookie luu trong bang lan cookies.sqlite cua profile, nen lan mo
+        trinh duyet ke tiep la thay ngay va lan dang nhap lai cung giu nguyen.
+        """
+        selected = self._require_selection()
+        if not selected:
+            return
+        co_cookie = [a for a in selected if (a.cookie or "").strip()]
+        if not co_cookie:
+            messagebox.showinfo("Ngôn ngữ Facebook",
+                                "Các acc đã chọn chưa lưu cookie.", parent=self)
+            return
+
+        doi, vao_profile = 0, 0
+        for account in co_cookie:
+            sua_cookie, sua_profile = fblocale.set_language(
+                account, code, self.manager.profile_dir(account))
+            doi += 1 if sua_cookie else 0
+            vao_profile += 1 if sua_profile else 0
+        self.store.save()
+        self.refresh()
+
+        dang_mo = [a.id for a in co_cookie
+                   if self.manager.is_installed(a) and self.manager.is_running(a)]
+        tin = (f"Đã đổi {doi} acc sang {fblocale.label(code)} "
+               f"({vao_profile} profile áp dụng ngay).")
+        if dang_mo:
+            tin += " Acc đang mở phải đóng rồi mở lại mới thấy."
+        self.set_status(tin)
+
+    def change_user_agent(self, loai: str) -> None:
+        """Doi User Agent cua cac acc dang chon.
+
+        ``loai`` rong = xoa UA (dung UA mac dinh cua Firefox). Nguoc lai moi acc
+        lay MOT UA ngau nhien trong category do. Sau khi gan xong ap lai vao
+        profile (mozilla.cfg) o luong nen; acc dang mo phai mo lai moi thay.
+        """
+        from core import useragent
+        selected = self._require_selection()
+        if not selected:
+            return
+        if loai and not useragent.doc_loai(loai):
+            messagebox.showinfo("Đổi user agent",
+                                f"Category “{loai}” chưa có UA nào.", parent=self)
+            return
+
+        # Nghiep vu (gan UA, luu, configure lai profile) o mo-dun core/modun/doi_user_agent (ADR-028).
+        self.goi_modun("doi_user_agent", selected, tieu_de="Đổi user agent", loai=loai)
+
+    def set_pro_mode(self, gia_tri: str) -> None:
+        """Danh dau tay cot 'Chuyen nghiep' (Bật / Chưa bật) cho cac acc dang chon."""
+        selected = self._require_selection()
+        if not selected:
+            return
+        for account in selected:
+            account.pro_mode = gia_tri
+        self.store.save()
+        self.refresh()
+        nhan = "ĐÃ bật" if gia_tri == store_module.PRO_BAT else "CHƯA bật"
+        self.set_status(f"Đã đánh dấu {len(selected)} acc: chuyên nghiệp {nhan}.")
+
     def clear_cookie_field(self) -> None:
         """Xoa cookie da luu trong acc (khong dung toi profile tren dia)."""
         selected = self._require_selection()
@@ -1424,16 +2201,38 @@ class App(ctk.CTk):
         result = BulkImportDialog(self, groups=self.store.groups()).show()
         if not result:
             return
-        text, separator, fields, group = result
-        added, errors = self.store.import_lines(text, separator, fields=fields, group=group)
+        text, separator, fields, group, ua_loai = result
+        added, errors = self.store.import_lines(
+            text, separator, fields=fields, group=group, ua_loai=ua_loai)
         self.refresh()
         into = f" vào nhóm “{group}”" if group else ""
-        summary = f"Đã thêm {added} acc{into}."
+        ua_note = f" (gán UA {', '.join(ua_loai)})" if ua_loai else ""
+        summary = f"Đã thêm {added} acc{into}{ua_note}."
         if errors:
             summary += "\n\nBỏ qua:\n" + "\n".join(errors[:15])
             if len(errors) > 15:
                 summary += f"\n... và {len(errors) - 15} dòng nữa."
         messagebox.showinfo("Nhập hàng loạt", summary, parent=self)
+
+    def bulk_update(self) -> None:
+        """Sua custom: dan danh sach, khop theo Uid, THAY cac cot da chon.
+
+        Hop thoai y het "Nhap hang loat" (o dan + chon dinh dang + xem truoc)
+        nhung khong them acc moi -- chi cap nhat acc co san trong bang.
+        """
+        result = BulkImportDialog(self, mode="update").show()
+        if not result:
+            return
+        text, separator, fields, _group, _ua = result
+        updated, errors = self.store.update_lines(text, separator, fields=fields)
+        self.refresh()
+        summary = f"Đã cập nhật {updated} acc."
+        if errors:
+            xuong = chr(10)
+            summary += xuong * 2 + "Bỏ qua:" + xuong + xuong.join(errors[:15])
+            if len(errors) > 15:
+                summary += f"{xuong}... và {len(errors) - 15} dòng nữa."
+        messagebox.showinfo("Sửa custom (hàng loạt)", summary, parent=self)
 
     def delete_accounts(self) -> None:
         selected = self._require_selection()
@@ -1455,16 +2254,7 @@ class App(ctk.CTk):
             parent=self,
         )
 
-        def work():
-            for account in selected:
-                self.set_status(f"Đang xoá {account.id}...")
-                if remove_folder:
-                    self.manager.delete(account)
-                else:
-                    self.manager.close(account)
-                self.store.remove(account.id)
-
-        self._run_async(work, f"Đã xoá {len(selected)} acc.")
+        self.goi_modun("xoa_acc", selected, done_message=f"Đã xoá {len(selected)} acc.", xoa_thu_muc=remove_folder)
 
     def create_profiles(self) -> None:
         selected = self._require_selection()
@@ -1474,8 +2264,7 @@ class App(ctk.CTk):
         if not pending:
             messagebox.showinfo("Tạo profile", "Các acc đã chọn đều có profile rồi.", parent=self)
             return
-        workers = max(1, min(8, self.settings.create_threads or 3))
-        workers = min(workers, len(pending))
+        workers = min(self._so_luong(), len(pending))      # o "Luong" dung chung
         estimate = "" if self.settings.clone_from_template else " (~25 giây mỗi acc)"
         threads = f", chạy {workers} luồng cùng lúc" if workers > 1 else ""
         if not messagebox.askyesno(
@@ -1485,98 +2274,49 @@ class App(ctk.CTk):
         ):
             return
 
-        def work():
-            done = 0
-            errors: list[str] = []
-            lock = threading.Lock()
-
-            def build(account: Account) -> None:
-                nonlocal done
-                try:
-                    prefix = f"{account.id}: "
-                    report = lambda m, p=prefix: self.set_status(p + m)
-                    self.manager.create(account, on_status=report)
-                    self.manager.initialize(account, on_status=report)
-                    if account.cookie.strip():
-                        self._apply_cookie(account, replace=True)
-                except Exception as exc:
-                    with lock:
-                        errors.append(f"{account.id}: {exc}".replace("\n", " ")[:160])
-                    return
-                with lock:
-                    done += 1
-                    self.set_status(f"[{done}/{len(pending)}] Xong {account.id}.")
-                self._post(self.refresh)
-
-            with ThreadPoolExecutor(max_workers=workers) as pool:
-                list(pool.map(build, pending))
-
-            # create() co the da do ra mui gio/ngon ngu moi, phai ghi lai xuong file.
-            self.store.save()
-            self._post(self.refresh)
-            if errors:
-                report = (f"Tạo được {done}/{len(pending)} profile.\n\nLỗi:\n"
-                          + "\n".join(errors[:10]))
-                self._post(lambda: messagebox.showwarning("Tạo profile", report, parent=self))
-
-        self._run_async(work, f"Đã tạo xong {len(pending)} profile.")
+        # Nghiep vu o mo-dun core/modun/tao_profile (ADR-028); UI chi hoi/xac nhan roi goi.
+        self.goi_modun("tao_profile", pending, so_luong=workers,
+                       done_message=f"Đã tạo xong {len(pending)} profile.")
 
     def open_profiles(self) -> None:
         selected = self._require_selection()
         if not selected:
             return
-        missing = [a for a in selected if not self.manager.is_installed(a)]
-        if missing:
-            messagebox.showwarning(
-                "Chưa có profile",
-                "Các acc sau chưa tạo profile:\n" + "\n".join(a.id for a in missing[:10]),
-                parent=self,
-            )
-            selected = [a for a in selected if self.manager.is_installed(a)]
-            if not selected:
-                return
-
         url = self.settings.start_url
+        # "Mở profile" CHỈ mở trình duyệt, KHÔNG thao tác gì (yêu cầu người dùng 2026-09-19):
+        # không nạp cookie, không theo dõi/ghi đè cookie — người dùng toàn quyền. Acc chưa có
+        # profile thì tự tạo (tu_tao_profile). Nghiệp vụ ở mô-đun core/modun/mo_profile (ADR-028).
+        self.goi_modun("mo_profile", selected, done_message=f"Đã mở {len(selected)} profile.",
+                       tu_tao_profile=True, url=url)
 
-        def work():
-            for account in selected:
-                seeded = self._ensure_login_cookies(account)
-                note = " (đã nạp cookie)" if seeded else ""
-                self.set_status(f"Đang mở {account.id}{note}...")
-                self.manager.launch(account, url=url)
-                self.store.mark_opened(account.id)
-                time.sleep(1.2)  # tranh cac ban sao Firefox tranh nhau khi khoi dong
+    def login_web_selected(self) -> None:
+        """Đăng nhập web bằng id|pass|2fa (chuột phải) cho các acc đã chọn.
 
-        self._run_async(work, f"Đã mở {len(selected)} profile.")
-
-    def _ensure_login_cookies(self, account: Account) -> bool:
-        """Nap cookie dang nhap truoc khi mo, neu can. Tra ve True neu vua nap.
-
-        Chi nap khi: bat auto-login, acc co cookie luu san, va profile CHUA co
-        cookie dang nhap (tranh ghi de len phien Firefox da tu lam moi). Cookie
-        chi ghi duoc luc Firefox dong nen phai dong truoc.
+        Mở Firefox bình thường, điền form + mã 2FA (TOTP) qua agent, xác minh bằng
+        phiên thật. Song song theo ô "Luồng" dùng chung (trần fblogin.MAX_SONG_SONG).
         """
-        if not self.settings.auto_login_cookie:
-            return False
-        if not account.cookie.strip() or not self.manager.is_installed(account):
-            return False
-        profile_dir = self.manager.profile_dir(account)
-        if cookie_module.has_login_cookie(profile_dir):
-            return False  # da dang nhap san
-        if self.manager.is_running(account):
-            self.manager.close(account)
-            time.sleep(1.5)
-        # Chua chay lan nao thi chua co cookies.sqlite de ghi vao -> khoi tao truoc.
-        if not self.manager.is_initialized(account):
-            try:
-                self.manager.initialize(account)
-            except ProfileError:
-                return False
-        try:
-            written = self._apply_cookie(account, replace=True)
-        except cookie_module.CookieError:
-            return False
-        return written > 0
+        from core import fblogin
+        selected = self._require_selection()
+        if not selected:
+            return
+        # Acc chua co profile -> tu tao (tu_tao_profile); chi can co mat khau.
+        usable = [a for a in selected if (a.password or "").strip()]
+        thieu = len(selected) - len(usable)
+        if not usable:
+            messagebox.showinfo("Đăng nhập web",
+                                "Các acc đã chọn chưa có mật khẩu.",
+                                parent=self)
+            return
+        # Song song theo o "Luong" dung chung, khong qua tran (moi acc 1 Firefox).
+        workers = min(fblogin.MAX_SONG_SONG, self._so_luong(), len(usable))
+        # BO hop thoai xac nhan (yeu cau nguoi dung 2026-09-19): bam la chay luon; thieu mat khau
+        # thi ghi thanh trang thai thay vi bung hop thoai.
+        if thieu:
+            self.set_status(f"Đăng nhập web: bỏ qua {thieu} acc thiếu mật khẩu.")
+
+        # Acc chua co profile -> tu tao (tu_tao_profile). Nghiep vu o mo-dun dang_nhap_web (ADR-028).
+        self.goi_modun("dang_nhap_web", usable, so_luong=workers, tieu_de="Đăng nhập web",
+                       tu_tao_profile=True)
 
     def relogin_cookie(self) -> None:
         """Nap lai cookie da luu (ke ca khi da dang nhap) roi mo thang Facebook.
@@ -1587,12 +2327,13 @@ class App(ctk.CTk):
         selected = self._require_selection()
         if not selected:
             return
-        usable = [a for a in selected if self.manager.is_installed(a) and a.cookie.strip()]
+        # Acc chua co profile -> tu tao (tu_tao_profile); chi can co cookie da luu.
+        usable = [a for a in selected if a.cookie.strip()]
         skipped = len(selected) - len(usable)
         if not usable:
             messagebox.showinfo(
                 "Đăng nhập với cookie",
-                "Các acc đã chọn chưa có profile hoặc chưa lưu cookie.",
+                "Các acc đã chọn chưa lưu cookie.",
                 parent=self,
             )
             return
@@ -1602,91 +2343,52 @@ class App(ctk.CTk):
         url = self.settings.start_url
         if "facebook.com" not in (url or "").lower():
             url = "https://www.facebook.com/"
-        workers = max(1, min(8, self.settings.login_threads or 5))
-        workers = min(workers, len(usable))
+        workers = min(self._so_luong(), len(usable))       # o "Luong" dung chung
+        # Nghiep vu (giu phien moi hon, nap cookie, xac minh, fallback dang nhap web) o
+        # mo-dun core/modun/dang_nhap_cookie (ADR-028) — UI chi loc acc + goi.
+        tieu_de = "Đăng nhập với cookie" + (f" (bỏ qua {skipped} acc chưa lưu cookie)" if skipped else "")
+        self.goi_modun("dang_nhap_cookie", usable, so_luong=workers, tieu_de=tieu_de,
+                       tu_tao_profile=True, url=url)
+
+    def kill_all_browsers(self) -> None:
+        """Tat MOI trinh duyet do tool mo, khong can chon dong nao.
+
+        Dung khi mo nhieu qua roi loan, hoac khi mot phien nao do treo. Chi dung
+        toi Firefox nam trong thu muc profile cua tool -- Firefox binh thuong cua
+        may khong bi anh huong.
+        """
+        dang_chay = self.manager.running_count()
+        if not dang_chay:
+            self.set_status("Không có trình duyệt nào của tool đang mở.")
+            return
+        if not messagebox.askyesno(
+            "Tắt hết Firefox",
+            f"Tắt {dang_chay} tiến trình Firefox do tool mở?" + chr(10) * 2
+            + "Việc đang làm dở trên các trình duyệt đó sẽ mất.",
+            parent=self,
+        ):
+            return
 
         def work():
-            lock = threading.Lock()
-            ok, dead, errors = [], [], []
-            done = 0
-
-            def login(account: Account) -> None:
-                nonlocal done
-                try:
-                    # Dong han trinh duyet cu TRUOC khi mo cai moi. Cho that su
-                    # dong xong, khong thi trinh duyet dang tat va trinh duyet
-                    # vua mo cung nam tren man hinh -> nhin ra nhieu hon so luong.
-                    self.manager.close(account, wait=10.0)
-                    if not self.manager.is_initialized(account):
-                        self.manager.initialize(account)
-                    self._apply_cookie(account, replace=True)
-
-                    self.manager.clear_login_probe(account)
-                    self.manager.launch(account, url=url)
-                    self.store.mark_opened(account.id)
-                    # Vao duoc thi dong luon de nhuong cho acc tiep theo.
-                    if self.manager.verify_cookie_login(account):
-                        account.cookie_ok = time.strftime("%Y-%m-%d %H:%M")
-                        with lock:
-                            ok.append(account.id)
-                    else:
-                        # Xoa dau da dang nhap: dong tro lai mau trang.
-                        account.cookie_ok = ""
-                        with lock:
-                            dead.append(account.id)
-                except (ProfileError, cookie_module.CookieError, OSError) as exc:
-                    with lock:
-                        errors.append(f"{account.id}: {exc}".replace(chr(10), " ")[:150])
-                finally:
-                    # PHAI dong o day chu khong phai trong try: truoc day chi mot
-                    # loi sau khi mo la trinh duyet do nam lai mai mai, luong duoc
-                    # tra ve cho acc khac mo them cua so -> vuot qua so luong.
-                    try:
-                        self.manager.close(account, wait=10.0)
-                    except OSError:
-                        pass
-                    with lock:
-                        done += 1
-                        self.set_status(
-                            f"[{done}/{len(usable)}] xong {account.id} — "
-                            f"vào được {len(ok)}, cookie chết {len(dead)}"
-                        )
-
-            with ThreadPoolExecutor(max_workers=workers) as pool:
-                list(pool.map(login, usable))
-
-            self.store.save()
+            so = self.manager.close_all()
             self._post(self.refresh)
-            tail = f" (bỏ qua {skipped} acc thiếu cookie/profile)" if skipped else ""
-            self.set_status(
-                f"Vào được {len(ok)}/{len(usable)} acc, cookie chết {len(dead)}{tail}."
-            )
-            if dead or errors:
-                report = ""
-                if dead:
-                    report += ("Cookie đã chết (Facebook xoá phiên), cần đăng nhập tay:\n"
-                               + ", ".join(dead[:15]))
-                    if len(dead) > 15:
-                        report += f" ... (+{len(dead) - 15})"
-                if errors:
-                    report += ("\n\nLỗi:\n" + "\n".join(errors[:8]))
-                self._post(lambda: messagebox.showwarning(
-                    "Đăng nhập với cookie", report.strip(), parent=self))
+            self.set_status(f"Đã tắt {so} tiến trình Firefox.")
 
-        self._run_async(work, "Đăng nhập với cookie xong.")
+        self._run_async(work, "Đã tắt hết trình duyệt.", accs=self._rows)
 
     def close_profiles(self) -> None:
         selected = self._require_selection()
         if not selected:
             return
 
-        def work():
-            total = 0
-            for account in selected:
-                total += self.manager.close(account)
-            self.set_status(f"Đã đóng {total} tiến trình.")
+        self.goi_modun("dong_profile", selected, done_message="Đã đóng profile đã chọn.")
 
-        self._run_async(work, "Đã đóng profile đã chọn.")
+    def open_posts(self) -> None:
+        """Chuyen sang tab Quet bai (ex Thu nghiem AI, lan 4)."""
+        try:
+            self.tabs.set("🔎 Quét bài")
+        except Exception:
+            pass
 
     def scan_existing(self) -> None:
         """Tim cac thu muc profile co san tren o dia va them vao bang."""
@@ -1772,116 +2474,153 @@ class App(ctk.CTk):
             )
             return
 
-        def work():
-            done = 0
-            errors: list[str] = []
-            for number, account in enumerate(targets, start=1):
-                self.set_status(f"[{number}/{len(targets)}] Đang dò vị trí {account.id}...")
-                try:
-                    identity = self.manager.match_identity(account)
-                except (geoip.GeoLookupError, ProfileError, OSError) as exc:
-                    errors.append(f"{account.id}: {exc}".replace("\n", " ")[:160])
-                    continue
-                done += 1
-                self.set_status(f"[{number}/{len(targets)}] {account.id} → {identity.summary()}")
-            self.store.save()
-            if errors:
-                report = f"Khớp được {done}/{len(targets)} acc.\n\nKhông dò được:\n" + "\n".join(errors[:10])
-                self._post(lambda: messagebox.showwarning("Khớp theo proxy", report, parent=self))
-
         note = f" ({skipped} acc chưa có proxy, bỏ qua)" if skipped else ""
-        self._run_async(work, f"Đã khớp múi giờ + ngôn ngữ theo proxy{note}.")
+        # Nghiep vu o mo-dun core/modun/khop_mui_gio (ADR-028).
+        self.goi_modun("khop_mui_gio", targets, tieu_de="Khớp theo proxy",
+                       done_message=f"Đã khớp múi giờ + ngôn ngữ theo proxy{note}.")
 
     def clear_identities(self) -> None:
         """Trả profile về múi giờ và ngôn ngữ mặc định của máy."""
         selected = self._require_selection()
         if not selected:
             return
-        for account in selected:
-            try:
-                self.manager.clear_identity(account)
-            except ProfileError:
-                account.set_identity(None)
-        self.store.save()
-        self.refresh()
-        self.set_status(f"Đã bỏ khớp múi giờ cho {len(selected)} acc.")
+        self.goi_modun("bo_khop_mui_gio", selected, done_message=f"Đã bỏ khớp múi giờ cho {len(selected)} acc.")
 
     def _apply_proxy_change(self, pairs: list[tuple[Account, Proxy]]) -> None:
-        """Gán proxy rồi áp dụng; acc đang mở thì hỏi để khởi động lại."""
-        live: list[Account] = []
-        restart: list[Account] = []
-        for account, proxy in pairs:
-            # Proxy moi thi ket qua test cu khong con y nghia -> tra cot "Trang
-            # thai" ve trang thai acc cho toi khi test lai.
-            account.proxy_status = ""
-            account.proxy_checked = ""
+        """Gán proxy rồi dò vị trí — chạy Ở LUỒNG NỀN để KHÔNG treo tool khi thêm nhiều proxy.
+
+        Hai pha (mô-đun doi_proxy, ADR-028): (1) GÁN proxy vào cột cho tất cả acc rồi refresh bảng
+        NGAY; (2) DÒ VỊ TRÍ song song theo ô "Luồng" (mặc định 5). Trước đây chạy thẳng trên luồng
+        giao diện + dò tuần tự -> thêm 100 proxy là 'Not Responding' (yêu cầu người dùng 2026-09-21).
+        Acc đang mở cần mở lại -> hỏi sau khi xong.
+        """
+        from core import modun as modun_module
+        accs = [a for a, _ in pairs]
+        proxy_cua = {a.id: p for a, p in pairs}
+        luong = self._so_luong()
+        nc = modun_module.ngu_canh_tu(self, so_luong=luong)
+        self.set_status(f"Đang gán proxy cho {len(pairs)} acc vào cột, sau đó dò vị trí ({luong} luồng)...")
+
+        def work(run_accs):
+            # pha 1 (gán proxy) xong -> on_gan_xong refresh cột ngay; pha 2 (dò vị trí) chạy song song.
+            kq = modun_module.chay("doi_proxy", nc, run_accs, proxy_cua=proxy_cua,
+                                   on_gan_xong=lambda: self._post(self.refresh))
+
+            def xong():
+                self.refresh()
+                self.set_status(kq.ghi_chu or f"Đã đổi proxy cho {len(run_accs)} acc.")
+                if kq.loi:
+                    messagebox.showwarning(
+                        "Khớp theo proxy",
+                        "Đổi proxy xong nhưng không dò được vị trí của:" + chr(10)
+                        + chr(10).join(f"{i}: {ly}" for i, ly in kq.loi[:10])
+                        + chr(10) * 2 + "Múi giờ và ngôn ngữ vẫn giữ như cũ.", parent=self)
+                can = [a for a in run_accs if a.id in set(kq.du_lieu.get("can_mo_lai", []))]
+                if not can:
+                    return
+                names = ", ".join(a.id for a in can[:5]) + (f" ... (+{len(can) - 5})" if len(can) > 5 else "")
+                if messagebox.askyesno(
+                    "Cần mở lại trình duyệt",
+                    f"{len(can)} acc đang mở. Firefox chỉ đọc cấu hình proxy lúc khởi động "
+                    f"nên phải mở lại mới ăn proxy mới:" + chr(10) + f"{names}" + chr(10) * 2
+                    + "Khởi động lại ngay?", parent=self):
+                    self.goi_modun("mo_lai_profile", can, done_message=f"Đã mở lại {len(can)} trình duyệt.")
+
+            self._post(xong)
+
+        # Khóa per-acc (batch): chạy trên acc rảnh, bỏ acc đang bận ở tác vụ khác. Luồng nền -> GUI mượt.
+        self._run_async(work, "", accs=accs)
+
+    def _popup_check_menu(self) -> None:
+        """Bung menu Check tu nut tren thanh cong cu."""
+        m = self._make_menu(self)
+        m.add_command(label="Check proxy", command=self.check_proxies)
+        m.add_command(label="Check cookie", command=self.check_cookies)
+        m.add_command(label="Check tường (live/die)", command=self.check_walls)
+        self._apply_theme()
+        try:
+            m.tk_popup(self.winfo_pointerx(), self.winfo_pointery())
+        finally:
+            m.grab_release()
+
+    def _cookie_header(self, account: Account) -> str:
+        """Chuoi cookie 'name=value; ...' cua acc: uu tien cookie thuc trong profile,
+        khong thi doc tu chuoi cookie da luu."""
+        if self.manager.is_installed(account):
             try:
-                outcome = self.manager.set_proxy(account, proxy)
-            except ProfileError:
-                account.set_proxy(proxy)
-                outcome = "saved"
-            if outcome == "live":
-                live.append(account)
-            elif outcome == "restart":
-                restart.append(account)
+                from core import fbgroup
+                return fbgroup.read_fb_cookies(self.manager.profile_dir(account))
+            except Exception:
+                pass
+        raw = (account.cookie or "").strip()
+        if not raw:
+            return ""
+        try:
+            cookies = cookie_module.parse(raw, default_domain=".facebook.com")
+            return "; ".join(f"{c.name}={c.value}" for c in cookies if c.name)
+        except Exception:
+            return ""
+
+    def check_cookies(self) -> None:
+        """Check cookie: acc co cookie dang nhap (c_user) hay khong.
+
+        Kiem tra NHANH, khong ra mang: Facebook da khai tu mbasic nen khong con
+        endpoint HTTP nao xac nhan cookie con song. Muc nay chi cho biet acc DA CO
+        cookie dang nhap chua; muon biet chac song/die thi dung 'Check tường'.
+        """
+        selected = self._require_selection()
+        if not selected:
+            return
+        co, thieu = [], []
+        for account in selected:
+            header = self._cookie_header(account)
+            if "c_user=" in header:
+                co.append(account.id)
+                account.cookie_ok = account.cookie_ok or time.strftime("%Y-%m-%d %H:%M")
+            else:
+                thieu.append(account.id)
         self.store.save()
         self.refresh()
+        self.set_status(f"Có cookie đăng nhập: {len(co)}/{len(selected)}.")
+        msg = f"Có cookie đăng nhập: {len(co)} acc.\nThiếu cookie: {len(thieu)} acc."
+        if thieu:
+            msg += "\n\nThiếu cookie:\n" + ", ".join(thieu[:20])
+        msg += "\n\n(Cookie có sẵn chưa chắc còn sống — dùng 'Check tường' để biết chắc live/die.)"
+        messagebox.showinfo("Check cookie", msg, parent=self)
 
-        summary = f"Đã đổi proxy cho {len(pairs)} acc."
-        if live:
-            summary += f" {len(live)} acc đang mở đã áp dụng ngay."
-        self.set_status(summary)
+    def check_walls(self) -> None:
+        """Check tường acc FB bằng HTTP — KHÔNG mở trình duyệt (ADR-020).
 
-        # Proxy đổi thì quốc gia đổi theo, nên múi giờ + ngôn ngữ phải dò lại.
-        rematch = [
-            account for account, proxy in pairs
-            if account.auto_identity and proxy.enabled
-        ]
+        Dùng cookie riêng của từng acc gọi mbasic/me: còn phiên -> Live, bị đá về đăng nhập -> Die,
+        về checkpoint -> Checkpoint, cookie mất c_user -> Cookie chết. Chạy song song theo ô "Luồng".
+        """
+        selected = self._require_selection()
+        if not selected:
+            return
+        workers = min(self._so_luong(), len(selected))
+        self.set_status(f"Check tường {len(selected)} acc ({workers} luồng, không mở browser)...")
+        # Nghiep vu o mo-dun core/modun/check_tuong (ADR-028): HTTP bang cookie tung acc.
+        self.goi_modun("check_tuong", selected, so_luong=workers,
+                       tieu_de="Kết quả check tường (không mở browser)")
 
-        if restart:
-            names = ", ".join(a.id for a in restart[:5])
-            if len(restart) > 5:
-                names += f" ... (+{len(restart) - 5})"
-            if not messagebox.askyesno(
-                "Cần mở lại trình duyệt",
-                f"{len(restart)} acc đang mở. Firefox chỉ đọc cấu hình proxy lúc khởi động "
-                f"nên phải mở lại mới ăn proxy mới:\n{names}\n\nKhởi động lại ngay?",
-                parent=self,
-            ):
-                restart = []
-
-        if not rematch and not restart:
+    def enable_professional_selected(self) -> None:
+        """Bật chế độ chuyên nghiệp cho các acc đang chọn (menu ... trên profile)."""
+        from core import fbcreatepage
+        selected = self._require_selection()
+        if not selected:
+            return
+        # Acc chua co profile -> tu tao (tu_tao_profile) truoc khi bat.
+        workers = min(self._so_luong(), len(selected))    # o "Luong" dung chung
+        if not messagebox.askyesno(
+                "Chế độ chuyên nghiệp",
+                f"Bật chế độ chuyên nghiệp cho {len(selected)} acc ({workers} luồng cùng lúc)?\n"
+                "Acc chưa có profile sẽ tự tạo trước. Tool mở profile từng acc rồi bấm 'Bật'.",
+                parent=self):
             return
 
-        def work():
-            errors: list[str] = []
-            # Dò múi giờ TRƯỚC khi mở lại, để trình duyệt mở lên là đã đúng luôn.
-            for number, account in enumerate(rematch, start=1):
-                self.set_status(f"[{number}/{len(rematch)}] Đang dò vị trí {account.id}...")
-                try:
-                    identity = self.manager.match_identity(account)
-                    self.set_status(f"{account.id} → {identity.summary()}")
-                except (geoip.GeoLookupError, ProfileError, OSError) as exc:
-                    errors.append(f"{account.id}: {exc}".replace("\n", " ")[:160])
-            if rematch:
-                self.store.save()
-
-            for number, account in enumerate(restart, start=1):
-                self.set_status(f"[{number}/{len(restart)}] Đang mở lại {account.id}...")
-                self.manager.restart(account)
-
-            if errors:
-                report = ("Đổi proxy xong nhưng không dò được vị trí của:\n"
-                          + "\n".join(errors[:10])
-                          + "\n\nMúi giờ và ngôn ngữ vẫn giữ như cũ.")
-                self._post(lambda: messagebox.showwarning("Khớp theo proxy", report, parent=self))
-
-        done = []
-        if rematch:
-            done.append(f"khớp múi giờ cho {len(rematch)} acc")
-        if restart:
-            done.append(f"mở lại {len(restart)} trình duyệt")
-        self._run_async(work, "Đã " + " và ".join(done) + ".")
+        # Nghiep vu o mo-dun core/modun/bat_chuyen_nghiep (ADR-028).
+        self.goi_modun("bat_chuyen_nghiep", selected, so_luong=workers,
+                       tieu_de="Chế độ chuyên nghiệp", tu_tao_profile=True)
 
     def check_proxies(self) -> None:
         """Test proxy cua cac acc dang chon, ghi Live/Die vao cot "Trang thai".
@@ -1897,41 +2636,9 @@ class App(ctk.CTk):
             messagebox.showinfo("Test proxy", "Các acc đã chọn chưa gán proxy.", parent=self)
             return
 
-        def work():
-            lines = []
-            ip_of: dict[str, str] = {}   # acc id -> exit IP (de tim trung dai)
-            song = 0
-            for number, account in enumerate(targets, start=1):
-                self.set_status(f"[{number}/{len(targets)}] Đang kiểm tra proxy của {account.id}...")
-                ok, detail = test_proxy(account.get_proxy())
-                account.proxy_status = "Live" if ok else "Die"
-                account.proxy_checked = time.strftime("%Y-%m-%d %H:%M")
-                lines.append(f"{'✔' if ok else '✖'} {account.id}: {detail}")
-                if ok:
-                    song += 1
-                    ip = _extract_exit_ip(detail)
-                    if ip:
-                        ip_of[account.id] = ip
-                # Hien ngay tung dong xong, khong bat nguoi dung doi het ca lo.
-                self._post(self.refresh)
-
-            self.store.save()
-            self._post(self.refresh)
-            self.set_status(
-                f"Proxy sống {song}/{len(targets)}, chết {len(targets) - song}."
-            )
-
-            warning = _duplicate_subnet_report(ip_of)
-            chet = [line for line in lines if line.startswith("✖")]
-            # Chi bung hop thoai khi that su co gi can doc: proxy chet hoac trung dai.
-            if chet or warning:
-                report = chr(10).join(chet)
-                if warning:
-                    report = (report + chr(10) * 2 + warning) if report else warning
-                self._post(lambda: messagebox.showinfo(
-                    "Kết quả test proxy", report, parent=self))
-
-        self._run_async(work, "Kiểm tra proxy xong.")
+        # Nghiep vu (test_proxy, Live/Die, canh bao trung dai IP) o mo-dun core/modun/check_proxy (ADR-028).
+        # Mang thuan, khong dung profile -> accs=None: khong khoa acc.
+        self.goi_modun("check_proxy", targets, khoa=False, tieu_de="Kết quả test proxy")
 
     def edit_cookie(self) -> None:
         selected = self._require_selection(single=True)
@@ -1970,16 +2677,12 @@ class App(ctk.CTk):
             written = self._apply_cookie(account, replace=result["replace"], domain=result["domain"])
             self.set_status(f"Đã nạp {written} cookie vào profile {account.id}.")
 
-        self._run_async(work, "Nạp cookie xong.")
+        self._run_async(work, "Nạp cookie xong.", accs=[account])
 
     def _apply_cookie(self, account: Account, replace: bool, domain: str = ".facebook.com") -> int:
-        parsed = cookie_module.parse(account.cookie, default_domain=domain)
-        if not parsed:
-            return 0
-        return cookie_module.write_to_profile(
-            self.manager.profile_dir(account), parsed, replace_all=replace
-        )
-
+        """Ghi cookie da luu vao profile — nghiep vu o core.modun.tao_profile.nap_cookie_da_luu."""
+        from core.modun.tao_profile import nap_cookie_da_luu
+        return nap_cookie_da_luu(self.manager, account, replace=replace, domain=domain)
     def save_cookie_from_profile(self) -> None:
         """Lay cookie dang song trong profile ghi nguoc vao acc.
 
@@ -2109,26 +2812,8 @@ class App(ctk.CTk):
         self.settings.extension_xpi = xpi
         self.settings.save()
 
-        def work():
-            done, errors = 0, []
-            for number, account in enumerate(usable, start=1):
-                self.set_status(f"[{number}/{len(usable)}] Cài extension cho {account.id}...")
-                if self.manager.is_running(account):
-                    self.manager.close(account)
-                    time.sleep(1.5)
-                try:
-                    self.manager.install_extension(account, xpi)
-                    done += 1
-                except (ProfileError, OSError) as exc:
-                    errors.append(f"{account.id}: {exc}")
-            if errors:
-                report = (f"Cài được {done}/{len(usable)}.\n\nLỗi:\n" + "\n".join(errors[:8]))
-                self._post(lambda: messagebox.showwarning("Extension", report, parent=self))
-
-        self._run_async(
-            work,
-            f"Đã cài {addon_id} v{version}. Mở lại trình duyệt để Firefox nhận addon.",
-        )
+        self.goi_modun("extension", usable, tieu_de="Extension", hanh_dong="cai", xpi=xpi,
+                       done_message=f"Đã cài {addon_id} v{version}. Mở lại trình duyệt để Firefox nhận addon.")
 
     def remove_extension(self) -> None:
         """Gỡ extension khỏi profile của các acc đã chọn."""
@@ -2153,18 +2838,7 @@ class App(ctk.CTk):
         ):
             return
 
-        def work():
-            removed = 0
-            for addon_id, accounts in found.items():
-                for account in accounts:
-                    if self.manager.is_running(account):
-                        self.manager.close(account)
-                        time.sleep(1.5)
-                    if self.manager.remove_extension(account, addon_id):
-                        removed += 1
-            self.set_status(f"Đã gỡ extension khỏi {removed} profile.")
-
-        self._run_async(work, "Gỡ extension xong.")
+        self.goi_modun("extension", selected, tieu_de="Extension", hanh_dong="go", done_message="Gỡ extension xong.")
 
     def clear_cache(self) -> None:
         """Xoá cache trình duyệt của các acc đã chọn, giữ nguyên đăng nhập."""
@@ -2198,27 +2872,7 @@ class App(ctk.CTk):
         if not messagebox.askyesno("Xoá cache", question, parent=self):
             return
 
-        def work():
-            freed = 0
-            errors: list[str] = []
-            for number, account in enumerate(targets, start=1):
-                self.set_status(f"[{number}/{len(targets)}] Đang xoá cache {account.id}...")
-                if self.manager.is_running(account):
-                    self.manager.close(account)
-                    time.sleep(1.5)
-                try:
-                    freed += self.manager.clear_cache(account)
-                except (ProfileError, OSError) as exc:
-                    errors.append(f"{account.id}: {exc}")
-            self._post(self.refresh)
-            if errors:
-                report = (f"Giải phóng {freed / 1024 / 1024:.0f} MB.\n\nKhông xoá được:\n"
-                          + "\n".join(errors[:10]))
-                self._post(lambda: messagebox.showwarning("Xoá cache", report, parent=self))
-            else:
-                self.set_status(f"Đã xoá cache, giải phóng {freed / 1024 / 1024:.0f} MB.")
-
-        self._run_async(work, "Xoá cache xong.")
+        self.goi_modun("xoa_cache", targets, tieu_de="Xoá cache")
 
     def cleanup_installers(self) -> None:
         """Xoá bản sao *.paf.exe còn sót trong thư mục các acc đã chọn."""
@@ -2305,7 +2959,7 @@ class App(ctk.CTk):
                 report += "\n\nKhông chuyển được:\n" + "\n".join(errors[:10])
             self._post(lambda: messagebox.showinfo("Chuyển profile", report, parent=self))
 
-        self._run_async(work, "Chuyển profile xong.")
+        self._run_async(work, "Chuyển profile xong.", accs=self._rows)
 
     # ------------------------------------------------------------------
     def sign_out(self) -> None:
@@ -2334,59 +2988,48 @@ class App(ctk.CTk):
         self._show_after_login()
 
     def _on_close(self) -> None:
+        self._da_dong = True            # cac bo theo doi nen tu thoi
+        try:
+            self.autoup.stop()
+        except Exception:
+            pass
+        try:
+            self.autoup_x.stop()
+        except Exception:
+            pass
+
         # Proxy nam trong mozilla.cfg cua tung profile, khong con di qua relay cua
         # tool nua -- dong tool khong con lam trinh duyet mat mang.
         self.relays.stop_all()
         self.destroy()
 
 
-_IP_RE = re.compile(r"IP ra ngoài:\s*([0-9a-fA-F:.]+)")
+# Helper test proxy da chuyen ve core/modun/check_proxy (ADR-028); giu ten cu.
+from core.modun.check_proxy import (extract_exit_ip as _extract_exit_ip,  # noqa: E402
+                                    subnet_key as _subnet_key,
+                                    duplicate_subnet_report as _duplicate_subnet_report)
 
 
-def _extract_exit_ip(detail: str) -> str:
-    match = _IP_RE.search(detail or "")
-    return match.group(1).strip() if match else ""
+def _thoat_han(ma: int = 0) -> None:
+    """THOAT HAN tien trinh sau khi cua so da dong.
 
-
-def _subnet_key(ip: str) -> str:
-    """Khoa gom nhom: IPv6 tinh theo /64, IPv4 theo tung dia chi.
-
-    Google dem han muc IPv6 theo ca khoi /64, nen nhieu acc chung /64 se bi coi
-    la mot nguon -> de dinh CAPTCHA du dia chi day du khac nhau.
+    Loi that 29/09 (may khac): dong tool roi ma khong ghi de duoc "LVC Manager Profile.exe" —
+    "file is open in LVC Manager Profile.exe". Python CHO moi viec nen cua ThreadPoolExecutor
+    (dang bai video toi 23 phut, tao page...) chay xong moi thoat -> tien trinh song ngam, khong
+    cua so, giu khoa file exe. _on_close da dung vong lap + relay; du lieu ghi kieu file tam +
+    os.replace nen cat ngang khong hong file. Firefox dang mo la tien trinh rieng, khong bi tat.
     """
     try:
-        addr = ipaddress.ip_address(ip)
-    except ValueError:
-        return ""
-    if addr.version == 6:
-        net = ipaddress.ip_network(f"{ip}/64", strict=False)
-        return f"{net.network_address}/64"
-    return str(addr)
-
-
-def _duplicate_subnet_report(ip_of: dict) -> str:
-    """Canh bao cac acc co exit IP trung dai (cung /64 IPv6 hoac cung IPv4)."""
-    groups: dict[str, list[str]] = {}
-    for account_id, ip in ip_of.items():
-        key = _subnet_key(ip)
-        if key:
-            groups.setdefault(key, []).append(account_id)
-
-    dupes = {k: v for k, v in groups.items() if len(v) > 1}
-    if not dupes:
-        return ""
-
-    lines = ["⚠ CẢNH BÁO: nhiều acc dùng chung dải IP → Google dễ bắt CAPTCHA:"]
-    for key, ids in dupes.items():
-        kind = "/64 (IPv6)" if "/64" in key else "IP (IPv4)"
-        lines.append(f"  • {len(ids)} acc chung {kind} {key}:")
-        lines.append("      " + ", ".join(ids))
-    lines.append("  → Nên cho mỗi acc một dải IP khác nhau (đổi proxy/IP).")
-    return "\n".join(lines)
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:
+        pass
+    os._exit(ma)
 
 
 def run() -> None:
     app = App()
     if app.session is None:   # nguoi dung dong cong dang nhap
-        return
+        _thoat_han(0)
     app.mainloop()
+    _thoat_han(0)

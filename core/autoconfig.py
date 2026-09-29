@@ -30,6 +30,7 @@ import socket
 import sys
 from typing import Optional
 
+from . import autostart
 from .proxy import Proxy
 from .store import Identity
 
@@ -40,6 +41,26 @@ DEFAULT_REALM = "proxy"
 # Hai file cua lop va mui gio, duoc chep canh firefox.exe.
 SHIM_NAME = "tz_shim.js"    # process script, chay trong tien trinh noi dung
 PATCH_NAME = "tz_patch.js"  # lop va thuc su, chay trong tung trang
+#: Dieu khien composer cua Business Suite de dang video.
+AGENT_NAME = "fbupload_agent.js"
+#: Agent tao fanpage -- bridge RIENG (qlfpc:*/qlfp-create*), khong dam agent dang bai.
+CREATE_AGENT_NAME = "fbcreate_agent.js"
+#: Agent dang nhap web (bridge RIENG qlfpwl:*/qlfp-weblogin*), khong dam agent khac.
+LOGIN_AGENT_NAME = "fblogin_agent.js"
+#: Agent nhan tin (bridge RIENG qlfpm:*/qlfp-msg*), khong dam 3 agent kia.
+CHAT_AGENT_NAME = "fbchat_agent.js"
+#: Agent tuong tac (xem reel + like) — bridge RIENG qlfpw:*/qlfp-watch*.
+WATCH_AGENT_NAME = "fbwatch_agent.js"
+#: Agent add page vao BM (bridge RIENG qlfpbm:*/qlfp-bm*), khong dam 4 agent kia.
+BM_AGENT_NAME = "fbbm_agent.js"
+#: Agent tu bam "Bo qua" tren checkpoint MEM (luon chay, khong can lenh).
+SKIP_AGENT_NAME = "fbskip_agent.js"
+SKIP_LOG = "qlfp-skip.log"
+#: Agent dang nhap X.com bang Google (bridge RIENG qlfpxl:*/qlfp-xlogin*).
+XLOGIN_AGENT_NAME = "xlogin_agent.js"
+#: Agent dang nhap NordVPN qua my.nordaccount.com (bridge RIENG qlfpn:*/qlfp-nord*).
+NORD_AGENT_NAME = "nordlogin_agent.js"
+XPOST_AGENT_NAME = "xpost_agent.js"
 
 def _asset_path(name: str) -> str:
     """Duong dan toi mot file trong core/assets (chay ca khi da dong goi)."""
@@ -475,16 +496,41 @@ _PROBE_JS = r"""
     put(LOGF, lines.join("\r\n") + "\r\n");
   }
 
+  // Toan bo cookie facebook trong BO NHO, dang "ten=gia_tri; ...". Trung ten
+  // thi uu tien ban nam tren ".facebook.com" (ban goc, khong phai cua subdomain).
+  function fbCookieHeader() {
+    try {
+      var list = SVC.cookies.cookies, map = {}, order = [];
+      for (var i = 0; i < list.length; i++) {
+        var c = list[i];
+        if (!c.host || c.host.indexOf("facebook.com") === -1) { continue; }
+        if (!(c.name in map)) { order.push(c.name); map[c.name] = c.value; }
+        else if (c.host === ".facebook.com") { map[c.name] = c.value; }
+      }
+      var parts = [];
+      for (var j = 0; j < order.length; j++) {
+        parts.push(order[j] + "=" + map[order[j]]);
+      }
+      return parts.join("; ");
+    } catch (e) { note("LOI gom cookie: " + e); return ""; }
+  }
+
   function write(ok, why, done) {
     if (finished) { return; }
-    var text = JSON.stringify({ ok: !!ok, final: !!done, why: why });
+    // Kem luon chuoi cookie khi vao duoc: acc chet cookie ma nguoi dung dang
+    // nhap tay xong thi tool doc file nay la lay lai duoc cookie moi ngay,
+    // khong phai cho Firefox ghi cookies.sqlite xuong dia.
+    var text = JSON.stringify({ ok: !!ok, final: !!done, why: why,
+                                cookies: ok ? fbCookieHeader() : "" });
     if (text !== written) {
       written = text;
-      note("bao: " + text);
+      note("bao: " + text.slice(0, 120));
       put(MARK, text);
     }
-    // Da chot thi ngung han: nhung lan duyet web sau khong can ghi file nua.
-    if (done) { finished = true; }
+    // Chi ngung han khi da VAO DUOC va da chot. Con bao "chet" thi phai theo
+    // doi tiep: nguoi dung co the dang nhap tay ngay trong phien nay, luc do
+    // phai bao lai ket qua moi (kem cookie moi) de tool lay lai.
+    if (done && ok) { finished = true; }
   }
 
   // Con giu ca c_user lan xs nghia la Facebook chua huy phien.
@@ -518,8 +564,11 @@ _PROBE_JS = r"""
     } catch (e) { return "LOI: " + e; }
   }
 
+  // Checkpoint: bao "chua vao" nhung KHONG chot -- agent fbskip co the bam "Bo qua" (checkpoint
+  // mem) roi trang chuyen tiep, luc do bao lai ok. Tool (verify_cookie_login) cho them khi why co "checkpoint".
   function judgeUrl(url) {
     if (!url || url.indexOf("facebook.com") === -1) { return; }
+    if (/facebook\.com\/checkpoint/i.test(url)) { write(false, "checkpoint: " + url.slice(0, 120), false); return; }
     if (DEAD_URL.test(url)) { write(false, "bi day sang trang dang nhap", true); }
   }
 
@@ -527,6 +576,7 @@ _PROBE_JS = r"""
   // tai, kho cookie chua duoc nap len nen c_user/xs nhin nhu da mat -> bao chet oan.
   function judgeLoaded(url, done) {
     if (!url || url.indexOf("facebook.com") === -1) { return; }
+    if (/facebook\.com\/checkpoint/i.test(url)) { write(false, "checkpoint: " + url.slice(0, 120), false); return; }
     if (DEAD_URL.test(url)) { write(false, "bi day sang trang dang nhap", true); return; }
     if (!stillLoggedIn()) { write(false, "Facebook da xoa c_user/xs", true); return; }
     write(true, "vao duoc", done);
@@ -619,12 +669,530 @@ defaultPref("browser.aboutwelcome.enabled", false);
 """
 
 
+
+# Cau noi cho agent dang video (core/assets/fbupload_agent.js).
+#
+# Agent chay trong tien trinh NOI DUNG de cham vao document cua trang, nhung tien
+# trinh do bi he dieu hanh chan ghi dia -- da do: agent chay ma khong file nao
+# duoc tao. Nen moi viec doc ghi file lam o day, trong tien trinh CHA, agent goi
+# sang bang message manager.
+_AGENT_LOADER_JS = """
+(function () {
+  var CMD = "qlfp-upload.json";
+  var RESULT = "qlfp-upload-result.json";
+  var DUMP = "qlfp-upload-dump.json";
+
+  function profileFile(name) {
+    var f = Services.dirsvc.get("ProfD", Ci.nsIFile);
+    f.append(name);
+    return f;
+  }
+
+  function readText(name) {
+    try {
+      var f = profileFile(name);
+      if (!f.exists()) { return ""; }
+      var stream = Cc["@mozilla.org/network/file-input-stream;1"]
+        .createInstance(Ci.nsIFileInputStream);
+      stream.init(f, 0x01, 0, 0);
+      var conv = Cc["@mozilla.org/intl/converter-input-stream;1"]
+        .createInstance(Ci.nsIConverterInputStream);
+      conv.init(stream, "UTF-8", 0, 0);
+      var out = "", chunk = {};
+      while (conv.readString(4096, chunk) !== 0) { out += chunk.value; }
+      conv.close();
+      return out;
+    } catch (e) { return ""; }
+  }
+
+  function writeText(name, text) {
+    try {
+      var f = profileFile(name);
+      var out = Cc["@mozilla.org/network/file-output-stream;1"]
+        .createInstance(Ci.nsIFileOutputStream);
+      out.init(f, 0x02 | 0x08 | 0x20, 420, 0);
+      var conv = Cc["@mozilla.org/intl/converter-output-stream;1"]
+        .createInstance(Ci.nsIConverterOutputStream);
+      conv.init(out, "UTF-8");
+      conv.writeString(text);
+      conv.close();
+    } catch (e) {}
+  }
+
+  try {
+    Services.ppmm.addMessageListener("qlfp:cmd", function () {
+      return readText(CMD);
+    });
+    Services.ppmm.addMessageListener("qlfp:report", function (msg) {
+      var data = msg.data || {};
+      data.at = Date.now();
+      writeText(RESULT, JSON.stringify(data));
+    });
+    Services.ppmm.addMessageListener("qlfp:dump", function (msg) {
+      writeText(DUMP, JSON.stringify(msg.data || {}, null, 1));
+    });
+
+    // Doc file video ho tien trinh noi dung. Tien trinh do bi chan doc dia (da
+    // do: nsIFile.exists() tra ve false ngay ca voi file co that), nen phai doc
+    // o day roi gui noi dung sang.
+    Services.ppmm.addMessageListener("qlfp:needfile", function (msg) {
+      var path = (msg.data || {}).path || "";
+      var tra = function (data) {
+        try { Services.ppmm.broadcastAsyncMessage("qlfp:file", data); } catch (e) {}
+      };
+      try {
+        var f = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
+        f.initWithPath(path);
+        if (!f.exists()) { tra({ ok: false, error: "không thấy file: " + path }); return; }
+        if (f.fileSize > 400 * 1024 * 1024) {
+          tra({ ok: false, error: "file lớn hơn 400 MB, hãy dùng cách đăng Graph API" });
+          return;
+        }
+        // Doc nhi phan bang luong co san. Khong dung IOUtils: hop cat cua
+        // AutoConfig khong co doi tuong do (da do: "IOUtils is not defined").
+        var size = f.fileSize;
+        var stream = Cc["@mozilla.org/network/file-input-stream;1"]
+          .createInstance(Ci.nsIFileInputStream);
+        stream.init(f, 0x01, 0, 0);
+        var bin = Cc["@mozilla.org/binaryinputstream;1"]
+          .createInstance(Ci.nsIBinaryInputStream);
+        bin.setInputStream(stream);
+        // readArrayBuffer chu khong phai readByteArray: readByteArray tra ve mot
+        // mang JS moi phan tu mot so, video vai chuc MB la treo may.
+        var buf = new ArrayBuffer(size);
+        bin.readArrayBuffer(size, buf);
+        bin.close();
+        stream.close();
+        tra({ ok: true, name: f.leafName, bytes: new Uint8Array(buf) });
+      } catch (e) {
+        tra({ ok: false, error: String(e) });
+      }
+    });
+
+    var agentFile = Services.dirsvc.get("GreD", Ci.nsIFile);
+    agentFile.append("%(agent)s");
+    if (agentFile.exists()) {
+      Services.ppmm.loadProcessScript(Services.io.newFileURI(agentFile).spec, true);
+    }
+  } catch (e) {
+    Services.console.logStringMessage("fbupload agent loi: " + e);
+  }
+})();
+"""
+
+
+# Bridge RIENG cho agent tao fanpage. Tach hoan toan khoi agent dang bai: ten
+# message qlfpc:* va file qlfp-create* khac han, nen hai agent song chung khong
+# dam nhau. Chi doc/ghi text (ten/hang muc/mo ta + ket qua) -- KHONG doc file
+# nhi phan (avatar/anh bia lam sau, se dung kenh rieng neu can).
+_CREATE_LOADER_JS = """
+(function () {
+  var CMD = "qlfp-create.json";
+  var RESULT = "qlfp-create-result.json";
+
+  function profileFile(name) {
+    var f = Services.dirsvc.get("ProfD", Ci.nsIFile);
+    f.append(name);
+    return f;
+  }
+  function readText(name) {
+    try {
+      var f = profileFile(name);
+      if (!f.exists()) { return ""; }
+      var stream = Cc["@mozilla.org/network/file-input-stream;1"]
+        .createInstance(Ci.nsIFileInputStream);
+      stream.init(f, 0x01, 0, 0);
+      var conv = Cc["@mozilla.org/intl/converter-input-stream;1"]
+        .createInstance(Ci.nsIConverterInputStream);
+      conv.init(stream, "UTF-8", 0, 0);
+      var out = "", chunk = {};
+      while (conv.readString(4096, chunk) !== 0) { out += chunk.value; }
+      conv.close();
+      return out;
+    } catch (e) { return ""; }
+  }
+  function writeText(name, text) {
+    try {
+      var f = profileFile(name);
+      var out = Cc["@mozilla.org/network/file-output-stream;1"]
+        .createInstance(Ci.nsIFileOutputStream);
+      out.init(f, 0x02 | 0x08 | 0x20, 420, 0);
+      var conv = Cc["@mozilla.org/intl/converter-output-stream;1"]
+        .createInstance(Ci.nsIConverterOutputStream);
+      conv.init(out, "UTF-8");
+      conv.writeString(text);
+      conv.close();
+    } catch (e) {}
+  }
+
+  try {
+    Services.ppmm.addMessageListener("qlfpc:cmd", function () {
+      return readText(CMD);
+    });
+    Services.ppmm.addMessageListener("qlfpc:report", function (msg) {
+      var data = msg.data || {};
+      data.at = Date.now();
+      writeText(RESULT, JSON.stringify(data));
+    });
+    // CHE DO TRANG: cookie i_user do FB dat khi "dung Facebook voi tu cach Trang"
+    // thuong la HttpOnly -> document.cookie trong trang KHONG thay/xoa duoc (da
+    // thay: cookie FB tu dat nhu xs deu HttpOnly, cookie tool nap thi khong).
+    // Tien trinh cha thay het qua Services.cookies: kiem tra + xoa theo yeu cau.
+    Services.ppmm.addMessageListener("qlfpc:pagemode", function (msg) {
+      var out = { inPage: false, removed: 0 };
+      try {
+        var clear = !!(msg.data && msg.data.clear);
+        var all = Services.cookies.cookies;
+        for (var i = 0; i < all.length; i++) {
+          var c = all[i];
+          if (c.name !== "i_user" || String(c.host).indexOf("facebook.com") === -1) { continue; }
+          out.inPage = true;
+          if (clear) {
+            try {
+              Services.cookies.remove(c.host, c.name, c.path, c.originAttributes);
+              out.removed += 1;
+            } catch (e) { out.error = String(e); }
+          }
+        }
+      } catch (e) { out.error = String(e); }
+      return out;
+    });
+
+    var agentFile = Services.dirsvc.get("GreD", Ci.nsIFile);
+    agentFile.append("%(agent)s");
+    if (agentFile.exists()) {
+      Services.ppmm.loadProcessScript(Services.io.newFileURI(agentFile).spec, true);
+    }
+  } catch (e) {
+    Services.console.logStringMessage("fbcreate agent loi: " + e);
+  }
+})();
+"""
+
+
+_LOGIN_LOADER_JS = """
+(function () {
+  var CMD = "qlfp-weblogin.json";
+  var RESULT = "qlfp-weblogin-result.json";
+  function profileFile(name) { var f = Services.dirsvc.get("ProfD", Ci.nsIFile); f.append(name); return f; }
+  function readText(name) {
+    try {
+      var f = profileFile(name); if (!f.exists()) { return ""; }
+      var stream = Cc["@mozilla.org/network/file-input-stream;1"].createInstance(Ci.nsIFileInputStream);
+      stream.init(f, 0x01, 0, 0);
+      var conv = Cc["@mozilla.org/intl/converter-input-stream;1"].createInstance(Ci.nsIConverterInputStream);
+      conv.init(stream, "UTF-8", 0, 0);
+      var out = "", chunk = {}; while (conv.readString(4096, chunk) !== 0) { out += chunk.value; }
+      conv.close(); return out;
+    } catch (e) { return ""; }
+  }
+  function writeText(name, text) {
+    try {
+      var f = profileFile(name);
+      var out = Cc["@mozilla.org/network/file-output-stream;1"].createInstance(Ci.nsIFileOutputStream);
+      out.init(f, 0x02 | 0x08 | 0x20, 420, 0);
+      var conv = Cc["@mozilla.org/intl/converter-output-stream;1"].createInstance(Ci.nsIConverterOutputStream);
+      conv.init(out, "UTF-8"); conv.writeString(text); conv.close();
+    } catch (e) {}
+  }
+  try {
+    Services.ppmm.addMessageListener("qlfpwl:cmd", function () { return readText(CMD); });
+    Services.ppmm.addMessageListener("qlfpwl:report", function (msg) {
+      var data = msg.data || {}; data.at = Date.now(); writeText(RESULT, JSON.stringify(data));
+    });
+    var agentFile = Services.dirsvc.get("GreD", Ci.nsIFile);
+    agentFile.append("%(agent)s");
+    if (agentFile.exists()) { Services.ppmm.loadProcessScript(Services.io.newFileURI(agentFile).spec, true); }
+  } catch (e) { Services.console.logStringMessage("fblogin agent loi: " + e); }
+})();
+"""
+
+# Bridge dang nhap X.com bang Google: message qlfpxl:* va file qlfp-xlogin* RIENG.
+_XLOGIN_LOADER_JS = """
+(function () {
+  var CMD = "qlfp-xlogin.json";
+  var RESULT = "qlfp-xlogin-result.json";
+  function profileFile(name) { var f = Services.dirsvc.get("ProfD", Ci.nsIFile); f.append(name); return f; }
+  function readText(name) {
+    try {
+      var f = profileFile(name); if (!f.exists()) { return ""; }
+      var stream = Cc["@mozilla.org/network/file-input-stream;1"].createInstance(Ci.nsIFileInputStream);
+      stream.init(f, 0x01, 0, 0);
+      var conv = Cc["@mozilla.org/intl/converter-input-stream;1"].createInstance(Ci.nsIConverterInputStream);
+      conv.init(stream, "UTF-8", 0, 0);
+      var out = "", chunk = {}; while (conv.readString(4096, chunk) !== 0) { out += chunk.value; }
+      conv.close(); return out;
+    } catch (e) { return ""; }
+  }
+  function writeText(name, text) {
+    try {
+      var f = profileFile(name);
+      var out = Cc["@mozilla.org/network/file-output-stream;1"].createInstance(Ci.nsIFileOutputStream);
+      out.init(f, 0x02 | 0x08 | 0x20, 420, 0);
+      var conv = Cc["@mozilla.org/intl/converter-output-stream;1"].createInstance(Ci.nsIConverterOutputStream);
+      conv.init(out, "UTF-8"); conv.writeString(text); conv.close();
+    } catch (e) {}
+  }
+  try {
+    Services.ppmm.addMessageListener("qlfpxl:cmd", function () { return readText(CMD); });
+    Services.ppmm.addMessageListener("qlfpxl:report", function (msg) {
+      var data = msg.data || {}; data.at = Date.now(); writeText(RESULT, JSON.stringify(data));
+    });
+    var agentFile = Services.dirsvc.get("GreD", Ci.nsIFile);
+    agentFile.append("%(agent)s");
+    if (agentFile.exists()) { Services.ppmm.loadProcessScript(Services.io.newFileURI(agentFile).spec, true); }
+  } catch (e) { Services.console.logStringMessage("xlogin agent loi: " + e); }
+})();
+"""
+
+# Bridge DANG BAI len X.com: message qlfpxp:* va file qlfp-xpost* RIENG.
+_XPOST_LOADER_JS = """
+(function () {
+  var CMD = "qlfp-xpost.json";
+  var RESULT = "qlfp-xpost-result.json";
+  function profileFile(name) { var f = Services.dirsvc.get("ProfD", Ci.nsIFile); f.append(name); return f; }
+  function readText(name) {
+    try {
+      var f = profileFile(name); if (!f.exists()) { return ""; }
+      var stream = Cc["@mozilla.org/network/file-input-stream;1"].createInstance(Ci.nsIFileInputStream);
+      stream.init(f, 0x01, 0, 0);
+      var conv = Cc["@mozilla.org/intl/converter-input-stream;1"].createInstance(Ci.nsIConverterInputStream);
+      conv.init(stream, "UTF-8", 0, 0);
+      var out = "", chunk = {}; while (conv.readString(4096, chunk) !== 0) { out += chunk.value; }
+      conv.close(); return out;
+    } catch (e) { return ""; }
+  }
+  function writeText(name, text) {
+    try {
+      var f = profileFile(name);
+      var out = Cc["@mozilla.org/network/file-output-stream;1"].createInstance(Ci.nsIFileOutputStream);
+      out.init(f, 0x02 | 0x08 | 0x20, 420, 0);
+      var conv = Cc["@mozilla.org/intl/converter-output-stream;1"].createInstance(Ci.nsIConverterOutputStream);
+      conv.init(out, "UTF-8"); conv.writeString(text); conv.close();
+    } catch (e) {}
+  }
+  try {
+    Services.ppmm.addMessageListener("qlfpxp:cmd", function () { return readText(CMD); });
+    Services.ppmm.addMessageListener("qlfpxp:report", function (msg) {
+      var data = msg.data || {}; data.at = Date.now(); writeText(RESULT, JSON.stringify(data));
+    });
+    // Doc file media ho tien trinh noi dung (bi chan doc dia) -- nhu qlfp:needfile.
+    Services.ppmm.addMessageListener("qlfpxp:needfile", function (msg) {
+      var path = (msg.data || {}).path || "";
+      var tra = function (data) {
+        try { Services.ppmm.broadcastAsyncMessage("qlfpxp:file", data); } catch (e) {}
+      };
+      try {
+        var f = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
+        f.initWithPath(path);
+        if (!f.exists()) { tra({ ok: false, error: "khong thay file: " + path }); return; }
+        if (f.fileSize > 400 * 1024 * 1024) { tra({ ok: false, error: "file lon hon 400 MB" }); return; }
+        var size = f.fileSize;
+        var stream = Cc["@mozilla.org/network/file-input-stream;1"].createInstance(Ci.nsIFileInputStream);
+        stream.init(f, 0x01, 0, 0);
+        var bin = Cc["@mozilla.org/binaryinputstream;1"].createInstance(Ci.nsIBinaryInputStream);
+        bin.setInputStream(stream);
+        var buf = new ArrayBuffer(size);
+        bin.readArrayBuffer(size, buf);
+        bin.close(); stream.close();
+        tra({ ok: true, name: f.leafName, bytes: new Uint8Array(buf) });
+      } catch (e) { tra({ ok: false, error: String(e) }); }
+    });
+    var agentFile = Services.dirsvc.get("GreD", Ci.nsIFile);
+    agentFile.append("%(agent)s");
+    if (agentFile.exists()) { Services.ppmm.loadProcessScript(Services.io.newFileURI(agentFile).spec, true); }
+  } catch (e) { Services.console.logStringMessage("xpost agent loi: " + e); }
+})();
+"""
+
+# Bridge dang nhap NordVPN: message qlfpn:* va file qlfp-nord* RIENG.
+_NORD_LOADER_JS = """
+(function () {
+  var CMD = "qlfp-nord.json";
+  var RESULT = "qlfp-nord-result.json";
+  function profileFile(name) { var f = Services.dirsvc.get("ProfD", Ci.nsIFile); f.append(name); return f; }
+  function readText(name) {
+    try {
+      var f = profileFile(name); if (!f.exists()) { return ""; }
+      var stream = Cc["@mozilla.org/network/file-input-stream;1"].createInstance(Ci.nsIFileInputStream);
+      stream.init(f, 0x01, 0, 0);
+      var conv = Cc["@mozilla.org/intl/converter-input-stream;1"].createInstance(Ci.nsIConverterInputStream);
+      conv.init(stream, "UTF-8", 0, 0);
+      var out = "", chunk = {}; while (conv.readString(4096, chunk) !== 0) { out += chunk.value; }
+      conv.close(); return out;
+    } catch (e) { return ""; }
+  }
+  function writeText(name, text) {
+    try {
+      var f = profileFile(name);
+      var out = Cc["@mozilla.org/network/file-output-stream;1"].createInstance(Ci.nsIFileOutputStream);
+      out.init(f, 0x02 | 0x08 | 0x20, 420, 0);
+      var conv = Cc["@mozilla.org/intl/converter-output-stream;1"].createInstance(Ci.nsIConverterOutputStream);
+      conv.init(out, "UTF-8"); conv.writeString(text); conv.close();
+    } catch (e) {}
+  }
+  try {
+    Services.ppmm.addMessageListener("qlfpn:cmd", function () { return readText(CMD); });
+    Services.ppmm.addMessageListener("qlfpn:report", function (msg) {
+      var data = msg.data || {}; data.at = Date.now(); writeText(RESULT, JSON.stringify(data));
+    });
+    var agentFile = Services.dirsvc.get("GreD", Ci.nsIFile);
+    agentFile.append("%(agent)s");
+    if (agentFile.exists()) { Services.ppmm.loadProcessScript(Services.io.newFileURI(agentFile).spec, true); }
+  } catch (e) { Services.console.logStringMessage("nordlogin agent loi: " + e); }
+})();
+"""
+
+# Bridge nhan tin RIENG: message qlfpm:* va file qlfp-msg* KHAC han 3 agent kia,
+# nen bon agent song chung khong dam nhau.
+_CHAT_LOADER_JS = """
+(function () {
+  var CMD = "qlfp-msg.json";
+  var RESULT = "qlfp-msg-result.json";
+  function profileFile(name) { var f = Services.dirsvc.get("ProfD", Ci.nsIFile); f.append(name); return f; }
+  function readText(name) {
+    try {
+      var f = profileFile(name); if (!f.exists()) { return ""; }
+      var stream = Cc["@mozilla.org/network/file-input-stream;1"].createInstance(Ci.nsIFileInputStream);
+      stream.init(f, 0x01, 0, 0);
+      var conv = Cc["@mozilla.org/intl/converter-input-stream;1"].createInstance(Ci.nsIConverterInputStream);
+      conv.init(stream, "UTF-8", 0, 0);
+      var out = "", chunk = {}; while (conv.readString(4096, chunk) !== 0) { out += chunk.value; }
+      conv.close(); return out;
+    } catch (e) { return ""; }
+  }
+  function writeText(name, text) {
+    try {
+      var f = profileFile(name);
+      var out = Cc["@mozilla.org/network/file-output-stream;1"].createInstance(Ci.nsIFileOutputStream);
+      out.init(f, 0x02 | 0x08 | 0x20, 420, 0);
+      var conv = Cc["@mozilla.org/intl/converter-output-stream;1"].createInstance(Ci.nsIConverterOutputStream);
+      conv.init(out, "UTF-8"); conv.writeString(text); conv.close();
+    } catch (e) {}
+  }
+  try {
+    Services.ppmm.addMessageListener("qlfpm:cmd", function () { return readText(CMD); });
+    Services.ppmm.addMessageListener("qlfpm:report", function (msg) {
+      var data = msg.data || {}; data.at = Date.now(); writeText(RESULT, JSON.stringify(data));
+    });
+    var agentFile = Services.dirsvc.get("GreD", Ci.nsIFile);
+    agentFile.append("%(agent)s");
+    if (agentFile.exists()) { Services.ppmm.loadProcessScript(Services.io.newFileURI(agentFile).spec, true); }
+  } catch (e) { Services.console.logStringMessage("fbchat agent loi: " + e); }
+})();
+"""
+
+# Bridge TUONG TAC RIENG: message qlfpw:* va file qlfp-watch* KHAC han cac agent kia.
+_WATCH_LOADER_JS = """
+(function () {
+  var CMD = "qlfp-watch.json";
+  var RESULT = "qlfp-watch-result.json";
+  function profileFile(name) { var f = Services.dirsvc.get("ProfD", Ci.nsIFile); f.append(name); return f; }
+  function readText(name) {
+    try {
+      var f = profileFile(name); if (!f.exists()) { return ""; }
+      var stream = Cc["@mozilla.org/network/file-input-stream;1"].createInstance(Ci.nsIFileInputStream);
+      stream.init(f, 0x01, 0, 0);
+      var conv = Cc["@mozilla.org/intl/converter-input-stream;1"].createInstance(Ci.nsIConverterInputStream);
+      conv.init(stream, "UTF-8", 0, 0);
+      var out = "", chunk = {}; while (conv.readString(4096, chunk) !== 0) { out += chunk.value; }
+      conv.close(); return out;
+    } catch (e) { return ""; }
+  }
+  function writeText(name, text) {
+    try {
+      var f = profileFile(name);
+      var out = Cc["@mozilla.org/network/file-output-stream;1"].createInstance(Ci.nsIFileOutputStream);
+      out.init(f, 0x02 | 0x08 | 0x20, 420, 0);
+      var conv = Cc["@mozilla.org/intl/converter-output-stream;1"].createInstance(Ci.nsIConverterOutputStream);
+      conv.init(out, "UTF-8"); conv.writeString(text); conv.close();
+    } catch (e) {}
+  }
+  try {
+    Services.ppmm.addMessageListener("qlfpw:cmd", function () { return readText(CMD); });
+    Services.ppmm.addMessageListener("qlfpw:report", function (msg) {
+      var data = msg.data || {}; data.at = Date.now(); writeText(RESULT, JSON.stringify(data));
+    });
+    var agentFile = Services.dirsvc.get("GreD", Ci.nsIFile);
+    agentFile.append("%(agent)s");
+    if (agentFile.exists()) { Services.ppmm.loadProcessScript(Services.io.newFileURI(agentFile).spec, true); }
+  } catch (e) { Services.console.logStringMessage("fbwatch agent loi: " + e); }
+})();
+"""
+
+# Bridge add-BM RIENG: message qlfpbm:* va file qlfp-bm* KHAC han 4 agent kia.
+_BM_LOADER_JS = """
+(function () {
+  var CMD = "qlfp-bm.json";
+  var RESULT = "qlfp-bm-result.json";
+  function profileFile(name) { var f = Services.dirsvc.get("ProfD", Ci.nsIFile); f.append(name); return f; }
+  function readText(name) {
+    try {
+      var f = profileFile(name); if (!f.exists()) { return ""; }
+      var stream = Cc["@mozilla.org/network/file-input-stream;1"].createInstance(Ci.nsIFileInputStream);
+      stream.init(f, 0x01, 0, 0);
+      var conv = Cc["@mozilla.org/intl/converter-input-stream;1"].createInstance(Ci.nsIConverterInputStream);
+      conv.init(stream, "UTF-8", 0, 0);
+      var out = "", chunk = {}; while (conv.readString(4096, chunk) !== 0) { out += chunk.value; }
+      conv.close(); return out;
+    } catch (e) { return ""; }
+  }
+  function writeText(name, text) {
+    try {
+      var f = profileFile(name);
+      var out = Cc["@mozilla.org/network/file-output-stream;1"].createInstance(Ci.nsIFileOutputStream);
+      out.init(f, 0x02 | 0x08 | 0x20, 420, 0);
+      var conv = Cc["@mozilla.org/intl/converter-output-stream;1"].createInstance(Ci.nsIConverterOutputStream);
+      conv.init(out, "UTF-8"); conv.writeString(text); conv.close();
+    } catch (e) {}
+  }
+  try {
+    Services.ppmm.addMessageListener("qlfpbm:cmd", function () { return readText(CMD); });
+    Services.ppmm.addMessageListener("qlfpbm:report", function (msg) {
+      var data = msg.data || {}; data.at = Date.now(); writeText(RESULT, JSON.stringify(data));
+    });
+    var agentFile = Services.dirsvc.get("GreD", Ci.nsIFile);
+    agentFile.append("%(agent)s");
+    if (agentFile.exists()) { Services.ppmm.loadProcessScript(Services.io.newFileURI(agentFile).spec, true); }
+  } catch (e) { Services.console.logStringMessage("fbbm agent loi: " + e); }
+})();
+"""
+
+
+# Agent thu 6: KHONG co lenh, chi nhan bao cao "skipped"/"cung" ghi vao qlfp-skip.log.
+_SKIP_LOADER_JS = """
+(function () {
+  var LOGF = "%(log)s";
+  function profileFile(name) { var f = Services.dirsvc.get("ProfD", Ci.nsIFile); f.append(name); return f; }
+  function appendText(name, text) {
+    try {
+      var f = profileFile(name);
+      var out = Cc["@mozilla.org/network/file-output-stream;1"].createInstance(Ci.nsIFileOutputStream);
+      out.init(f, 0x02 | 0x08 | 0x10, 420, 0);
+      var conv = Cc["@mozilla.org/intl/converter-output-stream;1"].createInstance(Ci.nsIConverterOutputStream);
+      conv.init(out, "UTF-8"); conv.writeString(text); conv.close();
+    } catch (e) {}
+  }
+  try {
+    Services.ppmm.addMessageListener("qlfpsk:report", function (msg) {
+      var d = msg.data || {};
+      appendText(LOGF, new Date().toISOString() + " " + (d.state || "") + " " + (d.detail || "") + "\\r\\n");
+    });
+    var agentFile = Services.dirsvc.get("GreD", Ci.nsIFile);
+    agentFile.append("%(agent)s");
+    if (agentFile.exists()) { Services.ppmm.loadProcessScript(Services.io.newFileURI(agentFile).spec, true); }
+  } catch (e) { Services.console.logStringMessage("fbskip agent loi: " + e); }
+})();
+"""
+
+
 def render(
     proxy: Proxy,
     realm: str = DEFAULT_REALM,
     label: str = "",
     identity: Optional[Identity] = None,
     use_shim: bool = False,
+    user_agent: str = "",
 ) -> str:
     """Sinh noi dung mozilla.cfg cho proxy, ten cua so va danh tinh (mui gio/ngon ngu).
 
@@ -662,13 +1230,31 @@ def render(
     if identity.enabled:
         # Ngon ngu (intl.accept_languages) van set qua pref, ap dung o muc engine.
         parts.append(_identity_prefs(identity))
+    if user_agent:
+        # UA gia lap thiet bi (iOS/Android/TV/Mac/Win...): khoa cung de trang khong doi lai.
+        parts += [
+            "",
+            "// User Agent gia lap thiet bi (chon luc import / chuot phai Doi user agent)",
+            f'lockPref("general.useragent.override", {json.dumps(user_agent)});',
+        ]
     if identity.timezone and use_shim:
         parts.append(_SHIM_LOADER_JS % {"shim": SHIM_NAME})
 
     parts.append(_STARTUP_PREFS)
+    parts.append(autostart.lock_pref_lines())
     parts.append(_EXTENSION_PREFS)
     parts.append(_TITLE_JS)
     parts.append(_PROBE_JS)
+    parts.append(_AGENT_LOADER_JS % {"agent": AGENT_NAME})
+    parts.append(_CREATE_LOADER_JS % {"agent": CREATE_AGENT_NAME})
+    parts.append(_LOGIN_LOADER_JS % {"agent": LOGIN_AGENT_NAME})
+    parts.append(_CHAT_LOADER_JS % {"agent": CHAT_AGENT_NAME})
+    parts.append(_WATCH_LOADER_JS % {"agent": WATCH_AGENT_NAME})
+    parts.append(_BM_LOADER_JS % {"agent": BM_AGENT_NAME})
+    parts.append(_SKIP_LOADER_JS % {"agent": SKIP_AGENT_NAME, "log": SKIP_LOG})
+    parts.append(_XLOGIN_LOADER_JS % {"agent": XLOGIN_AGENT_NAME})
+    parts.append(_NORD_LOADER_JS % {"agent": NORD_AGENT_NAME})
+    parts.append(_XPOST_LOADER_JS % {"agent": XPOST_AGENT_NAME})
     return "\n".join(parts)
 
 
@@ -679,13 +1265,14 @@ def install(
     label: str = "",
     identity: Optional[Identity] = None,
     use_shim: bool = False,
+    user_agent: str = "",
 ) -> list[str]:
-    """Cai AutoConfig vao thu muc app: proxy + ten cua so.
+    """Cai AutoConfig vao thu muc app: proxy + ten cua so + UA gia lap.
 
     Khong co proxy lan ten thi go han ra. Tra ve danh sach thu muc da ghi.
     """
     identity = identity or Identity()
-    if not proxy.enabled and not label and not identity.enabled:
+    if not proxy.enabled and not label and not identity.enabled and not user_agent:
         uninstall(app_dir)
         return []
 
@@ -695,7 +1282,7 @@ def install(
 
     if realm is None:
         realm = detect_realm(proxy) if proxy.needs_auth else DEFAULT_REALM
-    content = render(proxy, realm, label, identity, use_shim)
+    content = render(proxy, realm, label, identity, use_shim, user_agent)
 
     shim = ""
     patch = ""
@@ -714,6 +1301,33 @@ def install(
             _write(os.path.join(folder, PATCH_NAME), patch)
         else:
             _remove_shim(folder)
+        # Agent dang video: chep san canh firefox.exe. No nam im cho toi khi tool
+        # de mot file lenh trong thu muc profile.
+        _write(os.path.join(folder, AGENT_NAME), _asset(AGENT_NAME), bom=True)
+        # Agent tao fanpage: bridge rieng, nam im toi khi co qlfp-create.json.
+        _write(os.path.join(folder, CREATE_AGENT_NAME),
+               _asset(CREATE_AGENT_NAME), bom=True)
+        # Agent dang nhap web: bridge rieng, nam im toi khi co qlfp-weblogin.json.
+        _write(os.path.join(folder, LOGIN_AGENT_NAME),
+               _asset(LOGIN_AGENT_NAME), bom=True)
+        _write(os.path.join(folder, CHAT_AGENT_NAME),
+               _asset(CHAT_AGENT_NAME), bom=True)
+        _write(os.path.join(folder, WATCH_AGENT_NAME),
+               _asset(WATCH_AGENT_NAME), bom=True)
+        _write(os.path.join(folder, BM_AGENT_NAME),
+               _asset(BM_AGENT_NAME), bom=True)
+        # Agent bo qua checkpoint mem: luon chay tren moi trang /checkpoint.
+        _write(os.path.join(folder, SKIP_AGENT_NAME),
+               _asset(SKIP_AGENT_NAME), bom=True)
+        # Agent dang nhap X.com bang Google: nam im toi khi co qlfp-xlogin.json.
+        _write(os.path.join(folder, XLOGIN_AGENT_NAME),
+               _asset(XLOGIN_AGENT_NAME), bom=True)
+        # Agent dang bai X.com: nam im toi khi co qlfp-xpost.json.
+        _write(os.path.join(folder, XPOST_AGENT_NAME),
+               _asset(XPOST_AGENT_NAME), bom=True)
+        # Agent dang nhap NordVPN: nam im toi khi co qlfp-nord.json.
+        _write(os.path.join(folder, NORD_AGENT_NAME),
+               _asset(NORD_AGENT_NAME), bom=True)
 
         written.append(folder)
     return written
@@ -755,7 +1369,14 @@ def basic_auth_header(proxy: Proxy) -> str:
     return "Basic " + token
 
 
-def _write(path: str, content: str) -> None:
-    # Firefox doc mozilla.cfg dang UTF-8 khong BOM.
-    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+def _write(path: str, content: str, bom: bool = False) -> None:
+    """Ghi file cho Firefox doc. ``bom=True`` khi file co chu tieng Viet.
+
+    mozilla.cfg thi Firefox doc dung UTF-8. Nhung PROCESS SCRIPT
+    (fbupload_agent.js) lai duoc nap theo Latin-1 neu file khong co dau hieu bang
+    ma -- chu tieng Viet trong do hong ngay tu luc nap, nhat ky hien ra
+    "há»™p soáº¡n bÃ i" thay vi "hộp soạn bài" (da gap that). Them BOM la nap dung.
+    """
+    with open(path, "w", encoding=("utf-8-sig" if bom else "utf-8"),
+              newline="\n") as fh:
         fh.write(content)

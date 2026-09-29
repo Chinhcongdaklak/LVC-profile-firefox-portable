@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import time
 from ctypes import wintypes
 from typing import Iterator, NamedTuple
 
@@ -76,11 +77,39 @@ def iter_processes(name_filter: str = "") -> Iterator[ProcessInfo]:
         kernel32.CloseHandle(snapshot)
 
 
-def find_under(directory: str, name_filter: str = "") -> list[ProcessInfo]:
-    """Tra ve cac tien trinh co file thuc thi nam trong ``directory``."""
+#: Cache ngan han cho anh chup tien trinh: nhieu lan is_running() lien tiep (moi acc
+#: mot lan, 1-4s/lan tren luong giao dien) khoi phai quet lai TOAN BO tien trinh +
+#: mo handle tung firefox.exe -> tranh treo "Not Responding" khi co nhieu acc.
+_snap_cache: dict = {}          # name_filter -> (thoi_diem, list[ProcessInfo])
+_SNAP_TTL = 1.5
+
+
+def _snapshot(name_filter: str, use_cache: bool) -> list:
+    if use_cache:
+        c = _snap_cache.get(name_filter)
+        if c and (time.monotonic() - c[0]) < _SNAP_TTL:
+            return c[1]
+    procs = list(iter_processes(name_filter))
+    if use_cache:
+        _snap_cache[name_filter] = (time.monotonic(), procs)
+    return procs
+
+
+def clear_snapshot_cache() -> None:
+    """Xoa cache anh chup tien trinh (goi khi vua mo/dong de trang thai tuoi ngay)."""
+    _snap_cache.clear()
+
+
+def find_under(directory: str, name_filter: str = "", use_cache: bool = False) -> list[ProcessInfo]:
+    """Tra ve cac tien trinh co file thuc thi nam trong ``directory``.
+
+    ``use_cache=True``: dung anh chup tien trinh gan nhat (<=1.5s) neu co -- danh cho
+    is_running() goi hang loat tren luong giao dien. Terminate/lay pid thi de mac dinh
+    False de luon tuoi.
+    """
     root = os.path.normcase(os.path.abspath(directory)).rstrip("\\") + "\\"
     result = []
-    for info in iter_processes(name_filter):
+    for info in _snapshot(name_filter, use_cache):
         if info.path and os.path.normcase(info.path).startswith(root):
             result.append(info)
     return result

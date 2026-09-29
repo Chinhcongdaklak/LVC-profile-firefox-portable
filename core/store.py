@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import threading
 import time
 from dataclasses import dataclass, field, asdict
 from typing import Iterator, Optional
@@ -14,6 +15,20 @@ from .config import ACCOUNTS_PATH
 from .proxy import Proxy
 
 STATUSES = ("Chưa rõ", "Live", "Checkpoint", "Die")
+
+#: Gia tri Account.pro_mode. Chi PRO_BAT moi duoc coi la "da bat"; moi gia tri khac = chua bat.
+PRO_BAT = "bat"
+PRO_CHUA = "chua"
+
+
+def da_bat_pro(account) -> bool:
+    """Acc da o che do chuyen nghiep (theo cot 'Chuyen nghiep' da luu)?"""
+    return (getattr(account, "pro_mode", "") or "") == PRO_BAT
+
+
+def nhan_pro(account) -> str:
+    """Chu hien o cot 'Chuyen nghiep': 'Bật' / 'Chưa bật'."""
+    return "Bật" if da_bat_pro(account) else "Chưa bật"
 
 _INVALID_NAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
@@ -113,6 +128,10 @@ class Account:
     #: Thoi diem dang nhap bang cookie thanh cong gan nhat. Rong = chua chay.
     #: Dung de to mau dong trong bang, va luu lai de tat tool mo lai van con.
     cookie_ok: str = ""
+    #: Che do chuyen nghiep: PRO_BAT ("bat") = da bat; con lai ("chua" hoac rong) = chua bat.
+    #: Tao fanpage: da bat -> bo qua buoc kiem/bat; chua bat -> bat truoc roi moi tao.
+    #: enable_professional xong thi dat "bat" -> cot "Chuyen nghiep" o tab acc cap nhat.
+    pro_mode: str = ""
     created_at: str = ""
     last_opened: str = ""
 
@@ -172,6 +191,9 @@ class AccountStore:
 
     def __init__(self, path: str = ACCOUNTS_PATH):
         self.path = path
+        # Nhieu tac vu acc chay song song (khoa per-acc o UI) -> save() co the bi goi
+        # tu nhieu luong. Khoa ghi de hai luong khong dam nhau file tam .tmp.
+        self._save_lock = threading.Lock()
         self.accounts: list[Account] = []
         # Danh sach nhom nguoi dung tu tao. Phai luu rieng chu khong suy ra tu acc,
         # neu khong nhom vua tao ma chua co acc nao se bien mat ngay.
@@ -199,17 +221,19 @@ class AccountStore:
         ]
 
     def save(self) -> None:
-        os.makedirs(os.path.dirname(self.path), exist_ok=True)
-        payload = {
-            "version": 1,
-            "groups": self.group_names,
-            "accounts": [a.to_dict() for a in self.accounts],
-        }
-        temp = self.path + ".tmp"
-        with open(temp, "w", encoding="utf-8") as fh:
-            json.dump(payload, fh, ensure_ascii=False, indent=2)
-        # Ghi ra file tam roi doi ten de khong mat du lieu neu tool bi tat giua chung.
-        shutil.move(temp, self.path)
+        with self._save_lock:
+            os.makedirs(os.path.dirname(self.path), exist_ok=True)
+            payload = {
+                "version": 1,
+                "groups": self.group_names,
+                "accounts": [a.to_dict() for a in self.accounts],
+            }
+            # File tam RIENG moi luong (pid+ident) -> hai luong khong ghi de file tam
+            # cua nhau, roi doi ten de khong mat du lieu neu tool bi tat giua chung.
+            temp = f"{self.path}.{os.getpid()}.{threading.get_ident()}.tmp"
+            with open(temp, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh, ensure_ascii=False, indent=2)
+            shutil.move(temp, self.path)
 
     # ---- truy van -----------------------------------------------------
     def __iter__(self) -> Iterator[Account]:
@@ -358,6 +382,7 @@ class AccountStore:
         separator: str = "|",
         fields: Optional[list[str]] = None,
         group: str = "",
+        ua_loai: Optional[list[str]] = None,
     ) -> tuple[int, list[str]]:
         """Nhap hang loat theo dinh dang cot nguoi dung chon.
 
@@ -365,9 +390,15 @@ class AccountStore:
         ``["id", "password", "recovery_mail", "twofa", "proxy"]``. Khoa rong ("")
         nghia la bo qua cot do. ``group`` (neu co) ep tat ca acc vao mot nhom.
 
+        ``ua_loai`` (neu co): danh sach category User Agent nguoi dung tich luc
+        import (vd ``["TV"]``). Moi acc MOI se duoc gan mot UA ngau nhien lay tu
+        cac category do -- tru khi dong nhap da co san cot UA (cot UA thang).
+
         Tra ve ``(so acc them duoc, danh sach loi)``.
         """
         from . import proxy as proxy_module
+
+        ua_loai = [l for l in (ua_loai or []) if l]
 
         fields = fields or ["id", "password", "recovery_mail", "twofa", "proxy", "group"]
         # Nhan moi truong chu cua Account, thay vi mot danh sach viet cung: them
@@ -415,6 +446,11 @@ class AccountStore:
 
             if group:
                 account.group = group  # nhom da chon ep len tat ca
+            if ua_loai and not (account.extra.get("user_agent") or "").strip():
+                from . import useragent
+                ua = useragent.chon_theo_cac_loai(ua_loai)
+                if ua:
+                    account.extra["user_agent"] = ua
             if not account.id:
                 errors.append(f"Dòng {number}: thiếu ID acc")
                 continue
@@ -424,3 +460,81 @@ class AccountStore:
             except ValueError as exc:
                 errors.append(f"Dòng {number}: {exc}")
         return added, errors
+
+    def update_lines(
+        self,
+        text: str,
+        separator: str = "|",
+        fields: Optional[list[str]] = None,
+    ) -> tuple[int, list[str]]:
+        """Sua hang loat (custom): khop tung dong voi acc CO SAN theo cot Uid,
+        THAY gia tri cac cot nguoi dung da chon. Khac import_lines: khong them
+        acc moi.
+
+        O trong va cot "(bo qua)" thi giu nguyen gia tri cu -- dan mot cot Uid
+        + mot cot Pass la chi doi pass, khong dung vao thu khac.
+
+        Tra ve ``(so acc da sua, danh sach loi)``.
+        """
+        from . import proxy as proxy_module
+
+        fields = fields or ["id", "password"]
+        text_keys = {
+            name for name, spec in Account.__dataclass_fields__.items()
+            if spec.type in ("str", str) and name not in {"created_at", "last_opened"}
+        }
+        try:
+            id_index = fields.index("id")
+        except ValueError:
+            return 0, ["Định dạng phải có một cột Uid để biết sửa acc nào."]
+
+        updated = 0
+        errors: list[str] = []
+        for number, line in enumerate(text.splitlines(), start=1):
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = [p.strip() for p in line.split(separator)]
+            acc_id = parts[id_index] if id_index < len(parts) else ""
+            if not acc_id:
+                errors.append(f"Dòng {number}: thiếu Uid")
+                continue
+            account = self.get(acc_id)
+            if account is None:
+                errors.append(f"Dòng {number}: không có acc {acc_id} trong bảng")
+                continue
+
+            changed = False
+            bad = False
+            for index, key in enumerate(fields):
+                if not key or key == "id" or index >= len(parts):
+                    continue
+                value = parts[index]
+                if not value:
+                    continue                 # o trong -> giu nguyen
+                if key == "proxy":
+                    try:
+                        account.set_proxy(proxy_module.parse(value))
+                        changed = True
+                    except ValueError as exc:
+                        errors.append(f"Dòng {number}: {exc}")
+                        bad = True
+                        break
+                elif key.startswith("x:"):
+                    account.extra[key[2:]] = value
+                    changed = True
+                elif key == "group":
+                    account.group = value
+                    if value not in self.groups():
+                        self.group_names.append(value)
+                    changed = True
+                elif key in text_keys:
+                    setattr(account, key, value)
+                    changed = True
+            if bad:
+                continue
+            if changed:
+                updated += 1
+        if updated:
+            self.save()
+        return updated, errors

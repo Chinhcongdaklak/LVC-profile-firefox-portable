@@ -42,10 +42,29 @@ HIDDEN = [
     "PIL._tkinter_finder",
 ]
 
+# Moi MO-DUN trong core/modun/ (ADR-028): dam bao PyInstaller gom du du da import tinh
+# trong tat_ca.py (belt-and-suspenders — tung loi "No module named 'core.modun.*'" tren ban .exe).
+try:
+    from PyInstaller.utils.hooks import collect_submodules
+    HIDDEN += collect_submodules("core.modun")
+except Exception:  # noqa: BLE001 - khong co PyInstaller luc import build cung khong sao
+    pass
+
 #: Thu vien can chep ca file du lieu di kem, khong chi file .py.
 COLLECT_DATA = [
     "customtkinter",   # theme .json + font, thieu la giao dien vo mau
     "certifi",         # bo chung chi goc cho requests, thieu la moi HTTPS deu loi
+    # Windows KHONG co san kho mui gio IANA -> zoneinfo doc tu goi tzdata. Thieu la
+    # lich dang (quy doi gio page <-> gio may) nem ZoneInfoNotFoundError tren ban .exe.
+    "tzdata",
+]
+
+#: Thu vien nap module dong (PyInstaller do khong het) -> gom TAT CA.
+#: - websockets: giao tiep WebDriver BiDi voi Firefox (quet bai, check tuong).
+#: - yt_dlp: tai video FB/YouTube/TikTok; hang tram extractor nap dong.
+COLLECT_ALL = [
+    "websockets",
+    "yt_dlp",
 ]
 
 
@@ -85,6 +104,8 @@ def build(debug: bool, clean: bool) -> str:
         cmd += ["--add-data", f"{source}{separator}{target}"]
     for module in COLLECT_DATA:
         cmd += ["--collect-data", module]
+    for module in COLLECT_ALL:
+        cmd += ["--collect-all", module]
     for module in HIDDEN:
         cmd += ["--hidden-import", module]
     cmd.append(ENTRY)

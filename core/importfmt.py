@@ -141,6 +141,16 @@ def detect_fields(lines: list[str], separator: str, max_cols: int) -> list[str]:
         if sample:
             fields[id_col + 1] = "password"
 
+    # Cot ngay sau MAIL KHOI PHUC ma chua doan ra thi rat co the la pass cua
+    # mail do -- mat khau la chuoi tu do khong doan bang mau duoc, chi doan
+    # duoc bang vi tri (giong luat UID -> mat khau o tren).
+    for col in range(ncols - 1):
+        if fields[col] == "recovery_mail" and not fields[col + 1]:
+            sample = [r[col + 1] for r in rows
+                      if col + 1 < len(r) and r[col + 1]]
+            if sample:
+                fields[col + 1] = "recovery_mail_password"
+
     return fields
 
 
