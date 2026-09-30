@@ -181,36 +181,87 @@ def liet_ke(folder: str, duoi: Optional[list] = None) -> list:
     return sorted(ra, key=_khoa_sap_xep)
 
 
-def xem_truoc(folder: str, buocs: list, *, duoi: Optional[list] = None,
-              cung_goc: bool = True) -> list:
-    """Kế hoạch đổi tên: [{cu, moi, tt}] với tt = "ok" | "khong_doi" | "trung" | "loi".
+def nhom_file(folder: str, duoi: Optional[list] = None, cung_goc: bool = True) -> list:
+    """[(khoá, [tên file...])] theo thứ tự tự nhiên — mỗi khoá là MỘT tiêu đề.
 
-    ``cung_goc``: các file cùng phần tên (khác đuôi: .mp4 + .txt) nhận CÙNG tên mới và cùng số thứ tự.
-    Số thứ tự đếm theo NHÓM tên (1, 2, 3...) theo thứ tự tự nhiên trong thư mục."""
-    files = liet_ke(folder, duoi)
+    ``cung_goc``: các file cùng phần tên khác đuôi (.mp4 + .txt) gom chung một nhóm."""
     nhom: dict = {}
     thu_tu: list = []
-    for f in files:
+    for f in liet_ke(folder, duoi):
         goc, _ = os.path.splitext(f)
         k = goc if cung_goc else f
         if k not in nhom:
             nhom[k] = []
             thu_tu.append(k)
         nhom[k].append(f)
+    return [(k, nhom[k]) for k in thu_tu]
+
+
+def _danh_gia(f: str, moi_goc: str) -> dict:
+    """Một dòng kế hoạch cho file ``f`` với phần tên mới ``moi_goc`` (chưa xét trùng)."""
+    moi = moi_goc + os.path.splitext(f)[1]
+    if moi == f:
+        tt = "khong_doi"
+    elif not ten_hop_le(moi_goc):
+        tt = "loi"
+    else:
+        tt = "ok"
+    return {"cu": f, "moi": moi, "tt": tt}
+
+
+def xem_truoc(folder: str, buocs: list, *, duoi: Optional[list] = None,
+              cung_goc: bool = True) -> list:
+    """Kế hoạch đổi tên: [{cu, moi, tt}] với tt = "ok" | "khong_doi" | "trung" | "loi".
+
+    ``cung_goc``: các file cùng phần tên (khác đuôi: .mp4 + .txt) nhận CÙNG tên mới và cùng số thứ tự.
+    Số thứ tự đếm theo NHÓM tên (1, 2, 3...) theo thứ tự tự nhiên trong thư mục."""
     ke_hoach = []
-    dich: dict = {}
-    for stt, k in enumerate(thu_tu, start=1):
-        for f in nhom[k]:
-            goc, duoi_f = os.path.splitext(f)
-            moi_goc = ap_dung(goc, buocs, stt)
-            moi = moi_goc + duoi_f
-            if moi == f:
-                tt = "khong_doi"
-            elif not ten_hop_le(moi_goc):
-                tt = "loi"
-            else:
-                tt = "ok"
-            ke_hoach.append({"cu": f, "moi": moi, "tt": tt})
+    for stt, (_k, files) in enumerate(nhom_file(folder, duoi, cung_goc), start=1):
+        for f in files:
+            ke_hoach.append(_danh_gia(f, ap_dung(os.path.splitext(f)[0], buocs, stt)))
+    return _danh_dau_trung(folder, ke_hoach)
+
+
+def tach_tieu_de(text: str) -> list:
+    """Mỗi DÒNG trong ô nhập = MỘT tiêu đề mới (theo thứ tự trên xuống). Bỏ dòng trống."""
+    ds = []
+    for dong in (text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        d = don(dong)
+        if d:
+            ds.append(d)
+    return ds
+
+
+def lam_sach_ten(ten: str) -> str:
+    """Bỏ ký tự Windows cấm đặt tên file (< > : " / \\ | ? *) khỏi tiêu đề người dùng dán vào."""
+    return don("".join(" " if c in _CAM else c for c in (ten or "")))
+
+
+def xem_truoc_thay_the(folder: str, tieu_des: list, *, duoi: Optional[list] = None,
+                       cung_goc: bool = True, buocs: Optional[list] = None,
+                       lam_sach: bool = True) -> list:
+    """THAY THẾ tên: tiêu đề thứ i (từ trên xuống) gán cho nhóm file thứ i trong thư mục.
+
+    Thiếu tiêu đề -> các file còn lại giữ nguyên tên. Thừa tiêu đề -> bỏ qua phần dư.
+    ``buocs`` (nếu có) chạy TIẾP trên tiêu đề mới (vd đánh số), ``lam_sach`` bỏ ký tự cấm."""
+    ke_hoach = []
+    for stt, (k, files) in enumerate(nhom_file(folder, duoi, cung_goc), start=1):
+        if stt <= len(tieu_des):
+            goc_moi = tieu_des[stt - 1]
+            if lam_sach:
+                goc_moi = lam_sach_ten(goc_moi)
+        else:
+            goc_moi = k
+        for f in files:
+            moi_goc = ap_dung(goc_moi, buocs or [], stt)
+            if not cung_goc:
+                moi_goc = moi_goc or os.path.splitext(f)[0]
+            ke_hoach.append(_danh_gia(f, moi_goc))
+    return _danh_dau_trung(folder, ke_hoach)
+
+
+def _danh_dau_trung(folder: str, ke_hoach: list) -> list:
+    """Đánh dấu tt = "trung" cho dòng có tên mới đụng nhau / đụng file đã có sẵn."""
     # Trùng đích: hai file cùng tên mới, hoặc tên mới đã có sẵn mà file đó không bị đổi.
     dem: dict = {}
     for r in ke_hoach:

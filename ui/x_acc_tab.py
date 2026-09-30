@@ -31,6 +31,7 @@ from core.store import Account, AccountStore, STATUSES
 
 from core import x_import
 
+from .chon_nhanh import ChonNhanhCombo
 from .dialogs import (BaseDialog, CookieDialog, FieldEditDialog, GroupManagerDialog,
                       ProxyDialog, SimplePromptDialog)
 from .x_dialogs import XAccountDialog, XBulkImportDialog
@@ -127,15 +128,18 @@ class NordVpnDialog(BaseDialog):
 
         ctk.CTkLabel(self, text="Quốc gia").pack(anchor="w", padx=PAD)
         self._quoc_gia_var = tk.StringVar(master=self, value=mac_qg)
-        self.quoc_gia_menu = ctk.CTkOptionMenu(
+        # 150 quoc gia -> CTkOptionMenu (menu tkinter) dai qua man hinh va KHONG lan chuot duoc;
+        # ChonNhanhCombo co o tim + danh sach lan chuot, bam mot cai la xong.
+        self.quoc_gia_menu = ChonNhanhCombo(
             self, variable=self._quoc_gia_var, values=self._ten_quoc_gia,
-            command=self._doi_quoc_gia)
+            command=self._doi_quoc_gia, placeholder="Gõ tên nước để tìm nhanh...")
         self.quoc_gia_menu.pack(fill="x", padx=PAD, pady=(2, 8))
 
         ctk.CTkLabel(self, text="Bang / Khu vực").pack(anchor="w", padx=PAD)
         self._bang_var = tk.StringVar(master=self, value=BANG_MAC_DINH)
-        self.bang_menu = ctk.CTkOptionMenu(
-            self, variable=self._bang_var, values=[BANG_MAC_DINH])
+        self.bang_menu = ChonNhanhCombo(
+            self, variable=self._bang_var, values=[BANG_MAC_DINH],
+            placeholder="Gõ tên bang / khu vực...")
         self.bang_menu.pack(fill="x", padx=PAD, pady=(2, 4))
 
         ctk.CTkLabel(

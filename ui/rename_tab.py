@@ -13,12 +13,14 @@ import os
 import subprocess
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+from typing import Optional
 
 import customtkinter as ctk
 
 from core import rename_title as rt
 from core import modun as modun_module
 from core.modun import tat_ca as _modun_tat_ca
+from .dialogs import BaseDialog
 _modun_tat_ca.nap()
 
 PAD = 10
@@ -44,6 +46,8 @@ class RenameTab(ctk.CTkFrame):
         self.app = app
         self._buoc: list = []
         self._ke_hoach: list = []
+        self._tieu_de_text: str = ""      # danh sách tiêu đề thay thế hàng loạt (mỗi dòng một cái)
+        self._folder_cu: str = ""         # thư mục đang xem — đổi thư mục thì bỏ danh sách tiêu đề cũ
         self._build()
         self._restore_cfg()
 
@@ -60,14 +64,17 @@ class RenameTab(ctk.CTkFrame):
         ctk.CTkLabel(r1, text="Thư mục", font=dam, width=80, anchor="w").pack(side="left", padx=(10, 6), pady=8)
         self.folder_entry = ctk.CTkEntry(r1, placeholder_text="Thư mục chứa các file cần đổi tiêu đề")
         self.folder_entry.pack(side="left", fill="x", expand=True, pady=8)
+        self.folder_entry.bind("<KeyRelease>", lambda _e: self._folder_doi())
+        self.folder_entry.bind("<FocusOut>", lambda _e: self._folder_doi())
         ctk.CTkButton(r1, text="Chọn...", width=80, command=self._pick_folder).pack(side="left", padx=6, pady=8)
         ctk.CTkButton(r1, text="Mở", width=50, fg_color="gray45", command=self._open_folder).pack(side="left", pady=8)
         ctk.CTkLabel(r1, text="Đuôi", font=dam).pack(side="left", padx=(14, 4))
         self.duoi_entry = ctk.CTkEntry(r1, width=120, placeholder_text="mp4,txt (trống=tất cả)")
         self.duoi_entry.pack(side="left", pady=8)
+        self.duoi_entry.bind("<KeyRelease>", lambda _e: self._hen_xem_truoc())
         self.cung_goc_var = tk.BooleanVar(value=True)
-        ctk.CTkCheckBox(r1, text="Đổi cả file cùng tên khác đuôi (.mp4 + .txt)",
-                        variable=self.cung_goc_var).pack(side="left", padx=(12, 10), pady=8)
+        ctk.CTkCheckBox(r1, text="Đổi cả file cùng tên khác đuôi (.mp4 + .txt)", variable=self.cung_goc_var,
+                        command=self._hen_xem_truoc).pack(side="left", padx=(12, 10), pady=8)
 
         # Hàng 2: thêm bước
         r2 = ctk.CTkFrame(self)
@@ -89,33 +96,33 @@ class RenameTab(ctk.CTkFrame):
         # Huy hen xem truoc khi tab bi huy (thuoc destroy root -> after mo coi in "invalid command name").
         self.bind("<Destroy>", lambda _e: self._huy_hen(), add="+")
 
-        # Hàng 3: trái = chuỗi bước, phải = xem trước
+        # Hàng 3: nhập tiêu đề hàng loạt + chuỗi bước (gọn một hàng)
+        r3 = ctk.CTkFrame(self)
+        r3.pack(fill="x", padx=PAD, pady=4)
+        ctk.CTkLabel(r3, text="", width=80).pack(side="left", padx=(10, 6), pady=8)
+        ctk.CTkButton(r3, text="📝 Nhập tiêu đề hàng loạt", width=200, fg_color="#2b6cb0",
+                      command=self._nhap_tieu_de).pack(side="left", pady=8)
+        self.tieu_de_lbl = ctk.CTkLabel(r3, text="", text_color="#7ac47a")
+        self.bo_tieu_de_btn = ctk.CTkButton(r3, text="✖ Bỏ danh sách", width=130, fg_color="#a33",
+                                            command=self._bo_tieu_de)
+        # Chuỗi bước: chỉ hiện khi đã xếp bước (Enter), nằm bên phải cùng hàng.
+        self.xoa_het_btn = ctk.CTkButton(r3, text="Xoá hết bước", width=110, fg_color="gray45",
+                                         command=self._xoa_het)
+        self.xoa_buoc_btn = ctk.CTkButton(r3, text="✖ Bỏ bước cuối", width=130, fg_color="#a33",
+                                          command=self._xoa_buoc)
+        self.buoc_lbl = ctk.CTkLabel(r3, text="", anchor="w", justify="left")
+        self.goi_y = ctk.CTkLabel(r3, text="Chọn kiểu ở hàng “Bước” → nhập giá trị → bấm ▶ Chạy đổi tên là chạy luôn. "
+                                           "Muốn nhiều bước: gõ xong nhấn Enter để xếp vào chuỗi rồi nhập bước kế.",
+                                  text_color="#ffd28a", anchor="w", justify="left")
+        self.goi_y.pack(side="left", padx=12, pady=8)
+
+        # Hàng 4: xem trước
         giua = ctk.CTkFrame(self, fg_color="transparent")
         giua.pack(fill="both", expand=True, padx=PAD, pady=4)
-        giua.grid_columnconfigure(0, weight=2, uniform="rn")
-        giua.grid_columnconfigure(1, weight=5, uniform="rn")
+        giua.grid_columnconfigure(0, weight=1)
         giua.grid_rowconfigure(0, weight=1)
-        trai = ctk.CTkFrame(giua)
-        trai.grid(row=0, column=0, sticky="nsew", padx=(0, 3))
-        th = ctk.CTkFrame(trai, fg_color="transparent")
-        th.pack(fill="x", padx=8, pady=(8, 0))
-        ctk.CTkLabel(th, text="Chuỗi bước (chạy từ trên xuống)", font=dam).pack(side="left")
-        self.steps_box = tk.Listbox(trai, activestyle="none", exportselection=False, highlightthickness=0)
-        self.steps_box.pack(fill="both", expand=True, padx=8, pady=(4, 4))
-        self.goi_y = ctk.CTkLabel(trai, text="Chưa có bước nào. Ở hàng “Bước”: chọn kiểu → nhập giá trị → "
-                                              "bấm ▶ Chạy đổi tên là chạy luôn. Muốn nhiều bước: gõ xong nhấn Enter "
-                                              "để xếp vào chuỗi rồi nhập bước kế.",
-                                  text_color="#ffd28a", wraplength=300, justify="left")
-        self.goi_y.pack(fill="x", padx=8, pady=(0, 4))
-        tb = ctk.CTkFrame(trai, fg_color="transparent")
-        tb.pack(fill="x", padx=8, pady=(0, 8))
-        ctk.CTkButton(tb, text="▲", width=40, command=lambda: self._doi_cho(-1)).pack(side="left")
-        ctk.CTkButton(tb, text="▼", width=40, command=lambda: self._doi_cho(1)).pack(side="left", padx=4)
-        ctk.CTkButton(tb, text="Xoá bước", width=90, fg_color="#a33", command=self._xoa_buoc).pack(side="left")
-        ctk.CTkButton(tb, text="Xoá hết", width=80, fg_color="gray45", command=self._xoa_het).pack(side="right")
-
         phai = ctk.CTkFrame(giua)
-        phai.grid(row=0, column=1, sticky="nsew", padx=(3, 0))
+        phai.grid(row=0, column=0, sticky="nsew")
         ph = ctk.CTkFrame(phai, fg_color="transparent")
         ph.pack(fill="x", padx=8, pady=(8, 0))
         ctk.CTkLabel(ph, text="Xem trước (tự cập nhật khi gõ)", font=dam).pack(side="left")
@@ -226,44 +233,82 @@ class RenameTab(ctk.CTkFrame):
             self._hen_id = None
 
     def _ve_buoc(self) -> None:
-        self.steps_box.delete(0, "end")
-        for i, b in enumerate(self._buoc, start=1):
-            self.steps_box.insert("end", f"{i}. {b.mo_ta()}")
-        try:
-            if self._buoc:
-                self.goi_y.pack_forget()
-            else:
-                self.goi_y.pack(fill="x", padx=8, pady=(0, 4))
-        except AttributeError:
-            pass
+        """Chuỗi bước hiện thành MỘT dòng chữ ở hàng 3 (chưa có bước thì hiện gợi ý)."""
+        if self._buoc:
+            self.goi_y.pack_forget()
+            self.buoc_lbl.configure(text="Bước: " + "  →  ".join(
+                f"{i}. {b.mo_ta()}" for i, b in enumerate(self._buoc, start=1)))
+            self.buoc_lbl.pack(side="left", padx=12, pady=8)
+            self.xoa_het_btn.pack(side="right", padx=(6, 10), pady=8)
+            self.xoa_buoc_btn.pack(side="right", pady=8)
+        else:
+            self.buoc_lbl.pack_forget()
+            self.xoa_het_btn.pack_forget()
+            self.xoa_buoc_btn.pack_forget()
+            self.goi_y.pack(side="left", padx=12, pady=8)
 
-    def _chon_buoc(self):
-        sel = self.steps_box.curselection()
-        return int(sel[0]) if sel else None
-
-    def _xoa_buoc(self) -> None:
-        i = self._chon_buoc()
-        if i is None:
+    def _xoa_buoc(self, i: Optional[int] = None) -> None:
+        """Bỏ bước thứ ``i`` (mặc định: bước cuối cùng vừa xếp)."""
+        if not self._buoc:
             return
-        del self._buoc[i]
-        self._ve_buoc()
-        self._persist_cfg()
+        if i is None:
+            i = len(self._buoc) - 1
+        if 0 <= i < len(self._buoc):
+            del self._buoc[i]
+            self._ve_buoc()
+            self._persist_cfg()
+            self._hen_xem_truoc()
 
     def _xoa_het(self) -> None:
         self._buoc = []
         self._ve_buoc()
         self._persist_cfg()
+        self._hen_xem_truoc()
 
-    def _doi_cho(self, huong: int) -> None:
-        i = self._chon_buoc()
-        if i is None:
+    # ------------------------------------------------------------- tiêu đề hàng loạt
+    def _tieu_de(self) -> list:
+        return rt.tach_tieu_de(self._tieu_de_text)
+
+    def _ten_hien_tai(self) -> list:
+        """Tên (không đuôi) theo ĐÚNG thứ tự thư mục — mỗi phần tử là một file/nhóm sẽ nhận 1 tiêu đề."""
+        folder = self._folder()
+        if not folder or not os.path.isdir(folder):
+            return []
+        return [k for k, _ in rt.nhom_file(folder, self._duoi(), bool(self.cung_goc_var.get()))]
+
+    def _nhap_tieu_de(self) -> None:
+        ten = self._ten_hien_tai()
+        if not ten:
+            messagebox.showwarning("Tiêu đề hàng loạt",
+                                   "Chọn thư mục có file trước (kiểm tra cả ô Đuôi).", parent=self.app)
             return
-        j = i + huong
-        if 0 <= j < len(self._buoc):
-            self._buoc[i], self._buoc[j] = self._buoc[j], self._buoc[i]
-            self._ve_buoc()
-            self.steps_box.selection_set(j)
-            self._persist_cfg()
+        kq = TieuDeHangLoatDialog(self.app, ten, self._tieu_de_text).show()
+        if kq is None:
+            return
+        self._tieu_de_text = kq
+        self._ve_tieu_de()
+        self._persist_cfg()
+        self._xem_truoc()
+
+    def _bo_tieu_de(self) -> None:
+        self._tieu_de_text = ""
+        self._ve_tieu_de()
+        self._persist_cfg()
+        self._xem_truoc()
+
+    def _ve_tieu_de(self) -> None:
+        """Ô báo "đang thay thế" nằm ngay sau nút, nên vẽ lại chuỗi bước để giữ đúng thứ tự trên hàng."""
+        self.goi_y.pack_forget()
+        self.buoc_lbl.pack_forget()
+        n = len(self._tieu_de())
+        if n:
+            self.tieu_de_lbl.configure(text=f"📝 thay thế bằng {n} tiêu đề đã nhập")
+            self.tieu_de_lbl.pack(side="left", padx=(8, 6), pady=8)
+            self.bo_tieu_de_btn.pack(side="left", pady=8)
+        else:
+            self.tieu_de_lbl.pack_forget()
+            self.bo_tieu_de_btn.pack_forget()
+        self._ve_buoc()
 
     # ------------------------------------------------------------------ thư mục
     def _folder(self) -> str:
@@ -277,8 +322,23 @@ class RenameTab(ctk.CTkFrame):
         if d:
             self.folder_entry.delete(0, "end")
             self.folder_entry.insert(0, d)
-            self._persist_cfg()
-            self._xem_truoc()
+            self._folder_doi()
+
+    def _folder_doi(self) -> None:
+        """Đổi sang thư mục KHÁC: xoá bảng cũ, bỏ danh sách tiêu đề của thư mục trước rồi nạp lại."""
+        moi = os.path.normcase(os.path.normpath(self._folder())) if self._folder() else ""
+        if moi == self._folder_cu:
+            return
+        self._folder_cu = moi
+        self.tree.delete(*self.tree.get_children())
+        self._ke_hoach = []
+        if self._tieu_de_text:
+            self._tieu_de_text = ""
+            self._ve_tieu_de()
+            self.status.configure(text="Đã đổi thư mục — bỏ danh sách tiêu đề của thư mục trước.")
+        self.tom_tat.configure(text="đang đọc thư mục...")
+        self._persist_cfg()
+        self._hen_xem_truoc(120)
 
     def _open_folder(self) -> None:
         d = self._folder()
@@ -296,8 +356,13 @@ class RenameTab(ctk.CTkFrame):
             self._ke_hoach = []
             return []
         buocs = self._buocs_xem()
-        self._ke_hoach = rt.xem_truoc(folder, buocs, duoi=self._duoi(),
-                                      cung_goc=bool(self.cung_goc_var.get()))
+        tieu_de = self._tieu_de()
+        if tieu_de:      # thay thế hàng loạt: tiêu đề thứ i -> file thứ i (bước vẫn chạy tiếp lên tiêu đề)
+            self._ke_hoach = rt.xem_truoc_thay_the(folder, tieu_de, duoi=self._duoi(),
+                                                   cung_goc=bool(self.cung_goc_var.get()), buocs=buocs)
+        else:
+            self._ke_hoach = rt.xem_truoc(folder, buocs, duoi=self._duoi(),
+                                          cung_goc=bool(self.cung_goc_var.get()))
         dem = {}
         for r in self._ke_hoach:
             dem[r["tt"]] = dem.get(r["tt"], 0) + 1
@@ -306,8 +371,9 @@ class RenameTab(ctk.CTkFrame):
             text=f"{len(self._ke_hoach)} file · sẽ đổi {dem.get('ok', 0)} · không đổi {dem.get('khong_doi', 0)}"
                  + (f" · trùng {dem['trung']}" if dem.get("trung") else "")
                  + (f" · lỗi {dem['loi']}" if dem.get("loi") else "")
+                 + (f" · thay thế bằng {len(tieu_de)} tiêu đề" if tieu_de else "")
                  + ("   ← chưa có bước nào: chọn kiểu, nhập giá trị rồi bấm ▶ Chạy đổi tên"
-                    if not buocs else ""))
+                    if not buocs and not tieu_de else ""))
         return self._ke_hoach
 
     def _doi_ten(self) -> None:
@@ -346,7 +412,8 @@ class RenameTab(ctk.CTkFrame):
     # ------------------------------------------------------------------ lưu / khôi phục
     def _persist_cfg(self) -> None:
         data = {"folder": self._folder(), "duoi": self.duoi_entry.get().strip(),
-                "cung_goc": bool(self.cung_goc_var.get()), "buoc": [b.to_dict() for b in self._buoc]}
+                "cung_goc": bool(self.cung_goc_var.get()), "buoc": [b.to_dict() for b in self._buoc],
+                "tieu_de": self._tieu_de_text}
         try:
             os.makedirs(os.path.dirname(self._cfg_path()), exist_ok=True)
             with open(self._cfg_path(), "w", encoding="utf-8") as fh:
@@ -362,9 +429,101 @@ class RenameTab(ctk.CTkFrame):
             return
         if c.get("folder"):
             self.folder_entry.insert(0, str(c["folder"]))
+            self._folder_cu = os.path.normcase(os.path.normpath(str(c["folder"])))
         if c.get("duoi"):
             self.duoi_entry.insert(0, str(c["duoi"]))
         self.cung_goc_var.set(bool(c.get("cung_goc", True)))
         self._buoc = [rt.Buoc.from_dict(x) for x in (c.get("buoc") or []) if isinstance(x, dict)]
         self._buoc = [b for b in self._buoc if b.loai in rt.NHAN_LOAI]
         self._ve_buoc()
+        self._tieu_de_text = str(c.get("tieu_de") or "")
+        self._ve_tieu_de()
+
+
+class TieuDeHangLoatDialog(BaseDialog):
+    """Dán/gõ DANH SÁCH TIÊU ĐỀ — mỗi dòng một tiêu đề, gán từ trên xuống cho file trong thư mục.
+
+    Trái: tên hiện tại theo đúng thứ tự thư mục (để soi cho khớp dòng). Phải: ô nhập tiêu đề mới.
+    Trả về chuỗi văn bản đã nhập ("" = xoá danh sách), hoặc None khi bấm Huỷ.
+    """
+
+    def __init__(self, parent, ten_hien_tai: list, ban_dau: str = ""):
+        super().__init__(parent, "Nhập tiêu đề hàng loạt", 1000, 640)
+        self.minsize(720, 460)
+        self._ten = list(ten_hien_tai)
+        dam = ctk.CTkFont(weight="bold")
+        ctk.CTkLabel(self, text="Mỗi DÒNG là một tiêu đề. Dòng 1 → file đầu tiên, dòng 2 → file thứ hai… "
+                                "Thiếu dòng thì các file còn lại giữ nguyên tên.",
+                     justify="left", text_color="#ffd28a").pack(anchor="w", padx=PAD, pady=(PAD, 4))
+
+        giua = ctk.CTkFrame(self, fg_color="transparent")
+        giua.pack(fill="both", expand=True, padx=PAD, pady=4)
+        giua.grid_columnconfigure(0, weight=1, uniform="td")
+        giua.grid_columnconfigure(1, weight=1, uniform="td")
+        giua.grid_rowconfigure(1, weight=1)
+        ctk.CTkLabel(giua, text=f"Tên hiện tại ({len(self._ten)} file/nhóm)", font=dam).grid(
+            row=0, column=0, sticky="w", pady=(0, 4))
+        ctk.CTkLabel(giua, text="Tiêu đề mới (mỗi dòng một cái)", font=dam).grid(
+            row=0, column=1, sticky="w", padx=(6, 0), pady=(0, 4))
+        self.cu_box = tk.Listbox(giua, activestyle="none", exportselection=False, highlightthickness=0)
+        self.cu_box.grid(row=1, column=0, sticky="nsew", padx=(0, 3))
+        for i, t in enumerate(self._ten, start=1):
+            self.cu_box.insert("end", f"{i}. {t}")
+        self.box = ctk.CTkTextbox(giua, wrap="none")
+        self.box.grid(row=1, column=1, sticky="nsew", padx=(3, 0))
+        if ban_dau:
+            self.box.insert("1.0", ban_dau)
+        self.box.bind("<KeyRelease>", lambda _e: self._dem())
+        self.box.bind("<<Paste>>", lambda _e: self.after(50, self._dem))
+
+        self.dem_lbl = ctk.CTkLabel(self, text="", anchor="w")
+        self.dem_lbl.pack(fill="x", padx=PAD, pady=(4, 0))
+
+        nut = ctk.CTkFrame(self, fg_color="transparent")
+        nut.pack(fill="x", padx=PAD, pady=PAD)
+        ctk.CTkButton(nut, text="⬇ Lấy tên hiện tại", width=150, fg_color="gray45",
+                      command=self._lay_ten_cu).pack(side="left")
+        ctk.CTkButton(nut, text="📋 Dán", width=80, fg_color="gray45",
+                      command=self._dan).pack(side="left", padx=6)
+        ctk.CTkButton(nut, text="Xoá hết", width=80, fg_color="gray45",
+                      command=self._xoa_het).pack(side="left")
+        ctk.CTkButton(nut, text="Huỷ", width=90, fg_color="gray35",
+                      command=self._cancel).pack(side="right")
+        ctk.CTkButton(nut, text="Áp dụng", width=110, command=self._submit).pack(side="right", padx=6)
+        self._dem()
+        self.after(200, lambda: self.box.focus_set())
+
+    # -------------------------------------------------------------- tiện ích
+    def _van_ban(self) -> str:
+        return self.box.get("1.0", "end").rstrip("\n")
+
+    def _dem(self) -> None:
+        k = len(rt.tach_tieu_de(self._van_ban()))
+        n = len(self._ten)
+        if k == n:
+            chu, mau = f"✔ {k}/{n} tiêu đề — khớp đủ số file.", "#7ac47a"
+        elif k < n:
+            chu, mau = f"{k}/{n} tiêu đề — {n - k} file cuối sẽ GIỮ NGUYÊN tên.", "#ffd28a"
+        else:
+            chu, mau = f"{k}/{n} tiêu đề — thừa {k - n} dòng, phần dư bỏ qua.", "#ffd28a"
+        self.dem_lbl.configure(text=chu, text_color=mau)
+
+    def _lay_ten_cu(self) -> None:
+        self.box.delete("1.0", "end")
+        self.box.insert("1.0", "\n".join(self._ten))
+        self._dem()
+
+    def _dan(self) -> None:
+        try:
+            self.box.insert("insert", self.clipboard_get())
+        except tk.TclError:
+            pass
+        self._dem()
+
+    def _xoa_het(self) -> None:
+        self.box.delete("1.0", "end")
+        self._dem()
+
+    def _submit(self) -> None:
+        self.result = self._van_ban()
+        self.destroy()
