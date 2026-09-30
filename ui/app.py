@@ -580,6 +580,9 @@ class App(ctk.CTk):
             text="LVC Manager Profile",
             font=ctk.CTkFont(size=20, weight="bold"),
         ).pack(side="left", padx=(0, 8), pady=10)
+        from .nut_capnhat import NutCapNhat, phien_ban_hien
+        ctk.CTkLabel(header, text=f"v{phien_ban_hien()}", text_color="gray60").pack(
+            side="left", padx=(0, 6))
         self.root_label = ctk.CTkLabel(header, text="", text_color="gray60")
         self.root_label.pack(side="left", padx=6)
         ctk.CTkButton(header, text="Cài đặt", width=90, command=self.open_settings).pack(
@@ -594,6 +597,9 @@ class App(ctk.CTk):
             header, text="Đăng xuất", width=90, fg_color="gray50",
             hover_color="gray40", command=self.sign_out,
         ).pack(side="right", padx=(0, 4))
+        # Tu do ban moi (nut vang chi hien khi co ban moi) + nut Phat hanh (chi khi chay ma nguon).
+        self.nut_capnhat = NutCapNhat(self, header)
+        self.nut_capnhat.bat_dau_do()
 
         self.account_label = ctk.CTkLabel(header, text="", text_color="gray60")
         self.account_label.pack(side="right", padx=8)

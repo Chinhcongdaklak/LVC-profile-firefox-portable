@@ -40,3 +40,6 @@ content/
 
 # Profile Firefox cua acc X (cookie, phien dang nhap) -- TUYET DOI khong dua len git.
 profile_x/
+
+# Ma truy cap GitHub de phat hanh (token = mat khau kho phat hanh) -- TUYET DOI khong commit.
+setup/

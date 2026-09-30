@@ -602,7 +602,13 @@ class AutoUploader:
             if mat:
                 self._bao_thu_muc_mat(mat)
             else:
-                self.note("Đến lượt đăng nhưng thư mục không có video nào.", ok=True)
+                con = self.so_con_lai()
+                if con:
+                    # CON video nhung deu bi bo qua (X khong nhan / qua dai / da dang) -> NOI RO,
+                    # dung "khong co video nao" (nguoi dung bao 29/09: thu muc con 14 bai ma tool bao het).
+                    self._bao_moi_bi_bo_qua(con)
+                else:
+                    self.note("Đến lượt đăng nhưng thư mục không có video nào.", ok=True)
             return None
 
         self._busy = True
@@ -1185,6 +1191,7 @@ class AutoUploader:
         """
         da_dang = set(self._posted)
         toi_da = self.video_toi_da_giay()
+        bo_qua = 0
         # Quet CA HAI nguon (nhom): "Thu muc bai cho dang" TRUOC (uu tien dang bai
         # quet ve), roi "Thu muc video" (video le). Fanpage chi co mot thu muc.
         for thu_muc in self._post_folders():
@@ -1192,8 +1199,11 @@ class AutoUploader:
                 key = self._key(path)
                 if key in da_dang or key in getattr(self, "_bo_video", ()):
                     continue
-                # Video QUA DAI voi nen tang (X thuong <= 2:20) -> bo qua, KHONG mo trinh duyet.
-                if toi_da and self._qua_dai(path, key, toi_da):
+                # X: video MA HOA X khong nhan (HEVC...) hoac QUA DAI -> bo qua, KHONG mo trinh duyet.
+                if self.platform == "x" and self._x_bo_qua(path, key):
+                    bo_qua += 1
+                    continue
+                if toi_da and self.platform != "x" and self._qua_dai(path, key, toi_da):
                     continue
                 # "Chi dang bai da xao": bai trong hang doi ma chua xao xong thi bo qua.
                 if self.config.only_post_xao:
@@ -1218,6 +1228,27 @@ class AutoUploader:
             return rieng
         return X_VIDEO_TOI_DA_GIAY if self.platform == "x" else 0
 
+    def _x_bo_qua(self, path: str, key: str) -> bool:
+        """X: video KHONG dang duoc -> True (bao 1 lan). Kiem MA HOA truoc (HEVC -> X tu choi,
+        da do that 29/09 bdwayne1517), roi do dai (> video_toi_da_giay)."""
+        if fbupload.kind_of(path) != "video":
+            return False
+        cache = self.__dict__.setdefault("_ly_do_bo", {})
+        if key not in cache:
+            from . import mp4info
+            cache[key] = mp4info.ly_do_x_khong_nhan(path)
+        ly_do = cache[key]
+        if ly_do:
+            da_bao = self.__dict__.setdefault("_da_bao_dai", set())
+            if key not in da_bao:
+                da_bao.add(key)
+                self.note(f"Bỏ qua {os.path.basename(path)}: {ly_do} (vd dùng ffmpeg: "
+                          "-c:v libx264 -c:a aac).", ok=False)
+                self.save()
+            return True
+        toi_da = self.video_toi_da_giay()
+        return bool(toi_da) and self._qua_dai(path, key, toi_da)
+
     def _qua_dai(self, path: str, key: str, toi_da: int) -> bool:
         """Video nay dai hon ``toi_da`` giay khong. Doc 1 lan/file (nho theo dau vet), bao 1 lan."""
         if fbupload.kind_of(path) != "video":
@@ -1238,6 +1269,14 @@ class AutoUploader:
                       "Cắt ngắn video hoặc dùng acc Premium.", ok=False)
             self.save()
         return True
+
+    def _bao_moi_bi_bo_qua(self, con: int) -> None:
+        """Bao (1 lan cho moi so luong) khi thu muc CON bai nhung khong bai nao dang duoc."""
+        if getattr(self, "_bao_bo_qua_con", None) == con:
+            return
+        self._bao_bo_qua_con = con
+        self.note(f"Thư mục còn {con} bài nhưng KHÔNG bài nào đăng được (X không nhận / quá dài / "
+                  "đã bị bỏ qua) — xem các dòng 'Bỏ qua…' trong nhật ký.", ok=False)
 
     def _post_folders(self) -> list[str]:
         """Cac thu muc poster lay bai de dang, khong trung, chi cai co that.
@@ -1376,7 +1415,8 @@ class AutoUploader:
             # Nen tang KHONG NHAN video nay: bo qua han (khong chon lai), acc/trang khong bi tinh loi.
             if dau_vet not in self._bo_video:
                 self._bo_video.append(dau_vet)
-            self.note(f"{nhan}BỎ QUA {ten}: {loi_cuoi} — chuyển sang video kế tiếp.", ok=False)
+            self.note(f"{nhan}BỎ QUA {ten}: {loi_cuoi} — chuyển sang video kế tiếp. "
+                      "Muốn thử lại video này: đổi tên file.", ok=False)
             self._set_queue_status(video, "loi")
             self.save()
             return None

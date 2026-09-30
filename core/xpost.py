@@ -202,7 +202,7 @@ def upload(manager, account, path: str, caption: str, *,
     if chot == "media-rejected":
         raise fbupload.UploadError(
             f"{VIDEO_TU_CHOI_MARK}: {ten} — X báo \"{chi_tiet.get('media-rejected', '')[:120]}\" "
-            "(thường do video dài hơn 2:20 với acc X thường).")
+            "(thường do mã hoá video X không nhận, vd H.265/HEVC — cần H.264 + AAC).")
     if chot == "daily-limit":
         # KHONG duoc coi la da dang (truoc day roi vao publish-timeout = "coi nhu da len").
         # Khong dung cum "bam Dang" (PUBLISHED_MARKS) -> autoup se tam dung acc 24 gio.
