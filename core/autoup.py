@@ -18,6 +18,7 @@ import json
 import os
 import re
 import threading
+import unicodedata
 import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta
@@ -40,6 +41,9 @@ RETRY_PAUSE = 15
 #: Hong du ngan nay LUOT (khung gio) lien tiep thi tam dung trang va chi nguoi
 #: dung cach phan biet loi tool hay loi acc.
 SLOT_FAIL_LIMIT = 3
+#: MOT MOC GIO thu toi da bao nhieu BAI. Bai hong -> tat trinh duyet, sang bai KE.
+#: Het ca ngan nay bai van hong -> bao kiem tra lai, cho moc sau (nguoi dung chot 01/10).
+SO_BAI_MOI_MOC = 3
 #: Loi nao co chu nay thi coi la "trang hong", dem vao so lan treo.
 STUCK_MARK = "không tải lên được phần trăm nào"
 #: Loi mang chu nay la chuyen cua ACC (xem fbbusiness.ACC_STATES): khong thu
@@ -59,10 +63,157 @@ ACC_FAIL_LIMIT_X = 3
 #: X bao "You've hit the daily post limit": KHONG phai loi acc/tool -- tam dung acc DUNG 24 GIO
 #: roi tu dang lai (vd bao luc 08:00 29/09 -> dang lai 08:00 30/09). Bai chua len, video giu nguyen.
 GIOI_HAN_MARK = "GIỚI HẠN ĐĂNG"
+#: Dang NHOM bi Facebook chan vi SPAM ("chúng tôi giới hạn tần suất bạn đăng bài").
+#: Giong GIOI_HAN_MARK: bai CHUA len, video giu nguyen, acc tam nghi roi TU dang lai --
+#: chi khac la nghi theo NGAY (nguoi dung tu dat, mac dinh 3 ngay).
+SPAM_MARK = "BỊ CHẶN VÌ SPAM"
 #: Nen tang TU CHOI chinh video nay (vd X: "Some of your media failed to load" -- video qua dai).
 #: Loi cua VIDEO, khong phai acc: khong thu lai, khong dem loi acc, ghi video vao danh sach bo qua.
 VIDEO_TU_CHOI_MARK = "X KHÔNG NHẬN VIDEO"
+#: TIEU DE video (= TEN FILE) dai qua thi Facebook khoa nut "Đăng" va chi hien mot dong
+#: "Một bài viết của bạn có tiêu đề quá dài" — khong noi la bai nao.
+#:
+#: DO THAT 01/10 tren page cua nguoi dung (ten file chinh xac tren dia):
+#:     134 ky tu / 152 byte  (Latin + tieng Viet)  -> DANG DUOC
+#:      86 ky tu / 248 byte  (tieng Thai)          -> DANG DUOC
+#:      83 ky tu / 239 byte  (tieng Thai)          -> DANG DUOC
+#:      73 ky tu / 207 byte  (tieng Thai)          -> DANG DUOC
+#:      93 ky tu / 257 byte  (tieng Thai)          -> BI TU CHOI
+#:      96 ky tu / 268 byte  (tieng Thai)          -> BI TU CHOI
+#: => Facebook dem BYTE UTF-8 (tran nam giua 248 va 257, gan nhu chac chan la 255),
+#:    KHONG dem ky tu: 134 ky tu lot ma 93 ky tu truot. Chu Thai 3 byte/chu, tieng Viet
+#:    co dau 2-3 byte, chu Latin 1 byte -> cung mot so ky tu nhung byte khac han.
+TIEU_DE_TOI_DA_BYTE = 250
+#: Tran theo KY TU (0 = khong gioi han). Mac dinh TAT: da do that 134 ky tu van dang duoc,
+#: cat theo ky tu la cat oan nhung tieu de Latin dang chay tot.
+TIEU_DE_TOI_DA_KY_TU = 0
+#: Facebook che TIEU DE (ten video) qua dai -> nut "Đăng" khong bao gio sang.
+#: Cung la loi cua BAI chu khong phai acc -> xu ly y het VIDEO_TU_CHOI_MARK.
+TIEU_DE_DAI_MARK = "TIÊU ĐỀ QUÁ DÀI"
+#: Cac loi thuoc ve CHINH BAI do: khong thu lai, khong dem loi acc, bo qua bai
+#: va chuyen sang bai ke tiep.
+BO_BAI_MARKS = (VIDEO_TU_CHOI_MARK, TIEU_DE_DAI_MARK)
+
+
+#: Loi doc/mo FILE (file hong, dang bi khoa, duong dan sai...). Loi cua FILE chu khong
+#: phai acc -> KHONG dem loi acc (dem thi 2 file hong la acc bi bo oan), nhung bai do
+#: van bi bo qua o luot sau nhu moi bai hong khac.
+FILE_LOI_MARK = "file-read-error"
+
+
+def ghi_chu_so_ngay(so_ngay: int, now: Optional[datetime] = None) -> str:
+    """Dong chu mo canh o "So ngay dat lich" -- NGAN GON, chi noi dat den ngay nao.
+
+    Tinh HOM NAY la ngay 1: dat 3 ngay tu 02/10 -> "bạn đặt lịch đến ngày 4/10".
+    Nguoi dung chot 02/10: chi can mot cau nay, khong dai dong.
+    """
+    now = now or datetime.now()
+    try:
+        so = int(so_ngay)
+    except (TypeError, ValueError):
+        so = 1
+    cuoi = now + timedelta(days=max(1, so) - 1)
+    return f"bạn đặt lịch đến ngày {cuoi.day}/{cuoi.month}"
+
+
+def ten_rut_gon(ten: str, toi_da_byte: int = TIEU_DE_TOI_DA_BYTE,
+                toi_da_ky_tu: int = TIEU_DE_TOI_DA_KY_TU) -> str:
+    """Cat PHAN TEN (khong duoi) cho vua ``toi_da_byte`` byte UTF-8.
+
+    Cat theo BYTE vi Facebook dem byte (xem bang so o TIEU_DE_TOI_DA_BYTE). Windows khong
+    cho ten file ket thuc bang khoang trang hay dau cham, va de dau phu lo lung thi chu
+    hong -> bo not o duoi.
+    """
+    ra = str(ten or "")
+    if toi_da_ky_tu:
+        ra = ra[:toi_da_ky_tu]
+    while ra and len(ra.encode("utf-8", "ignore")) > toi_da_byte:
+        ra = ra[:-1]
+    while ra and unicodedata.combining(ra[-1]):
+        ra = ra[:-1]
+    return ra.rstrip(" .") or "video"
+
+
+def tieu_de_qua_dai(ten: str, toi_da_byte: int = TIEU_DE_TOI_DA_BYTE,
+                    toi_da_ky_tu: int = TIEU_DE_TOI_DA_KY_TU) -> bool:
+    """Tieu de nay co dai qua muc Facebook nhan khong (do theo BYTE UTF-8)."""
+    ten = str(ten or "")
+    if toi_da_ky_tu and len(ten) > toi_da_ky_tu:
+        return True
+    return len(ten.encode("utf-8", "ignore")) > toi_da_byte
+
+
+def rut_gon_ten_video(path: str, toi_da_byte: int = TIEU_DE_TOI_DA_BYTE,
+                      log: Optional[Callable[[str], None]] = None) -> str:
+    """Ten file dai hon ``toi_da`` -> DOI TEN file cho ngan lai. Tra duong dan (moi).
+
+    Vi sao: Business Suite lay TEN FILE lam TIEU DE video, tieu de dai qua thi Facebook
+    khoa nut "Đăng" va khong noi ro bai nao -> ca hang doi ket.
+
+    CAPTION VAN DAY DU: ten goc duoc ghi ra file ``.txt`` di kem (caption_for doc file do
+    truoc khi lay ten file). Bai da co caption rieng (``<ten>.txt`` hoac ``<ten>_xao/``)
+    thi GIU NGUYEN caption do, chi doi ten cac file di kem theo.
+    """
+    noi = log or (lambda _m: None)
+    thu_muc, ten_file = os.path.split(path)
+    goc, duoi = os.path.splitext(ten_file)
+    if not tieu_de_qua_dai(goc, toi_da_byte):
+        return path
+
+    moi = ten_rut_gon(goc, toi_da_byte)
+    dich = os.path.join(thu_muc, moi + duoi)
+    lan = 2
+    while os.path.exists(dich) and os.path.normcase(dich) != os.path.normcase(path):
+        hau = f" {lan}"                       # trung ten -> them so, VAN giu <= tran
+        moi = ten_rut_gon(goc, toi_da_byte - len(hau)) + hau
+        dich = os.path.join(thu_muc, moi + duoi)
+        lan += 1
+    if os.path.normcase(dich) == os.path.normcase(path):
+        return path
+
+    cap_cu = os.path.join(thu_muc, goc + ".txt")
+    xao_cu = os.path.join(thu_muc, goc + "_xao")
+    co_caption = os.path.isfile(cap_cu) or os.path.isdir(xao_cu)
+    try:
+        os.rename(path, dich)
+    except OSError as exc:
+        noi(f"Không đổi được tên {ten_file} (tiêu đề {len(goc)} ký tự): {exc}")
+        return path
+
+    # Caption di kem phai di theo ten moi, khong thi bai mat caption.
+    for cu, moi_duong in ((cap_cu, os.path.join(thu_muc, moi + ".txt")),
+                          (xao_cu, os.path.join(thu_muc, moi + "_xao"))):
+        if os.path.exists(cu) and not os.path.exists(moi_duong):
+            try:
+                os.rename(cu, moi_duong)
+            except OSError as exc:
+                noi(f"Không chuyển được caption {os.path.basename(cu)}: {exc}")
+    if not co_caption:
+        # Chua co caption rieng -> ghi TEN GOC ra .txt de caption dang DAY DU.
+        try:
+            with open(os.path.join(thu_muc, moi + ".txt"), "w", encoding="utf-8") as fh:
+                fh.write(goc)
+        except OSError as exc:
+            noi(f"Không ghi được caption cho {moi}{duoi}: {exc}")
+    noi(f"Tiêu đề {len(goc.encode('utf-8', 'ignore'))} byte (Facebook chỉ nhận "
+        f"~255 byte) — đã đổi tên video thành “{moi}{duoi}” "
+        f"({len(moi.encode('utf-8', 'ignore'))} byte); caption vẫn đăng đủ tiêu đề gốc.")
+    return dich
+
+
+def la_loi_file(loi) -> bool:
+    return FILE_LOI_MARK in str(loi or "")
+
+
+def la_loi_bo_bai(loi) -> bool:
+    """Loi nay co phai "bai nay khong dang duoc, sang bai khac" khong."""
+    chu = str(loi or "")
+    return any(m in chu for m in BO_BAI_MARKS)
 GIOI_HAN_GIO = 24
+#: Acc bi chan vi spam thi nghi bao nhieu NGAY (mac dinh; nguoi dung sua trong tab).
+SPAM_NGAY_MAC_DINH = 3
+#: Tran tren cho "dat truoc N ngay" -- de khong ai go nham 365 roi tool dang ca nam mot luot.
+SO_NGAY_DAT_LICH_TOI_DA = 30
 #: Cho khoa acc DU PHONG toi da bao nhieu giay (acc do co the dang ban o trang khac); het gio thi bo qua
 #: acc do luot nay -- khong ngoi cho vo han (tranh deadlock 2 trang cho khoa cheo nhau).
 ACC_LOCK_WAIT = 300
@@ -82,12 +233,22 @@ BUSINESS_HOME = "https://business.facebook.com/latest/home?asset_id={page_id}"
 #: Trang cua mot nhom. Dang bai vao nhom lam thang tren trang nay, khong qua
 #: Business Suite -- Business Suite khong quan ly nhom.
 GROUP_URL = "https://www.facebook.com/groups/{group_id}"
+#: Dia chi CHINH TRANG fanpage (xem bai da len the nao), khac Business Suite.
+PAGE_URL = "https://www.facebook.com/{page_id}"
 
 
 def business_url(page_id: str, home: bool = False) -> str:
     """Dia chi Business Suite da tro san vao fanpage co id nay."""
     mau = BUSINESS_HOME if home else BUSINESS_URL
     return mau.format(page_id=str(page_id).strip())
+
+
+def page_url(page_id: str) -> str:
+    """Dia chi CHINH fanpage (facebook.com/<id>) -- de xem bai da len the nao.
+
+    Khac ``business_url``: cai kia mo Business Suite de DANG bai, cai nay mo trang that.
+    """
+    return PAGE_URL.format(page_id=str(page_id).strip().strip("/").split("/")[-1])
 
 
 def group_url(group_id: str) -> str:
@@ -133,8 +294,15 @@ class AutoUpConfig:
     rotate: str = "turn"
     #: Dang vao dau: "page" (fanpage) hay "group" (nhom facebook).
     target_kind: str = "page"
+    #: Tab con chua trang nay (nguoi dung tu tao them tab). Rong = TAB MAC DINH cua loai.
+    #: Tab da bi xoa -> coi nhu rong (xem ``AutoUpManager.tab_cua``).
+    tab_id: str = ""
+    #: Nhom gom cac trang trong CUNG MOT TAB cho de quan ly. Rong = chua phan nhom.
+    nhom: str = ""
     #: Kieu bai: "video", "image" (anh) hay "text" (chi co chu).
     post_kind: str = "video"
+    #: Dang NHOM bi Facebook chan vi spam -> acc do nghi bao nhieu NGAY roi dang lai.
+    spam_ngay: int = SPAM_NGAY_MAC_DINH
     #: Nhom se dang vao (khi target_kind = "group"). Nhan ca id lan link.
     group_id: str = ""
     #: Ten nhom do duoc (chi de nhin cho de).
@@ -181,6 +349,9 @@ class AutoUpConfig:
     #: Gio SOM NHAT trang nay duoc chay trong ngay ("HH:MM", gio MAY). Rong = khong chan.
     #: Hai trang trung gio bat dau -> con bi rao "cach nhau N phut giua cac trang".
     gio_bat_dau: str = ""
+    #: DAT TRUOC may NGAY LIEN TIEP trong mot luot. 1 = chi dat cho hom nay (nhu cu);
+    #: 3 = moi khung gio dat luon 3 bai cho 3 ngay lien tiep roi nghi du 3 ngay.
+    so_ngay_dat_lich: int = 1
 
     def label(self) -> str:
         if self.target_kind == "group":
@@ -338,6 +509,9 @@ class AutoUploader:
         self._acc_dang: str = ""
         #: Dau vet video nen tang TU CHOI (load() ghi de neu file co).
         self._bo_video: list = []
+        self._vi_tri_bat_dau: int = 1
+        self._dot_bat_dau: str = ""
+        self._trong_moc = False               # dang o trong mot MOC GIO hay goi rieng
         #: Manager cai vao: trang DAT LICH bao "that su bat dau dang" (da lay khung,
         #: sap mo trinh duyet) -> luc do moi bat rao giua cac trang.
         self.bao_bat_dau_lich: Optional[Callable[[], None]] = None
@@ -373,6 +547,16 @@ class AutoUploader:
         self.queue = [dict(x) for x in (raw.get("queue") or []) if isinstance(x, dict)]
         #: Dau vet video nen tang TU CHOI (khong chon lai). Xoa file / doi file thi dau vet doi.
         self._bo_video = [str(x) for x in (raw.get("bo_video") or [])][-500:]
+        #: Bai dang BAT DAU tu vi tri nay (so thu tu trong thu muc, 1 = bai dau).
+        #: Dang duoc bai nao thi con tro nhay toi vi tri bai do -> moc sau bo qua cac
+        #: bai hong dung truoc. Xem ``dang_mot_moc``.
+        try:
+            self._vi_tri_bat_dau = max(1, int(raw.get("vi_tri_bat_dau") or 1))
+        except (TypeError, ValueError):
+            self._vi_tri_bat_dau = 1
+        #: Ngay BAT DAU cua dot dat lich hien tai ("YYYY-MM-DD"). Dot keo dai so_ngay_lich()
+        #: ngay ke tu moc nay; het dot moi mo dot moi (xem dot_bat_dau).
+        self._dot_bat_dau = str(raw.get("dot_bat_dau") or "")
 
     def save(self) -> None:
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
@@ -391,6 +575,8 @@ class AutoUploader:
             "posted": self._posted[-500:],
             "queue": self.queue[-500:],
             "bo_video": getattr(self, "_bo_video", [])[-500:],
+            "vi_tri_bat_dau": int(getattr(self, "_vi_tri_bat_dau", 1) or 1),
+            "dot_bat_dau": str(getattr(self, "_dot_bat_dau", "") or ""),
         }
         tmp = self.path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
@@ -558,12 +744,34 @@ class AutoUploader:
             self._bao_chua_dang_duoc(can, now)
             return None
 
-        den_han = self.lich_den_luot(now)     # da danh dau "da chay", khong chay bu
-        if not den_han:
+        so_ngay = self.so_ngay_lich()
+        if self.dot_con_hieu_luc(now):
+            # Dot truoc da dat lich phu het hom nay -> NGHI, khong mo trinh duyet.
             return None
-        khung = den_han[0]
+        truoc = str(getattr(self, "_dot_bat_dau", "") or "")
+        self.dot_bat_dau(now)                 # mo dot moi neu dot cu da het
+        if truoc != self._dot_bat_dau:
+            self.save()
+        den_han = self.lich_den_luot(now)     # da danh dau "da chay", khong chay bu
+        if den_han:
+            khung = den_han[0]
+            lech, khoa = 0, khung.get("khoa") or ""
+        else:
+            # Het gio cua HOM NAY -> sang cac NGAY SAU cua dot (ngay truoc, gio sau).
+            muc = self.lich_muc_lech(now)
+            if not muc or not self.lich_san_sang_lech(now):
+                return None
+            lech, k, khoa = muc
+            khung = {"khung": k, "chay": str(k.get("chay") or ""),
+                     "dang": str(k.get("dang") or ""), "khoa": khoa}
+            self._fired[khoa] = {"bat_dau": (now or datetime.now()).strftime(self.STAMP)}
+            self.save()
+
         self._lich_chay = khung
-        moc = f"{khung.get('chay')} → hẹn {khung.get('dang')}"
+        self._lich_ngay_lech = lech
+        moc = f"{khung.get('chay') or 'tới lượt'} → hẹn {khung.get('dang')}"
+        if so_ngay > 1:
+            moc += f" (ngày {lech + 1}/{so_ngay})"
         if self.bao_bat_dau_lich is not None:
             self.bao_bat_dau_lich()           # bat rao: trang nay SAP mo trinh duyet
 
@@ -574,14 +782,40 @@ class AutoUploader:
             return ket
         finally:
             self._busy = False
+            self._lich_ngay_lech = 0
             if ket:
-                # Facebook da nhan lich -> ghi moc "xong". Khong ghi thi lan sau mo
-                # tool len se thay khung nay la DO DANG (bo lo), dung nhu y do.
-                self.lich_ghi_xong(khung.get("khoa") or "", now)
+                # Facebook da nhan lich -> ghi moc "xong" cho DUNG ngay do. Khong ghi thi
+                # lan sau mo tool len se thay khung nay la DO DANG (bo lo), dung nhu y do.
+                self.lich_ghi_xong(khoa, now)
+                self._slot_fails = 0
+                self._bao_xong_dot(now)
+            else:
+                # Khung nay khong dang duoc -> tinh MOT luot hong; hong du SLOT_FAIL_LIMIT
+                # luot lien tiep thi dung trang (nhu trang cong khai).
+                self._moc_hong(f"Khung {khung.get('dang')}: ", [os.path.basename(video)])
             if self.config.schedule_mode == "delay":
                 # Bam gio SAU khi xong -> dong ho "cach N phut" dem tu luc ranh.
                 self._last_run = (now or datetime.now()).strftime(self.STAMP)
                 self.save()
+
+    def _bao_xong_dot(self, now: Optional[datetime] = None) -> None:
+        """Dat xong MUC CUOI CUNG cua dot -> bao ro cho toi ngay nao moi chay tiep."""
+        if self.so_ngay_lich() <= 1:
+            return
+        if self.lich_muc_lech(now) is not None or self.lich_toi_luot(now):
+            return                              # van con muc chua dat
+        if getattr(self, "_dot_da_bao", "") == self.lich_dat_den():
+            return                              # da bao roi, khong lap lai
+        self._dot_da_bao = self.lich_dat_den()
+        den = self.lich_dat_den()
+        if not den:
+            return
+        ngay = datetime.strptime(den, "%Y-%m-%d")
+        bao = (f"✅ Đã đặt lịch xong cả đợt {self.so_ngay_lich()} ngày — đến hết ngày "
+               f"{ngay.strftime('%d/%m')}. Chờ đến ngày "
+               f"{(ngay + timedelta(days=1)).strftime('%d/%m')} mới chạy đợt mới.")
+        self.note(bao, ok=True)
+        self._bao_console(bao)
 
     def _tick_delay(self, now: Optional[datetime]) -> Optional[str]:
         """Cu cach nhau ``delay_minutes`` phut thi dang mot bai.
@@ -613,7 +847,7 @@ class AutoUploader:
 
         self._busy = True
         try:
-            return self.upload_now(video, f"cách {self.config.delay_minutes} phút")
+            return self.dang_mot_moc(f"cách {self.config.delay_minutes} phút")
         finally:
             self._busy = False
             # Bam gio o DAY: da dang xong (hoac hong) va trinh duyet da dong.
@@ -642,7 +876,7 @@ class AutoUploader:
         try:
             self._fired[moc] = hom_nay      # danh dau TRUOC khi dang: hong thi
             self.save()                      # cung khong dang lai cung mot moc
-            return self.upload_now(video, moc)
+            return self.dang_mot_moc(moc)
         finally:
             self._busy = False
 
@@ -819,6 +1053,57 @@ class AutoUploader:
             ra.append(dong)
         return ra
 
+    def lich_danh_gia_dot(self, now: Optional[datetime] = None) -> list:
+        """Cham CA DOT ``so_ngay_lich()`` ngay, khong chi hom nay.
+
+        Ngay 0 cham day du (hai cua) nhu ``lich_danh_gia``; cac ngay sau suy ra tu ngay 0
+        bang cach CONG THEM ngay vao gio da quy doi -- cung mui gio, cung phep tinh, chi
+        khac ngay. Moi dong co them ``lech`` (so ngay cach hom nay).
+        """
+        from core import lich_dang as ld
+        now = now or datetime.now()
+        goc = self.lich_danh_gia(now)
+        for d in goc:
+            d["lech"] = 0
+        so = self.so_ngay_lich()
+        if so <= 1 or not goc:
+            return goc
+        try:
+            neo = datetime.strptime(self.dot_bat_dau(now), "%Y-%m-%d")
+        except ValueError:
+            return goc
+
+        def cong_ngay(txt: str, them: int) -> str:
+            """'02/10 07:00' + 2 ngay -> '04/10 07:00' (chi hien ngay/thang nen khong can nam)."""
+            try:
+                t = datetime.strptime(txt, "%d/%m %H:%M").replace(year=now.year)
+            except (ValueError, TypeError):
+                return txt
+            return (t + timedelta(days=them)).strftime("%d/%m %H:%M")
+
+        ra = list(goc)
+        for i in range(so):
+            lech = (neo.date() + timedelta(days=i) - now.date()).days
+            if lech < 1:
+                continue
+            for d0 in goc:
+                if not d0.get("khoa"):
+                    continue
+                dong = dict(d0)
+                dong["lech"] = lech
+                dong["khoa"] = self._lich_khoa_ngay(d0["khoa"], lech)
+                dau = self._fired.get(dong["khoa"])
+                xong = bool(isinstance(dau, dict) and dau.get("xong"))
+                dong["da_chay"] = xong
+                dong["trang_thai"] = "xong" if xong else ""
+                dong["ket_qua"] = ld.DA_DANG if xong else ld.CHO
+                dong["ly_do"] = (f"đã đăng lúc {str((dau or {}).get('xong'))[11:16]}".rstrip()
+                                 if xong else f"chờ lượt (ngày {i + 1}/{so})")
+                dong["dang_du"] = cong_ngay(d0.get("dang_du") or "", lech)
+                dong["quy_doi"] = cong_ngay(d0.get("quy_doi") or "", lech)
+                ra.append(dong)
+        return ra
+
     def chua_toi_gio_bat_dau(self, now: Optional[datetime] = None) -> bool:
         """Chua toi "Gio bat dau chay" cua trang nay trong hom nay."""
         gio = (self.config.gio_bat_dau or "").strip()
@@ -831,6 +1116,136 @@ class AutoUploader:
         except ValueError:
             return False
         return now < moc
+
+    def so_ngay_lich(self) -> int:
+        """Mot luot dat lich cho may NGAY LIEN TIEP (>= 1). Nguoi dung dat trong tab."""
+        try:
+            so = int(self.config.so_ngay_dat_lich)
+        except (TypeError, ValueError):
+            return 1
+        return max(1, min(SO_NGAY_DAT_LICH_TOI_DA, so))
+
+    @staticmethod
+    def _lich_khoa_ngay(khoa: str, them: int) -> str:
+        """Khoa cua CUNG khung nhung LUI ``them`` ngay -- dung khi dat truoc nhieu ngay.
+
+        Khoa co dang ``lich:YYYY-MM-DD|<chay>><dang>``; chi doi phan ngay.
+        """
+        if them <= 0 or not khoa.startswith("lich:"):
+            return khoa
+        try:
+            ngay = datetime.strptime(khoa[5:15], "%Y-%m-%d") + timedelta(days=them)
+        except ValueError:
+            return khoa
+        return "lich:" + ngay.strftime("%Y-%m-%d") + khoa[15:]
+
+    def chay_lai_tu_dau(self) -> dict:
+        """NGUOI DUNG bam "Chạy lại từ đầu": quen het dau cu, dang lai tu BAI DAU.
+
+        Xoa: dau lich cua cac khung (de khung den luot lai ngay), NEO DOT (mo dot moi
+        tu hom nay), con tro bai (ve bai 1), danh sach bai bi bo qua, so moc hong.
+        KHONG dung toi danh sach BAI DA DANG (``_posted``) -- xoa cai do la dang TRUNG
+        lai nhung bai da len. Tra {lich, bo_video, vi_tri} de bao lai cho nguoi dung.
+        """
+        lich = [k for k in self._fired if str(k).startswith("lich:")]
+        for k in lich:
+            self._fired.pop(k, None)
+        bo = len(getattr(self, "_bo_video", []) or [])
+        self._bo_video = []
+        cu_vi_tri = int(getattr(self, "_vi_tri_bat_dau", 1) or 1)
+        self._vi_tri_bat_dau = 1
+        self._dot_bat_dau = ""
+        self._dot_da_bao = ""
+        self._slot_fails = 0
+        self._lich_chay = None
+        self._lich_ngay_lech = 0
+        self.note(f"↺ Chạy lại từ đầu: xoá {len(lich)} dấu lịch, bỏ {bo} bài từng bị bỏ qua, "
+                  f"con trỏ về bài 1 (đang ở bài {cu_vi_tri}). Các bài ĐÃ ĐĂNG vẫn được nhớ "
+                  "để không đăng trùng.", ok=True)
+        self.save()
+        return {"lich": len(lich), "bo_video": bo, "vi_tri": cu_vi_tri}
+
+    def dot_bat_dau(self, now: Optional[datetime] = None) -> str:
+        """Ngay BAT DAU cua dot dat lich hien tai ("YYYY-MM-DD").
+
+        Mot dot phu dung ``so_ngay_lich()`` ngay LIEN TIEP ke tu moc nay. Hom nay da qua
+        ngay cuoi cua dot -> MO DOT MOI tinh tu hom nay. Neo co dinh nhu vay moi chan duoc
+        viec "troi cua so": dat xong den 04/10 thi ngay 03/10 KHONG duoc nhin thay 05/10
+        va chay tiep -- phai nghi den 05/10 (nguoi dung chot 02/10).
+        """
+        now = now or datetime.now()
+        moc = str(getattr(self, "_dot_bat_dau", "") or "")
+        if moc:
+            try:
+                cuoi = (datetime.strptime(moc, "%Y-%m-%d")
+                        + timedelta(days=self.so_ngay_lich() - 1))
+                if now.date() <= cuoi.date():
+                    return moc
+            except ValueError:
+                pass
+        self._dot_bat_dau = now.strftime("%Y-%m-%d")
+        return self._dot_bat_dau
+
+    def dot_con_hieu_luc(self, now: Optional[datetime] = None) -> bool:
+        """Dot truoc VAN con phu hom nay (dat lich roi) -> trang nghi, khong chay gi."""
+        now = now or datetime.now()
+        moc = str(getattr(self, "_dot_bat_dau", "") or "")
+        if not moc or self.so_ngay_lich() <= 1:
+            return False
+        try:
+            cuoi = datetime.strptime(moc, "%Y-%m-%d") + timedelta(days=self.so_ngay_lich() - 1)
+        except ValueError:
+            return False
+        return moc < now.strftime("%Y-%m-%d") <= cuoi.strftime("%Y-%m-%d")
+
+    def lich_muc_lech(self, now: Optional[datetime] = None):
+        """Muc KE TIEP thuoc cac NGAY SAU cua dot dat truoc: ``(lech, khung, khoa)``.
+
+        Thu tu NGAY TRUOC, GIO SAU: xong HET cac gio cua ngay 1 moi sang ngay 2
+        (nguoi dung chot 02/10). Ngay 0 do ``lich_toi_luot`` lo, o day chi xet lech >= 1.
+        None = khong con muc nao.
+        """
+        now = now or datetime.now()
+        so = self.so_ngay_lich()
+        if so <= 1:
+            return None
+        try:
+            neo = datetime.strptime(self.dot_bat_dau(now), "%Y-%m-%d")
+        except ValueError:
+            return None
+        for i in range(so):                    # cac ngay cua DOT, tinh tu NEO
+            lech = (neo.date() + timedelta(days=i) - now.date()).days
+            if lech < 1:
+                continue                       # ngay hom nay (va ngay da qua) do lich_toi_luot lo
+            for k in (self.config.khung_lich or []):
+                if not str(k.get("dang") or ""):
+                    continue
+                khoa = self._lich_khoa_ngay(self._lich_khoa(k, now), lech)
+                dau = self._fired.get(khoa)
+                if not (isinstance(dau, dict) and dau.get("xong")):
+                    return lech, k, khoa
+        return None
+
+    def lich_san_sang_lech(self, now: Optional[datetime] = None) -> bool:
+        """Con muc cua NGAY SAU va dong ho da cho phep mo trinh duyet lan nua chua.
+
+        Kieu "cach N phut": theo dong ho delay (moi N phut mot bai -> dung nhip "lan 1,
+        lan 2, lan 3..." nguoi dung mo ta). Kieu danh sach moc gio: khong co moc nao con
+        trong hom nay -> cho sang ngay mai.
+        """
+        if self.lich_muc_lech(now) is None:
+            return False
+        if self.chua_toi_gio_bat_dau(now):
+            return False
+        if self.config.schedule_mode == "delay":
+            return self.delay_due(now)
+        return False
+
+    def lich_dat_den(self) -> str:
+        """Ngay XA NHAT da dat lich xong ("YYYY-MM-DD"); rong = chua dat truoc ngay nao."""
+        ngays = [k[5:15] for k, v in self._fired.items()
+                 if k.startswith("lich:") and isinstance(v, dict) and v.get("xong")]
+        return max(ngays) if ngays else ""
 
     @staticmethod
     def _lich_khoa(khung: dict, ngay_chay: datetime) -> str:
@@ -949,8 +1364,10 @@ class AutoUploader:
         cung khong phinh file khi chay ca nam.
         """
         hom_nay = (now or datetime.now()).strftime("%Y-%m-%d")
+        # GIU dau cua NGAY TUONG LAI: dat truoc N ngay thi cac ngay sau da duoc danh dau
+        # "xong" roi -- xoa di la hom sau dat trung mot lan nua.
         bo = [k for k in self._fired
-              if k.startswith("lich:") and k[5:15] != hom_nay]
+              if k.startswith("lich:") and k[5:15] < hom_nay]
         for k in bo:
             self._fired.pop(k, None)
         return len(bo)
@@ -995,6 +1412,10 @@ class AutoUploader:
             tz_page = ld.vung(self.config.mui_gio) if self.config.mui_gio else may
             # NGAY = ngay cua MAY (xem lich_danh_gia), GIO theo mui gio nuoc do.
             ben_do = ld.doc_gio(str(khung.get("dang") or ""), now)
+            # Dat truoc nhieu ngay: bai thu d duoc hen LUI d NGAY (cung gio ben nuoc do).
+            lech = int(getattr(self, "_lich_ngay_lech", 0) or 0)
+            if lech:
+                ben_do = ben_do + timedelta(days=lech)
             # ...roi QUY DOI ra gio may -- day moi la gio dien vao o hen lich cua FB.
             _utc, gio_may = ld.quy_doi(ben_do, tz_page, may)
         except ld.LichError:
@@ -1002,6 +1423,34 @@ class AutoUploader:
         return {"ngay": gio_may.strftime("%d/%m/%Y"), "gio": gio_may.strftime("%H:%M"),
                 "ben_do": ben_do.strftime("%d/%m %H:%M"),
                 "mui_gio": self.config.mui_gio or ""}
+
+    def lich_con_lai_dot(self, now: Optional[datetime] = None) -> int:
+        """So BAI con phai dat trong dot (ca khung hom nay chua chay lan cac ngay sau)."""
+        from core import lich_dang as ld
+        if not self.config.is_lich:
+            return 0
+        now = now or datetime.now()
+        con = sum(1 for d in self.lich_danh_gia(now)
+                  if d["ket_qua"] in (ld.CHO, ld.CHAY))
+        so = self.so_ngay_lich()
+        if so <= 1:
+            return con
+        try:
+            neo = datetime.strptime(self.dot_bat_dau(now), "%Y-%m-%d")
+        except ValueError:
+            return con
+        for i in range(so):
+            lech = (neo.date() + timedelta(days=i) - now.date()).days
+            if lech < 1:
+                continue
+            for k in (self.config.khung_lich or []):
+                if not str(k.get("dang") or ""):
+                    continue
+                khoa = self._lich_khoa_ngay(self._lich_khoa(k, now), lech)
+                dau = self._fired.get(khoa)
+                if not (isinstance(dau, dict) and dau.get("xong")):
+                    con += 1
+        return con
 
     def lich_con_khung(self, now: Optional[datetime] = None) -> bool:
         """Hom nay con khung nao chua chay khong (CHO hoac dang toi luot).
@@ -1012,7 +1461,10 @@ class AutoUploader:
         from core import lich_dang as ld
         if not self.config.is_lich:
             return True
-        return any(d["ket_qua"] in (ld.CHO, ld.CHAY) for d in self.lich_danh_gia(now))
+        if any(d["ket_qua"] in (ld.CHO, ld.CHAY) for d in self.lich_danh_gia(now)):
+            return True
+        # Het khung HOM NAY nhung con cac ngay sau cua dot -> VAN con viec, chua "xong".
+        return self.lich_muc_lech(now) is not None
 
     def lich_tom_tat(self, now: Optional[datetime] = None) -> str:
         """Mot dong trang thai cho trang dat lich.
@@ -1029,6 +1481,24 @@ class AutoUploader:
         dau = f"Ngày {now.strftime('%d/%m')}: đã chạy {hn['da_dang']}/{hn['tong']} video"
         if hn["bo_lo"]:
             dau += f" · {hn['bo_lo']} bỏ qua"
+        if self.so_ngay_lich() > 1:
+            muc = self.lich_muc_lech(now)
+            if muc is not None:
+                # DANG GIUA DOT: con bai cua cac ngay sau -> noi ro con bao nhieu va bai ke
+                # la ngay nao, KHONG duoc ghi "xong hom nay, cho ngay mai" (nguoi dung
+                # doc nham tuong tool dung -- bao 02/10).
+                lech, k, _khoa = muc
+                ngay_ke = (now + timedelta(days=lech)).strftime("%d/%m")
+                con = self.lich_con_lai_dot(now)
+                return (f"{dau} · còn {con} bài của đợt {self.so_ngay_lich()} ngày "
+                        f"— bài kế {k.get('dang')} ngày {ngay_ke} bên đó.")
+            den = self.lich_dat_den()
+            if den > now.strftime("%Y-%m-%d") and not self.lich_toi_luot(now):
+                # Dat XONG ca dot -> nghi tron den het dot.
+                ngay = datetime.strptime(den, "%Y-%m-%d")
+                return (f"{dau} · đã đặt lịch xong cả đợt đến hết ngày "
+                        f"{ngay.strftime('%d/%m')} — chờ đến "
+                        f"{(ngay + timedelta(days=1)).strftime('%d/%m')} mới đặt tiếp.")
         ke = next((d for d in cham if d["ket_qua"] in (ld.CHO, ld.CHAY)), None)
         if ke:
             gio = ke.get("dang_du") or ke["dang"]
@@ -1059,7 +1529,10 @@ class AutoUploader:
             return False                      # dang tam dung vi GIOI HAN DANG -> cho toi moc
         if self.config.is_lich:
             # CHI NHIN. Danh dau la viec cua _tick_lich luc chay that.
-            return bool(self.lich_toi_luot(now))
+            # Het khung cua HOM NAY nhung con ngay sau trong dot dat truoc -> van den luot.
+            if self.dot_con_hieu_luc(now):
+                return False              # dot truoc da phu het hom nay -> nghi
+            return bool(self.lich_toi_luot(now)) or self.lich_san_sang_lech(now)
         if self.config.schedule_mode == "delay":
             return self.delay_due(now)
         return bool(self.due_times(now))
@@ -1177,46 +1650,69 @@ class AutoUploader:
             return "auto"
         return "video"
 
-    def next_video(self) -> Optional[str]:
-        """Video dau tien (theo ten) chua tung dang va khong ai khac dang giu.
+    def next_video(self, bo_qua=()) -> Optional[str]:
+        """Bai ke tiep de dang: quet theo DUNG thu tu thu muc, bat dau tu CON TRO.
 
-        Loai hai nhom:
-          * video CHINH cong viec nay da dang -- neu khong, tat "dang xong xoa
-            video" la no dang di dang lai mai mot video;
-          * video cong viec KHAC dang giu hoac da dang tu cung thu muc -- hai tab
-            tro vao mot thu muc ma khong loai thi cung mot video len hai fanpage.
+        Con tro (``_vi_tri_bat_dau``) = vi tri bai dang duoc gan nhat -> cac bai hong
+        dung TRUOC no bi bo qua o nhung moc sau. ``bo_qua`` la dau vet cac bai da thu
+        TRONG MOC NAY (xem ``dang_mot_moc``).
 
-        GIU CHO TRUOC roi moi kiem file da chep xong chua: buoc kiem mat 2 giay,
-        de sau thi may cong viec cung nam trong do va cung lay mot video.
+        Van loai hai nhom nhu truoc:
+          * bai CHINH cong viec nay da dang -- neu khong, tat "dang xong xoa video"
+            la no dang di dang lai mai mot video;
+          * bai cong viec KHAC dang giu hoac da dang tu cung thu muc -- hai tab tro
+            vao mot thu muc ma khong loai thi cung mot video len hai fanpage.
+
+        GIU CHO TRUOC roi moi kiem file da chep xong chua: buoc kiem mat 2 giay, de sau
+        thi may cong viec cung nam trong do va cung lay mot video.
         """
         da_dang = set(self._posted)
         toi_da = self.video_toi_da_giay()
-        bo_qua = 0
-        # Quet CA HAI nguon (nhom): "Thu muc bai cho dang" TRUOC (uu tien dang bai
-        # quet ve), roi "Thu muc video" (video le). Fanpage chi co mot thu muc.
-        for thu_muc in self._post_folders():
-            for path in fbupload.find_by_kind(thu_muc, self.effective_kind()):
-                key = self._key(path)
-                if key in da_dang or key in getattr(self, "_bo_video", ()):
+        da_thu = set(bo_qua or ())
+        tu = max(1, int(getattr(self, "_vi_tri_bat_dau", 1) or 1))
+        for vi_tri, path in self._bai_theo_thu_tu():
+            if vi_tri < tu:
+                continue                       # chua toi con tro
+            key = self._key(path)
+            if key in da_dang or key in getattr(self, "_bo_video", ()):
+                continue
+            if key in da_thu:
+                continue                       # da thu trong chinh moc nay roi
+            # X: video MA HOA X khong nhan (HEVC...) hoac QUA DAI -> bo qua, KHONG mo trinh duyet.
+            if self.platform == "x" and self._x_bo_qua(path, key):
+                continue
+            if toi_da and self.platform != "x" and self._qua_dai(path, key, toi_da):
+                continue
+            # "Chi dang bai da xao": bai trong hang doi ma chua xao xong thi bo qua.
+            if self.config.only_post_xao:
+                it = self._queue_item_for(path)
+                if it is not None and it.get("xao") != "da":
                     continue
-                # X: video MA HOA X khong nhan (HEVC...) hoac QUA DAI -> bo qua, KHONG mo trinh duyet.
-                if self.platform == "x" and self._x_bo_qua(path, key):
-                    bo_qua += 1
-                    continue
-                if toi_da and self.platform != "x" and self._qua_dai(path, key, toi_da):
-                    continue
-                # "Chi dang bai da xao": bai trong hang doi ma chua xao xong thi bo qua.
-                if self.config.only_post_xao:
-                    it = self._queue_item_for(path)
-                    if it is not None and it.get("xao") != "da":
-                        continue
-                if self.claim_check is not None and not self.claim_check(key):
-                    continue                       # cong viec khac dang giu
-                if fbupload.is_ready(path):
-                    return path
-                if self.unclaim is not None:       # chua chep xong -> tra cho lai
-                    self.unclaim(key)
+            # Tieu de (= TEN FILE) qua dai -> cat ten file NGAY TRUOC khi dang, de
+            # Facebook khong khoa nut "Đăng". Lam sau cac buoc loc o tren: dau vet
+            # bai da dang / bai bi bo qua tinh theo ten CU.
+            path = self._rut_gon_tieu_de(path)
+            key = self._key(path)
+            if self.claim_check is not None and not self.claim_check(key):
+                continue                       # cong viec khac dang giu
+            if fbupload.is_ready(path):
+                return path
+            if self.unclaim is not None:       # chua chep xong -> tra cho lai
+                self.unclaim(key)
+        if tu > 1:
+            # Con tro da chay qua het thu muc (bai cuoi da dang / da bi xoa) -> ve bai dau.
+            self._vi_tri_bat_dau = 1
+            self.save()
+            return self.next_video(bo_qua=bo_qua)
         return None
+
+    def so_ngay_spam(self) -> int:
+        """So NGAY cho acc nghi khi bi Facebook chan vi spam (nguoi dung dat trong tab)."""
+        try:
+            so = int(self.config.spam_ngay)
+        except (TypeError, ValueError):
+            return SPAM_NGAY_MAC_DINH
+        return so if so > 0 else SPAM_NGAY_MAC_DINH
 
     def video_toi_da_giay(self) -> int:
         """Gioi han thoi luong video (giay) cua trang nay; 0 = khong gioi han."""
@@ -1278,6 +1774,45 @@ class AutoUploader:
         self.note(f"Thư mục còn {con} bài nhưng KHÔNG bài nào đăng được (X không nhận / quá dài / "
                   "đã bị bỏ qua) — xem các dòng 'Bỏ qua…' trong nhật ký.", ok=False)
 
+    def _rut_gon_tieu_de(self, path: str) -> str:
+        """Fanpage (Business Suite): ten file qua dai -> cat ngan, caption van day du.
+
+        Chi lam cho duong FANPAGE cua Facebook: dang NHOM khong co "tieu de" (chi co
+        caption), con X thi composer khong lay ten file lam gi.
+        """
+        if self.platform != "fb" or self.config.is_group:
+            return path
+        return rut_gon_ten_video(path, TIEU_DE_TOI_DA_BYTE,
+                                 log=lambda m: self.note(m, ok=True))
+
+    def _bai_theo_thu_tu(self) -> list:
+        """[(vi tri 1-based, duong dan)] theo DUNG thu tu thu muc (nguoi dung nhin thay)."""
+        ds = []
+        for thu_muc in self._post_folders():
+            ds += list(fbupload.find_by_kind(thu_muc, self.effective_kind()))
+        return list(enumerate(ds, start=1))
+
+    def thu_tu_bai(self, path: str) -> tuple:
+        """(bai thu may, tong so bai) theo DUNG thu tu thu muc -- de bao "bài thứ 2 lỗi".
+
+        Dem ca cac bai da dang / da bo qua: nguoi dung nhin thu muc thay bai thu may thi
+        tool phai noi dung so do, khong phai so sau khi da loc.
+        """
+        ds = self._bai_theo_thu_tu()
+        can = os.path.normcase(os.path.abspath(path or ""))
+        for i, p in ds:
+            if os.path.normcase(os.path.abspath(p)) == can:
+                return i, len(ds)
+        return 0, len(ds)
+
+    def nhan_bai(self, path: str) -> str:
+        """ "bài thứ 2/12 (ten.mp4)" -- dung trong nhat ky de nguoi dung biet bai nao hong."""
+        ten = os.path.basename(path or "")
+        thu, tong = self.thu_tu_bai(path)
+        if not thu:
+            return ten
+        return f"bài thứ {thu}/{tong} ({ten})"
+
     def _post_folders(self) -> list[str]:
         """Cac thu muc poster lay bai de dang, khong trung, chi cai co that.
 
@@ -1336,17 +1871,85 @@ class AutoUploader:
                 # Loi cua ACC (checkpoint / dang xuat) hay trang treo 0%: thu lai cung acc vo ich.
                 con_thu = (lan < so_lan and STUCK_MARK not in loi_chu
                            and CHECKPOINT_MARK not in loi_chu and LOGOUT_MARK not in loi_chu
-                           and GIOI_HAN_MARK not in loi_chu and VIDEO_TU_CHOI_MARK not in loi_chu)
+                           and GIOI_HAN_MARK not in loi_chu and SPAM_MARK not in loi_chu
+                           and not la_loi_bo_bai(loi_chu)
+                           and not la_loi_file(loi_chu))
                 if not con_thu:
                     break
                 self.note(f"{nhan}{acc_chu}lần {lan} hỏng ({exc}) — nghỉ "
                           f"{RETRY_PAUSE}s rồi thử lại.", ok=False)
                 if self._stop_wait(RETRY_PAUSE):
                     return None, exc, "dung"         # dang tat tool, khong thu lai nua
-        if VIDEO_TU_CHOI_MARK in str(loi_cuoi):
-            return None, loi_cuoi, "hong"        # loi cua VIDEO: khong dem loi acc
+        if la_loi_bo_bai(loi_cuoi) or la_loi_file(loi_cuoi):
+            return None, loi_cuoi, "hong"        # loi cua BAI/FILE: khong dem loi acc
         self._acc_hong(acc, loi_cuoi, nhan, ten)
         return None, loi_cuoi, "hong"
+
+    def dang_mot_moc(self, moc: str = "") -> Optional[str]:
+        """MOT MOC GIO: thu toi da ``SO_BAI_MOI_MOC`` bai (nguoi dung chot 01/10).
+
+        Bai hong -> trinh duyet da dong o ``upload_now`` -> sang bai KE TIEP. Dang duoc
+        mot bai la XONG moc (con tro nhay toi vi tri bai do, moc sau bat dau tu day nen
+        cac bai hong dung truoc bi bo qua). Ca ``SO_BAI_MOI_MOC`` bai deu hong -> bao
+        kiem tra lai dung nhung bai do roi cho moc sau; hong ``SLOT_FAIL_LIMIT`` MOC
+        lien tiep -> dung han trang.
+        """
+        da_thu, ten_thu = [], []
+        self._acc_da_dem = set()              # moc moi: moi acc duoc dem lai tu dau
+        self._trong_moc = True                # dang trong MOT moc (xem _acc_hong)
+        # Moc truoc moi acc deu loi THUONG (khong checkpoint/dang xuat) -> cho thu lai
+        # o moc nay. Trang chi dung khi hong du SLOT_FAIL_LIMIT moc lien tiep.
+        if self.accounts() and not self.accounts_usable():
+            tt = {(self.acc_states.get(a) or {}).get("tt") for a in self.accounts()}
+            if ACC_TT_BO in tt and not (tt & {ACC_TT_CHECKPOINT, ACC_TT_DANG_XUAT}):
+                self.mo_lai_acc()
+                self.note("Mốc trước mọi acc đều lỗi — mở lại acc để thử tiếp mốc này.",
+                          ok=False)
+        nhan = f"Mốc {moc}: " if moc else ""
+        for lan in range(1, SO_BAI_MOI_MOC + 1):
+            if self._stop.is_set() or not self.config.enabled:
+                self._trong_moc = False
+                return None
+            if self.gioi_han_den() is not None:
+                self._trong_moc = False
+                return None                   # acc dang bi GIOI HAN DANG -> cho het han
+            video = self.next_video(bo_qua=da_thu)
+            if video is None:
+                break
+            vi_tri, tong = self.thu_tu_bai(video)
+            ten = os.path.basename(video)
+            if lan > 1:
+                self.note(f"{nhan}lần {lan}/{SO_BAI_MOI_MOC}: thử bài thứ {vi_tri}/{tong} "
+                          f"({ten}).", ok=True)
+            kq = self.upload_now(video, moc)
+            if kq:
+                self._trong_moc = False
+                self._slot_fails = 0
+                self.save()
+                return kq
+            da_thu.append(self._key(video))
+            ten_thu.append(f"bài {vi_tri} ({ten})" if vi_tri else ten)
+        self._trong_moc = False
+        if ten_thu:
+            self._moc_hong(nhan, ten_thu)
+        return None
+
+    def _moc_hong(self, nhan: str, ten_thu: list) -> None:
+        """Ca mot MOC GIO deu hong: bao kiem tra lai dung nhung bai da thu."""
+        self._slot_fails += 1
+        self.note(f"{nhan}đã thử {len(ten_thu)} bài đều lỗi — hãy kiểm tra lại: "
+                  + "; ".join(ten_thu)
+                  + f". Chờ mốc giờ tiếp theo (hỏng {self._slot_fails}/{SLOT_FAIL_LIMIT} "
+                    "mốc liên tiếp).", ok=False)
+        if self._slot_fails >= SLOT_FAIL_LIMIT and self.config.enabled:
+            self.config.enabled = False
+            bao = (f"ĐÃ DỪNG trang này: {SLOT_FAIL_LIMIT} mốc giờ liên tiếp đều không đăng "
+                   "được bài nào. Hãy thử ĐĂNG TAY một video lên trang: tay đăng ĐƯỢC thì "
+                   "lỗi do tool (nhắn admin, kèm data/hoso-loi); tay cũng KHÔNG được thì "
+                   "acc đã bị Facebook chặn đăng bài.")
+            self.note(bao, ok=False)
+            self._bao_console(bao)
+        self.save()
 
     def upload_now(self, video: str, moc: str = "") -> Optional[str]:
         """Dang mot video ngay. Dung chung cho canh gio va nut "Chay thu".
@@ -1359,6 +1962,12 @@ class AutoUploader:
             return None
         ten = os.path.basename(video)
         dau_vet = self._key(video)
+        vi_tri_bai = self.thu_tu_bai(video)[0] or 1   # chot TRUOC khi dang: dang xong
+                                                      # co the xoa file -> thu tu doi
+        if not getattr(self, "_trong_moc", False):
+            # Goi RIENG (nut "Đăng thử 1 video"), khong nam trong mot moc -> moi lan
+            # la mot luot moi, acc duoc dem loi binh thuong.
+            self._acc_da_dem = set()
         # Dang NHOM: khong co caption that thi de TRONG (khong lay ten file lam mo ta) — tranh
         # bai nhom hien ra ten file "qb_r..._56928". Fanpage va X: LAY TIEU DE (ten file) lam
         # caption khi khong co file .txt di kem (yeu cau nguoi dung 2026-09-28 cho tab Auto dang X).
@@ -1380,7 +1989,10 @@ class AutoUploader:
             return None
         if not ung_vien:
             ung_vien = [""]                  # dang qua Graph API: khong can acc
-        so_lan = RETRY_TIMES + 1 if len(ung_vien) == 1 else 1
+        # MOI BAI chi thu MOT lan tren moi acc: hong thi tat trinh duyet roi sang BAI KE
+        # (nguoi dung chot 01/10) -- thu lai cung mot bai chi ton them lan mo trinh duyet,
+        # bai do van con nguyen trong thu muc nen moc sau van co co hoi.
+        so_lan = 1
         video_id, loi_cuoi, ket, acc_dang = None, None, "hong", ""
         for i, acc in enumerate(ung_vien):
             # Nguoi dung TAT "tu dong dang" giua chung (enabled=False + stop()) -> DUNG HAN ngay,
@@ -1407,24 +2019,41 @@ class AutoUploader:
             if ket != "hong":
                 acc_dang = acc
                 break
+            if la_loi_bo_bai(loi_cuoi) or la_loi_file(loi_cuoi):
+                # Loi cua CHINH BAI/FILE (nen tang khong nhan video / tieu de qua dai /
+                # khong doc duoc file):
+                # acc khac dang cung bai do thi cung bi tu choi y het -- doi acc chi
+                # ton them mot lan mo trinh duyet. Dung luon, de nhanh "bo qua bai".
+                break
             if i + 1 < len(ung_vien):
                 self.note(f"{nhan}chuyển sang acc {ung_vien[i + 1]} đăng lại {ten}.", ok=False)
         if ket == "dung":
             return None
-        if ket == "hong" and VIDEO_TU_CHOI_MARK in str(loi_cuoi):
-            # Nen tang KHONG NHAN video nay: bo qua han (khong chon lai), acc/trang khong bi tinh loi.
+        if ket in ("ok", "published"):
+            # Dang duoc -> moc sau BAT DAU tu dung vi tri nay: cac bai hong dung truoc
+            # bi bo qua, khong phai thu lai tu bai 1 moi moc.
+            self._vi_tri_bat_dau = max(1, vi_tri_bai)
+        if ket == "hong" and la_loi_bo_bai(loi_cuoi):
+            # Bai nay KHONG dang duoc (nen tang khong nhan video / tieu de qua dai):
+            # bo qua han (khong chon lai), acc va trang khong bi tinh loi.
             if dau_vet not in self._bo_video:
                 self._bo_video.append(dau_vet)
+            goi_y = ("Rút ngắn TÊN FILE (tab “Đổi tên file”) rồi bài này sẽ đăng lại được."
+                     if TIEU_DE_DAI_MARK in str(loi_cuoi)
+                     else "Muốn thử lại video này: đổi tên file.")
             self.note(f"{nhan}BỎ QUA {ten}: {loi_cuoi} — chuyển sang video kế tiếp. "
-                      "Muốn thử lại video này: đổi tên file.", ok=False)
+                      + goi_y, ok=False)
             self._set_queue_status(video, "loi")
             self.save()
             return None
-        if ket == "hong" and GIOI_HAN_MARK in str(loi_cuoi):
+        if ket == "hong" and (GIOI_HAN_MARK in str(loi_cuoi) or SPAM_MARK in str(loi_cuoi)):
             # Bi GIOI HAN DANG: bai CHUA len, giu video; khong dem la luot hong / trang treo.
             self._set_queue_status(video, "cho")
             return None
         if ket == "hong":
+            if vi_tri_bai:
+                self.note(f"{nhan}BÀI THỨ {vi_tri_bai} ({ten}) LỖI — đã tắt trình duyệt, "
+                          "thử bài kế tiếp.", ok=False)
             self._sau_khi_hong(nhan, ten, loi_cuoi)
             self._set_queue_status(video, "loi")
             self._dung_neu_het_acc()
@@ -1503,6 +2132,22 @@ class AutoUploader:
             con += len(fbupload.find_by_kind(d, self.effective_kind()))
         return con
 
+    def reset_loi(self) -> int:
+        """Dat so DANG LOI ve 0 (nguoi dung tu bam o bang Thong ke). Tra so loi vua xoa.
+
+        CHI xoa con so dem hien o cot "Đăng lỗi". Trang thai acc (checkpoint / bi bo) co
+        nut "Mở lại acc" rieng; so moc hong lien tiep cung dat lai de trang khong bi dung
+        oan ngay sau khi nguoi dung vua don so.
+        """
+        cu = int(self.fail_count or 0)
+        self.fail_count = 0
+        self._slot_fails = 0
+        if cu:
+            self.note(f"Đã đặt lại số đăng lỗi ({cu} → 0) — người dùng bấm ở bảng Thống kê.",
+                      ok=True)
+        self.save()
+        return cu
+
     def thong_ke(self) -> dict:
         """Mot dong thong ke cho bang tong hop: ten, con lai, thanh cong, loi, trang thai."""
         return {"ten": self.name, "con_lai": self.so_con_lai(),
@@ -1551,6 +2196,13 @@ class AutoUploader:
             st["tt"], st["ly_do"] = ACC_TT_CHECKPOINT, loi[:200]
             bao = (f"ACC {acc} BỊ CHECKPOINT — Facebook giữ acc lại để xác minh. ĐÃ DỪNG acc này; "
                    "các acc khác vẫn đăng. Đăng nhập tay gỡ checkpoint rồi bấm 'Mở lại acc'.")
+        elif SPAM_MARK in loi:
+            ngay = self.so_ngay_spam()
+            den = datetime.now() + timedelta(days=ngay)
+            st["tt"], st["ly_do"] = ACC_TT_GIOI_HAN, loi[:200]
+            st["den"] = den.strftime("%Y-%m-%d %H:%M:%S")
+            bao = (f"ACC {acc} BỊ FACEBOOK CHẶN VÌ SPAM — TẠM DỪNG {ngay} ngày, sẽ đăng lại "
+                   f"lúc {den.strftime('%H:%M ngày %d/%m')}. Bài này CHƯA lên, video giữ nguyên.")
         elif GIOI_HAN_MARK in loi:
             den = datetime.now() + timedelta(hours=GIOI_HAN_GIO)
             st["tt"], st["ly_do"] = ACC_TT_GIOI_HAN, loi[:200]
@@ -1563,6 +2215,13 @@ class AutoUploader:
             bao = (f"ACC {acc} ĐÃ BỊ ĐĂNG XUẤT — cookie không còn dùng được. ĐÃ DỪNG acc này; "
                    "các acc khác vẫn đăng. Đăng nhập lại rồi bấm 'Mở lại acc'.")
         else:
+            # Dem theo MOC GIO, khong theo tung bai: mot moc thu 3 bai deu hong thi acc
+            # do chi bi tinh MOT lan (3 bai khac nhau hong thuong la loi BAI, khong phai acc).
+            da_dem = self.__dict__.setdefault("_acc_da_dem", set())
+            if acc in da_dem:
+                self.save()
+                return
+            da_dem.add(acc)
             st["loi"] = int(st.get("loi") or 0) + 1
             if st["loi"] >= self.acc_fail_limit:
                 st["tt"], st["ly_do"] = ACC_TT_BO, loi[:200]
@@ -1583,8 +2242,13 @@ class AutoUploader:
             return False
         if self.gioi_han_den() is not None:
             return False                      # chi TAM DUNG toi moc het gioi han, khong tat trang
-        self.config.enabled = False
         tt = {(self.acc_states.get(a) or {}).get("tt") for a in self.accounts()}
+        if ACC_TT_BO in tt and not (tt & {ACC_TT_CHECKPOINT, ACC_TT_DANG_XUAT}):
+            # Chi la LOI THUONG (khong phai checkpoint/dang xuat) -> KHONG tat trang o day.
+            # Trang chi dung khi hong du SLOT_FAIL_LIMIT MOC lien tiep (xem _moc_hong);
+            # dau moc sau, acc duoc mo lai de thu tiep (xem dang_mot_moc).
+            return False
+        self.config.enabled = False
         if tt <= {ACC_TT_CHECKPOINT, ACC_TT_DANG_XUAT}:
             bao = ("ĐÃ DỪNG trang này: TẤT CẢ acc đều bị checkpoint / đăng xuất. Đăng nhập tay gỡ "
                    "checkpoint rồi bật lại (bật lại sẽ tự mở lại các acc).")
@@ -1625,19 +2289,8 @@ class AutoUploader:
         else:
             self._stuck = 0
 
-        self._slot_fails += 1
-        if self._slot_fails < SLOT_FAIL_LIMIT:
-            self.note(f"Bỏ qua lượt này, chờ lượt tiếp theo "
-                      f"(hỏng {self._slot_fails}/{SLOT_FAIL_LIMIT} lượt liên tiếp).",
-                      ok=False)
-        elif self.config.enabled:
-            self.config.enabled = False
-            bao = (f"TẠM DỪNG trang này: {SLOT_FAIL_LIMIT} lượt liên tiếp đăng lỗi. "
-                   "Hãy thử ĐĂNG TAY một video lên trang: nếu tay đăng ĐƯỢC thì lỗi "
-                   "do tool — nhắn admin để fix (kèm thư mục data/hoso-loi); nếu tay "
-                   "cũng KHÔNG đăng được thì acc đã bị Facebook chặn đăng bài.")
-            self.note(bao, ok=False)
-            self._bao_console(bao)
+        # Dem "hong" theo MOC GIO chu khong theo tung bai: mot moc thu 3 bai deu hong
+        # moi tinh la MOT moc hong (xem dang_mot_moc / _moc_hong).
         self.save()
 
 #: File liet ke cac cong viec (tab) dang co.
@@ -1659,6 +2312,15 @@ X_VIDEO_TOI_DA_GIAY = 140
 MAX_PARALLEL = 30
 #: Ma gia cua luot "kham sang" trong tap _queued (cung mo Firefox nen tinh vao tran chay cung luc).
 KHAM_ID = "__kham__"
+#: Ma cua TAB MAC DINH moi loai -- tab dau tien, luon co, khong xoa duoc.
+TAB_MAC_DINH = ""
+#: Ten tab mac dinh theo loai trang.
+TEN_TAB_MAC_DINH = {"page": "Công khai", "lich": "Đặt lịch", "group": "Nhóm"}
+
+
+def khoa_nhom(kind: str, tab_id: str) -> str:
+    """Khoa luu danh sach nhom: nhom RIENG tung tab (nguoi dung chot 01/10)."""
+    return f"{kind}|{tab_id or TAB_MAC_DINH}"
 
 
 def _clamp_parallel(value) -> int:
@@ -1713,6 +2375,12 @@ class AutoUpManager:
         self.canary: Optional[Callable] = None
         #: Ngay da kham gan nhat ("YYYY-MM-DD") -- moi ngay chi kham mot lan.
         self.canary_day: str = ""
+        #: Cac tab NGUOI DUNG TU TAO: [{"id","ten","kind"}]. Tab mac dinh (id rong)
+        #: khong nam trong day -- no luon co, do ``cac_tab`` ghep vao dau danh sach.
+        self.tabs: list = []
+        #: Danh sach nhom theo tung tab: {"<kind>|<tab_id>": ["Nhom A", ...]}. Luu rieng
+        #: chu khong suy tu job: tao nhom RONG xong tat tool thi nhom van con.
+        self.nhom_ds: dict = {}
         self.load()
 
     # ---- danh sach cong viec ----------------------------------------
@@ -1737,6 +2405,12 @@ class AutoUpManager:
             except (TypeError, ValueError):
                 self.cach_tab_phut = CACH_TAB_MAC_DINH
             self.canary_day = str(muc.get("canary_day") or "")
+            self.tabs = [{"id": str(t.get("id") or ""), "ten": str(t.get("ten") or ""),
+                          "kind": str(t.get("kind") or "page")}
+                         for t in (muc.get("tabs") or [])
+                         if isinstance(t, dict) and t.get("id")]
+            self.nhom_ds = {str(k): [str(x) for x in (v or []) if str(x).strip()]
+                            for k, v in (muc.get("nhom") or {}).items() if k}
             muc = muc.get("jobs") or []
         if muc is None:
             # Chua co file danh sach: ban cu chi co mot cong viec trong autoup.json.
@@ -1763,6 +2437,8 @@ class AutoUpManager:
             "max_parallel": self.max_parallel,
             "cach_tab_phut": self.cach_tab_phut,
             "canary_day": self.canary_day,
+            "tabs": [dict(t) for t in self.tabs],
+            "nhom": {k: list(v) for k, v in self.nhom_ds.items() if v},
             "jobs": [{"id": j.job_id, "name": j.name} for j in self.jobs],
         }
         tmp = self.index_path + ".tmp"
@@ -1847,9 +2523,157 @@ class AutoUpManager:
                 return job
         return None
 
-    def by_kind(self, kind: str) -> list:
-        """Cac trang thuoc mot loai: "page" (fanpage), "group" (nhom) hay "lich" (dat lich)."""
-        return [j for j in self.jobs if j.config.target_kind == kind]
+    def by_kind(self, kind: str, tab_id=None) -> list:
+        """Cac trang thuoc mot loai: "page" (fanpage), "group" (nhom) hay "lich" (dat lich).
+
+        ``tab_id=None`` -> HET cac tab cua loai do (vong lap dang bai dung cai nay, khong
+        quan tam trang nam tab nao). Truyen tab_id -> chi cac trang trong dung tab do.
+        """
+        ds = [j for j in self.jobs if j.config.target_kind == kind]
+        if tab_id is None:
+            return ds
+        return [j for j in ds if self.tab_cua(j) == (tab_id or TAB_MAC_DINH)]
+
+    # ---- tab con (nguoi dung tu tao them) ----------------------------
+    def cac_tab(self, kind: str) -> list:
+        """[{"id","ten","kind"}] cua mot loai -- TAB MAC DINH luon dung dau, khong xoa duoc."""
+        dau = {"id": TAB_MAC_DINH, "ten": TEN_TAB_MAC_DINH.get(kind, "Mặc định"), "kind": kind}
+        return [dau] + [dict(t) for t in self.tabs if t.get("kind") == kind]
+
+    def co_tab(self, tab_id: str, kind: str = "") -> bool:
+        if not tab_id:
+            return True                       # tab mac dinh luon co
+        return any(t["id"] == tab_id and (not kind or t.get("kind") == kind)
+                   for t in self.tabs)
+
+    def tab_cua(self, job) -> str:
+        """Tab that su cua mot trang. Tab da bi xoa -> ve TAB MAC DINH (khong mat trang)."""
+        ma = str(getattr(job.config, "tab_id", "") or "")
+        if ma and self.co_tab(ma, job.config.target_kind):
+            return ma
+        return TAB_MAC_DINH
+
+    def them_tab(self, kind: str, ten: str) -> dict:
+        """Them mot tab con moi (rong). Tra ve tab vua tao."""
+        so = 1
+        dang_co = {t["id"] for t in self.tabs}
+        while f"t{so}" in dang_co:
+            so += 1
+        tab = {"id": f"t{so}", "ten": (ten or "").strip() or f"Tab {so}", "kind": kind}
+        self.tabs.append(tab)
+        self.save_index()
+        return dict(tab)
+
+    def doi_ten_tab(self, tab_id: str, ten: str) -> bool:
+        ten = (ten or "").strip()
+        if not tab_id or not ten:
+            return False                      # tab mac dinh khong doi ten duoc
+        for t in self.tabs:
+            if t["id"] == tab_id:
+                t["ten"] = ten
+                self.save_index()
+                return True
+        return False
+
+    def xoa_tab(self, tab_id: str) -> int:
+        """Xoa tab, CHUYEN cac trang trong do ve tab mac dinh (nguoi dung chot 01/10).
+
+        Tra ve so trang da chuyen. Tab mac dinh khong xoa duoc -> tra -1.
+        """
+        if not tab_id or not self.co_tab(tab_id):
+            return -1
+        kind = next((t.get("kind") for t in self.tabs if t["id"] == tab_id), "")
+        chuyen = 0
+        for job in self.jobs:
+            if str(getattr(job.config, "tab_id", "") or "") == tab_id:
+                job.config.tab_id = TAB_MAC_DINH
+                job.config.nhom = ""          # nhom thuoc ve tab cu -> bo
+                job.save()
+                chuyen += 1
+        self.tabs = [t for t in self.tabs if t["id"] != tab_id]
+        self.nhom_ds.pop(khoa_nhom(kind, tab_id), None)
+        self.save_index()
+        return chuyen
+
+    def dat_tab(self, job_id: str, tab_id: str) -> bool:
+        """Chuyen mot trang sang tab khac (cung loai). Nhom cu khong con nghia -> bo."""
+        job = self.get(job_id)
+        if job is None or not self.co_tab(tab_id, job.config.target_kind):
+            return False
+        if self.tab_cua(job) == (tab_id or TAB_MAC_DINH):
+            return False
+        job.config.tab_id = tab_id or TAB_MAC_DINH
+        job.config.nhom = ""
+        job.save()
+        return True
+
+    # ---- nhom trang trong MOT tab ------------------------------------
+    def cac_nhom(self, kind: str, tab_id: str = TAB_MAC_DINH) -> list:
+        """Ten cac nhom cua mot tab, theo thu tu nguoi dung tao.
+
+        Ghep them nhom chi con thay tren trang (file danh sach hong / sua tay) de
+        khong co trang nao bi "mat tich" trong giao dien.
+        """
+        ds = list(self.nhom_ds.get(khoa_nhom(kind, tab_id)) or [])
+        for job in self.by_kind(kind, tab_id):
+            ten = str(getattr(job.config, "nhom", "") or "").strip()
+            if ten and ten not in ds:
+                ds.append(ten)
+        return ds
+
+    def them_nhom(self, kind: str, tab_id: str, ten: str) -> bool:
+        ten = (ten or "").strip()
+        if not ten:
+            return False
+        khoa = khoa_nhom(kind, tab_id)
+        ds = list(self.nhom_ds.get(khoa) or [])
+        if ten in ds:
+            return False
+        ds.append(ten)
+        self.nhom_ds[khoa] = ds
+        self.save_index()
+        return True
+
+    def doi_ten_nhom(self, kind: str, tab_id: str, cu: str, moi: str) -> bool:
+        moi = (moi or "").strip()
+        if not cu or not moi or moi == cu:
+            return False
+        khoa = khoa_nhom(kind, tab_id)
+        ds = [moi if x == cu else x for x in self.cac_nhom(kind, tab_id)]
+        self.nhom_ds[khoa] = list(dict.fromkeys(ds))
+        for job in self.by_kind(kind, tab_id):
+            if str(getattr(job.config, "nhom", "") or "") == cu:
+                job.config.nhom = moi
+                job.save()
+        self.save_index()
+        return True
+
+    def xoa_nhom(self, kind: str, tab_id: str, ten: str) -> int:
+        """Bo mot nhom; cac trang trong nhom do ve "chua phan nhom" (KHONG xoa trang)."""
+        khoa = khoa_nhom(kind, tab_id)
+        self.nhom_ds[khoa] = [x for x in self.cac_nhom(kind, tab_id) if x != ten]
+        so = 0
+        for job in self.by_kind(kind, tab_id):
+            if str(getattr(job.config, "nhom", "") or "") == ten:
+                job.config.nhom = ""
+                job.save()
+                so += 1
+        self.save_index()
+        return so
+
+    def dat_nhom(self, job_id: str, ten: str) -> bool:
+        """Dua mot trang vao nhom (ten rong = bo khoi nhom). Nhom chua co thi tu tao."""
+        job = self.get(job_id)
+        if job is None:
+            return False
+        ten = (ten or "").strip()
+        if str(getattr(job.config, "nhom", "") or "") == ten:
+            return False
+        if ten:
+            self.them_nhom(job.config.target_kind, self.tab_cua(job), ten)
+        job.config.nhom = ten
+        job.save()
+        return True
 
     def add(self, name: str = "", kind: str = "page") -> AutoUploader:
         """Them mot trang moi. Ten trong thi tu dat theo so thu tu."""

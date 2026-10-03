@@ -61,6 +61,8 @@ XLOGIN_AGENT_NAME = "xlogin_agent.js"
 #: Agent dang nhap NordVPN qua my.nordaccount.com (bridge RIENG qlfpn:*/qlfp-nord*).
 NORD_AGENT_NAME = "nordlogin_agent.js"
 XPOST_AGENT_NAME = "xpost_agent.js"
+#: Agent TUONG TAC tren X.com (bridge RIENG qlfpxw:*/qlfp-xwatch*).
+XWATCH_AGENT_NAME = "xwatch_agent.js"
 
 def _asset_path(name: str) -> str:
     """Duong dan toi mot file trong core/assets (chay ca khi da dong goi)."""
@@ -744,12 +746,43 @@ _AGENT_LOADER_JS = """
         var f = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
         f.initWithPath(path);
         if (!f.exists()) { tra({ ok: false, error: "không thấy file: " + path }); return; }
-        if (f.fileSize > 400 * 1024 * 1024) {
-          tra({ ok: false, error: "file lớn hơn 400 MB, hãy dùng cách đăng Graph API" });
+        // Tran 3 GB (nguoi dung chot 01/10): khong phai gioi han cua tool ma la chan
+        // cho file bat thuong -- Facebook cung khong nhan video lon hon nhieu.
+        if (f.fileSize > 3 * 1024 * 1024 * 1024) {
+          tra({ ok: false, error: "file lớn hơn 3 GB (" 
+                + Math.round(f.fileSize / 1048576) + " MB) — cắt nhỏ hoặc nén lại" });
           return;
         }
-        // Doc nhi phan bang luong co san. Khong dung IOUtils: hop cat cua
-        // AutoConfig khong co doi tuong do (da do: "IOUtils is not defined").
+        // Duong CHINH: tao File tu DUONG DAN -- File do dia do, Firefox chuyen qua
+        // tien trinh noi dung theo kieu luoi nen KHONG nap vao RAM va KHONG CAN
+        // gioi han dung luong (video 1-2 GB van dang duoc).
+        try {
+          Cu.importGlobalProperties(["File"]);
+        } catch (eI) {}
+        if (typeof File !== "undefined" && typeof File.createFromNsIFile === "function") {
+          File.createFromNsIFile(f).then(function (file) {
+            tra({ ok: true, name: f.leafName, file: file, cach: "duong-dan" });
+          }, function (eF) {
+            docNhiPhan(f, tra, "File.createFromNsIFile lỗi: " + eF);
+          });
+          return;
+        }
+        docNhiPhan(f, tra, "trình duyệt không có File.createFromNsIFile");
+      } catch (e) {
+        tra({ ok: false, error: String(e) });
+      }
+    });
+
+    // Duong DU PHONG: doc nhi phan vao RAM roi chep sang. Ton gap doi bo nho
+    // (cha + con) nen van phai chan dung luong; chi dung khi duong File hong.
+    function docNhiPhan(f, tra, vi_sao) {
+      try {
+        if (f.fileSize > 400 * 1024 * 1024) {
+          tra({ ok: false, error: "file " + Math.round(f.fileSize / 1048576)
+                + " MB: không tạo được File từ đường dẫn (" + vi_sao + "), mà đọc cả "
+                + "file vào bộ nhớ thì chỉ chịu được 400 MB" });
+          return;
+        }
         var size = f.fileSize;
         var stream = Cc["@mozilla.org/network/file-input-stream;1"]
           .createInstance(Ci.nsIFileInputStream);
@@ -763,11 +796,11 @@ _AGENT_LOADER_JS = """
         bin.readArrayBuffer(size, buf);
         bin.close();
         stream.close();
-        tra({ ok: true, name: f.leafName, bytes: new Uint8Array(buf) });
+        tra({ ok: true, name: f.leafName, bytes: new Uint8Array(buf), cach: "nhi-phan" });
       } catch (e) {
         tra({ ok: false, error: String(e) });
       }
-    });
+    }
 
     var agentFile = Services.dirsvc.get("GreD", Ci.nsIFile);
     agentFile.append("%(agent)s");
@@ -1002,6 +1035,44 @@ _XPOST_LOADER_JS = """
     agentFile.append("%(agent)s");
     if (agentFile.exists()) { Services.ppmm.loadProcessScript(Services.io.newFileURI(agentFile).spec, true); }
   } catch (e) { Services.console.logStringMessage("xpost agent loi: " + e); }
+})();
+"""
+
+# Bridge TUONG TAC X.com: message qlfpxw:* va file qlfp-xwatch* RIENG.
+_XWATCH_LOADER_JS = """
+(function () {
+  var CMD = "qlfp-xwatch.json";
+  var RESULT = "qlfp-xwatch-result.json";
+  function profileFile(name) { var f = Services.dirsvc.get("ProfD", Ci.nsIFile); f.append(name); return f; }
+  function readText(name) {
+    try {
+      var f = profileFile(name); if (!f.exists()) { return ""; }
+      var stream = Cc["@mozilla.org/network/file-input-stream;1"].createInstance(Ci.nsIFileInputStream);
+      stream.init(f, 0x01, 0, 0);
+      var conv = Cc["@mozilla.org/intl/converter-input-stream;1"].createInstance(Ci.nsIConverterInputStream);
+      conv.init(stream, "UTF-8", 0, 0);
+      var out = "", chunk = {}; while (conv.readString(4096, chunk) !== 0) { out += chunk.value; }
+      conv.close(); return out;
+    } catch (e) { return ""; }
+  }
+  function writeText(name, text) {
+    try {
+      var f = profileFile(name);
+      var out = Cc["@mozilla.org/network/file-output-stream;1"].createInstance(Ci.nsIFileOutputStream);
+      out.init(f, 0x02 | 0x08 | 0x20, 420, 0);
+      var conv = Cc["@mozilla.org/intl/converter-output-stream;1"].createInstance(Ci.nsIConverterOutputStream);
+      conv.init(out, "UTF-8"); conv.writeString(text); conv.close();
+    } catch (e) {}
+  }
+  try {
+    Services.ppmm.addMessageListener("qlfpxw:cmd", function () { return readText(CMD); });
+    Services.ppmm.addMessageListener("qlfpxw:report", function (msg) {
+      var data = msg.data || {}; data.at = Date.now(); writeText(RESULT, JSON.stringify(data));
+    });
+    var agentFile = Services.dirsvc.get("GreD", Ci.nsIFile);
+    agentFile.append("%(agent)s");
+    if (agentFile.exists()) { Services.ppmm.loadProcessScript(Services.io.newFileURI(agentFile).spec, true); }
+  } catch (e) { Services.console.logStringMessage("xwatch agent loi: " + e); }
 })();
 """
 
@@ -1255,6 +1326,7 @@ def render(
     parts.append(_XLOGIN_LOADER_JS % {"agent": XLOGIN_AGENT_NAME})
     parts.append(_NORD_LOADER_JS % {"agent": NORD_AGENT_NAME})
     parts.append(_XPOST_LOADER_JS % {"agent": XPOST_AGENT_NAME})
+    parts.append(_XWATCH_LOADER_JS % {"agent": XWATCH_AGENT_NAME})
     return "\n".join(parts)
 
 
@@ -1325,6 +1397,9 @@ def install(
         # Agent dang bai X.com: nam im toi khi co qlfp-xpost.json.
         _write(os.path.join(folder, XPOST_AGENT_NAME),
                _asset(XPOST_AGENT_NAME), bom=True)
+        # Agent tuong tac X.com: nam im toi khi co qlfp-xwatch.json.
+        _write(os.path.join(folder, XWATCH_AGENT_NAME),
+               _asset(XWATCH_AGENT_NAME), bom=True)
         # Agent dang nhap NordVPN: nam im toi khi co qlfp-nord.json.
         _write(os.path.join(folder, NORD_AGENT_NAME),
                _asset(NORD_AGENT_NAME), bom=True)

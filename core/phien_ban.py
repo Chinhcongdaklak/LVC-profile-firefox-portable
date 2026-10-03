@@ -10,7 +10,7 @@ Module nay KHONG import gi cua du an de phat_hanh.py / capnhat.py doc duoc ma kh
 theo giao dien.
 """
 
-PHIEN_BAN = "1.1.0"
+PHIEN_BAN = "1.3.0"
 
 #: Kho PHAT HANH tren GitHub (chi chua Releases, ma nguon o kho khac).
 KHO_GITHUB = "Chinhcongdaklak/congprofile"

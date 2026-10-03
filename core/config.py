@@ -122,6 +122,13 @@ class Settings:
     nordvpn_state: str = "New York"
     #: O "Luong" RIENG cua tab X.com (so acc X chay cung luc). Nguoi dung chot mac dinh 2.
     x_threads: int = 2
+    #: GOM CUA SO: dua cac Firefox dang mo vao MOT khung (thu nghiem, mac dinh TAT).
+    gom_cua_so: bool = False
+    #: "luoi" = chi xep cac cua so theo luoi (an toan) | "nhot" = SetParent vao khung.
+    gom_che_do: str = "luoi"
+    #: Moi hang bao nhieu trinh duyet, va nhin thay may hang (cuon chuot de xem tiep).
+    gom_cot: int = 2
+    gom_hang_nhin: int = 2
 
     @classmethod
     def load(cls) -> "Settings":

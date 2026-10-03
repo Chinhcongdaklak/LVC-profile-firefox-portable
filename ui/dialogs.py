@@ -1048,6 +1048,18 @@ class FieldEditDialog(BaseDialog):
         self.destroy()
 
 
+#: Hai cach gom cua so (xem core/cuaso.py). "Nhot" la MDI that, con thu nghiem.
+GOM_CHE_DO = {"Xếp lưới (an toàn)": "luoi", "Nhốt vào khung (thử nghiệm)": "nhot"}
+GOM_CHE_DO_NHAN = {v: k for k, v in GOM_CHE_DO.items()}
+
+
+def _so_duong(chu: str, mac: int) -> int:
+    try:
+        return max(1, int((chu or "").strip() or mac))
+    except ValueError:
+        return mac
+
+
 class SettingsDialog(BaseDialog):
     """Chinh duong dan va cach tao profile."""
 
@@ -1122,6 +1134,31 @@ class SettingsDialog(BaseDialog):
         self.appearance_box.grid(row=8, column=1, sticky="w", padx=PAD, pady=8)
 
         # (Bo o "So luong tao profile": so luong DUNG CHUNG dat o o "Luong" tren bang acc — ADR-015.)
+
+        # --- GOM CUA SO (thu nghiem) ---------------------------------------------
+        self.gom_var = tk.BooleanVar(value=getattr(settings, "gom_cua_so", False))
+        ctk.CTkCheckBox(
+            frame,
+            text="Gom trình duyệt vào một khung cửa sổ (thử nghiệm)",
+            variable=self.gom_var,
+        ).grid(row=9, column=1, sticky="w", padx=PAD, pady=(10, 4))
+
+        gom = ctk.CTkFrame(frame, fg_color="transparent")
+        gom.grid(row=10, column=1, sticky="w", padx=PAD, pady=(0, 4))
+        ctk.CTkLabel(gom, text="Cách gom:").pack(side="left")
+        self.gom_che_do_box = ctk.CTkOptionMenu(gom, values=list(GOM_CHE_DO), width=190)
+        self.gom_che_do_box.set(GOM_CHE_DO_NHAN.get(getattr(settings, "gom_che_do", "luoi"),
+                                                    "Xếp lưới (an toàn)"))
+        self.gom_che_do_box.pack(side="left", padx=(4, 12))
+        ctk.CTkLabel(gom, text="Mỗi hàng").pack(side="left")
+        self.gom_cot_entry = ctk.CTkEntry(gom, width=48)
+        self.gom_cot_entry.insert(0, str(getattr(settings, "gom_cot", 2)))
+        self.gom_cot_entry.pack(side="left", padx=4)
+        ctk.CTkLabel(gom, text="trình duyệt · nhìn").pack(side="left")
+        self.gom_hang_entry = ctk.CTkEntry(gom, width=48)
+        self.gom_hang_entry.insert(0, str(getattr(settings, "gom_hang_nhin", 2)))
+        self.gom_hang_entry.pack(side="left", padx=4)
+        ctk.CTkLabel(gom, text="hàng (lăn chuột xem tiếp)").pack(side="left")
 
         ctk.CTkLabel(frame, text="Trang mở khi bấm “Mở”").grid(
             row=11, column=0, sticky="w", padx=PAD, pady=8
@@ -1204,6 +1241,10 @@ class SettingsDialog(BaseDialog):
         self.settings.use_tz_shim = bool(self.tzshim_var.get())
         self.settings.appearance = APPEARANCES.get(self.appearance_box.get(), "light")
         self.settings.start_url = self.starturl_entry.get().strip()
+        self.settings.gom_cua_so = bool(self.gom_var.get())
+        self.settings.gom_che_do = GOM_CHE_DO.get(self.gom_che_do_box.get(), "luoi")
+        self.settings.gom_cot = _so_duong(self.gom_cot_entry.get(), 2)
+        self.settings.gom_hang_nhin = _so_duong(self.gom_hang_entry.get(), 2)
         self.result = self.settings
         self.destroy()
 

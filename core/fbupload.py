@@ -354,15 +354,30 @@ def kind_of(path: str) -> str:
     return "video"
 
 
-def read_text_post(path: str) -> str:
-    """Noi dung mot bai chi co chu. File rong thi tra ve rong."""
-    for bang_ma in ("utf-8", "utf-8-sig", "cp1258", "latin-1"):
+#: Thu tu bang ma khi doc file chu. utf-8-sig TRUOC utf-8 tran: Notepad tren Windows mac
+#: dinh luu UTF-8 CO BOM, doc bang utf-8 tran thi caption dinh ky tu rac ﻿ o dau bai.
+#: Roi utf-16 (Notepad luu kieu "Unicode"), cuoi cung la bang ma cu cua Windows.
+BANG_MA_CHU = ("utf-8-sig", "utf-16", "cp1258", "cp1252", "latin-1")
+
+
+def doc_chu(path: str) -> str:
+    """Doc file chu (mo ta di kem / bai chi chu), TU DO BANG MA. Khong doc duoc -> "".
+
+    Nguoi dung soan mo ta bang Notepad: hay gap UTF-8 co BOM (caption dinh ky tu rac) va
+    "Unicode" = UTF-16 (truoc day nem UnicodeDecodeError -> hong ca luot dang).
+    """
+    for bang_ma in BANG_MA_CHU:
         try:
             with open(path, encoding=bang_ma) as fh:
                 return fh.read().strip()
         except (UnicodeDecodeError, OSError):
             continue
     return ""
+
+
+def read_text_post(path: str) -> str:
+    """Noi dung mot bai chi co chu. File rong thi tra ve rong."""
+    return doc_chu(path)
 
 
 def is_ready(path: str, settle: float = 2.0) -> bool:
@@ -404,27 +419,19 @@ def caption_for(path: str, kind: str = "video", fallback_ten: bool = True) -> st
     # Bai da 'xao' bang AI: caption moi nam o <base>_xao/caption.txt -> uu tien.
     xao_cap = os.path.join(base + "_xao", "caption.txt")
     if os.path.isfile(xao_cap):
-        try:
-            with open(xao_cap, encoding="utf-8") as fh:
-                t = fh.read().strip()
-            if t:
-                return spintax.spin(t)
-        except OSError:
-            pass
+        t = doc_chu(xao_cap)
+        if t:
+            return spintax.spin(t)
     # Bai chi co chu: chinh noi dung file la noi dung bai.
     if kind == "text" or is_text(path):
         return spintax.spin(read_text_post(path))
     side = base + ".txt"
     if os.path.isfile(side):
-        try:
-            with open(side, encoding="utf-8") as fh:
-                text = fh.read().strip()
-            if text:
-                # Spintax: caption co {a|b} thi moi lan dang ra mot ban khac ->
-                # chong Facebook danh dau noi dung trung lap khi dang nhieu group.
-                return spintax.spin(text)
-        except OSError:
-            pass
+        text = doc_chu(side)
+        if text:
+            # Spintax: caption co {a|b} thi moi lan dang ra mot ban khac ->
+            # chong Facebook danh dau noi dung trung lap khi dang nhieu group.
+            return spintax.spin(text)
     # Khong tim thay caption that: dang nhom -> "" (khong lay ten file); fanpage video -> ten file (tieu de).
     if not fallback_ten:
         return ""

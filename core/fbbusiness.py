@@ -133,6 +133,12 @@ ACC_STATES = {
     "checkpoint": "ACC BỊ CHECKPOINT — Facebook giữ acc lại để xác minh",
     "logged-out": "ACC ĐÃ BỊ ĐĂNG XUẤT — cookie không còn dùng được",
 }
+#: Facebook che TIEU DE (ten video) qua dai -> nut "Đăng" khong bao gio sang.
+#: Loi cua BAI chu khong phai cua acc/trang: bo qua bai do, dang bai ke tiep.
+TITLE_LONG_STATE = "title-too-long"
+#: Facebook chan dang vi SPAM ("chúng tôi giới hạn tần suất bạn đăng bài").
+#: Loi cua ACC chu khong phai bai: cho acc do nghi vai ngay roi dang tiep.
+SPAM_STATE = "spam-limit"
 
 
 def _ho_so(manager, account, label: str, note_text: str) -> None:
@@ -204,7 +210,7 @@ def upload(
 
     HONG = {"no-file-input", "no-path", "bad-path", "no-such-file",
             "file-api-error", "attach-error", "file-read-error", "ask-file-error",
-            "caption-failed", "no-publish-button", "publish-error",
+            "caption-failed", "no-publish-button", "publish-error", TITLE_LONG_STATE,
             # Khong bat duoc che do dat lich -> HONG. Tuyet doi khong dang ngay
             # thay the: bai se len sai gio, hong ca lich cua nguoi dung.
             "schedule-failed",
@@ -239,6 +245,14 @@ def upload(
             raise BusinessStuck(
                 "Trang bị lỗi, không tải lên được phần trăm nào — "
                 + (xong.get("detail") or ""))
+        if state == SPAM_STATE:
+            # Facebook chan dang vi spam: KHONG phai loi tool, khong thu ho so.
+            raise BusinessError(f"{autoup.SPAM_MARK}: {xong.get('detail') or ''}")
+        if state == TITLE_LONG_STATE:
+            # Khong thu ho so loi: giao dien khong hong, chi la BAI nay khong dang duoc.
+            raise BusinessError(
+                f"{autoup.TIEU_DE_DAI_MARK}: Facebook báo "
+                f"\"{xong.get('detail') or ''}\" — nút Đăng không bật.")
         if state in HONG:
             _ho_so(manager, account, nhan_hoso,
                    f"{state}: {xong.get('detail') or ''}")
@@ -317,9 +331,10 @@ def upload_group(
     noi("mở trang nhóm...")
     manager.launch(account, url=autoup.group_url(group_id))
 
-    HONG = {"no-composer", "no-file-input", "no-path", "bad-path", "no-such-file",
+    HONG = {SPAM_STATE,
+            "no-composer", "no-file-input", "no-path", "bad-path", "no-such-file",
             "file-api-error", "attach-error", "file-read-error", "ask-file-error",
-            "caption-failed", "no-publish-button", "publish-error",
+            "caption-failed", "no-publish-button", "publish-error", TITLE_LONG_STATE,
             "video-slow", "click-error", "error", "group-join-pending"}
     XONG = {"publish-done", "publish-timeout"} if publish else {"caption-filled"}
     HONG = HONG | {LANG_STATE}
@@ -348,6 +363,11 @@ def upload_group(
             raise BusinessError(
                 "ACC CHƯA VÀO NHÓM — đã tự bấm 'Tham gia nhóm' nhưng nhóm CẦN DUYỆT; "
                 "chờ nhóm duyệt rồi tool sẽ đăng ở lượt sau.")
+        if state == TITLE_LONG_STATE:
+            # Khong thu ho so loi: giao dien khong hong, chi la BAI nay khong dang duoc.
+            raise BusinessError(
+                f"{autoup.TIEU_DE_DAI_MARK}: Facebook báo "
+                f"\"{xong.get('detail') or ''}\" — nút Đăng không bật.")
         if state in HONG:
             _ho_so(manager, account, nhan_hoso,
                    f"{state}: {xong.get('detail') or ''}")

@@ -41,6 +41,8 @@ NHAN_PAGE = "Fanpage"
 NHAN_GROUP = "Nhóm"
 
 #: Hai kieu dat lich.
+#: Nhan loai tab con trong khung "Auto dang fanpage" (dung cho hop thoai Them tab).
+NHAN_TAB_LOAI = {"page": "Công khai", "lich": "Đặt lịch", "group": "Nhóm"}
 NHAN_LIST = "Theo danh sách giờ"
 NHAN_DELAY = "Cách nhau N phút"
 
@@ -178,6 +180,10 @@ class JobPanel(ctk.CTkFrame):
                       command=self._detect_page).pack(side="left", padx=(0, 6))
         ctk.CTkButton(self.page_row, text="🌐 Mở Business", width=125, fg_color="#1f6aa5",
                       command=self._open_business).pack(side="left")
+        # Mo CHINH trang fanpage (facebook.com/<id>) de xem bai da len the nao --
+        # khac nut tren (Business Suite la cho DANG bai).
+        ctk.CTkButton(self.page_row, text="🔗 Mở fanpage", width=120, fg_color="#2f7d4f",
+                      command=self._open_page).pack(side="left", padx=(6, 0))
 
         self.group_row = ctk.CTkFrame(khung2, fg_color="transparent")
         self.group_entry = ctk.CTkEntry(self.group_row, width=250,
@@ -191,6 +197,13 @@ class JobPanel(ctk.CTkFrame):
         # (video -> dang video, anh -> anh + caption, .txt -> bai chi chu).
         ctk.CTkLabel(self.group_row, text="Tự nhận diện: video / ảnh / chữ",
                      text_color="gray60").pack(side="left", padx=(14, 4))
+        # Facebook chan dang vi spam -> cho acc do NGHI may ngay roi tu dang lai.
+        ctk.CTkLabel(self.group_row, text="Bị chặn spam → nghỉ", font=dam).pack(
+            side="left", padx=(14, 4))
+        self.spam_entry = ctk.CTkEntry(self.group_row, width=45)
+        self.spam_entry.pack(side="left")
+        ctk.CTkLabel(self.group_row, text="ngày", text_color="gray60").pack(
+            side="left", padx=(4, 0))
 
         # X: khong co ID fanpage -- bai len TUONG acc da chon. Chi mot dong chu
         # + nut mo x.com bang profile cua acc de nguoi dung kiem tra dang nhap.
@@ -361,10 +374,27 @@ class JobPanel(ctk.CTkFrame):
             ctk.CTkLabel(wrap, text=chu, font=dam, anchor="w", width=210).grid(
                 row=r, column=0, sticky="w", padx=(14, 8), pady=(14, 2))
 
+        # 0) SO NGAY DAT LICH: moi khung gio dat luon N bai cho N NGAY LIEN TIEP roi nghi
+        # du N ngay -> khong bao gio hen hai bai vao cung mot gio (nguoi dung chot 02/10).
+        hang(0, "Số ngày đặt lịch")
+        o_ngay = ctk.CTkFrame(wrap, fg_color="transparent")
+        o_ngay.grid(row=0, column=1, sticky="ew", padx=(0, 14), pady=(14, 2))
+        self.e_so_ngay = ctk.CTkEntry(o_ngay, width=55)
+        self.e_so_ngay.pack(side="left")
+        self.e_so_ngay.bind("<KeyRelease>", lambda _e: self._hen_lich_ve())
+        ctk.CTkLabel(o_ngay, text="ngày", text_color="gray60").pack(side="left", padx=(6, 8))
+        # Quen het dau cu, dang lai tu bai dau (nguoi dung TU bam, tool khong tu lam).
+        ctk.CTkButton(o_ngay, text="↺ Chạy lại từ đầu", width=140, fg_color="#a33",
+                      command=self.chay_lai_tu_dau).pack(side="left", padx=(0, 10))
+        # Dong chu MO: dat den het ngay nao, hom nao chay dot moi.
+        self.lich_songay = ctk.CTkLabel(o_ngay, text="", text_color="gray55", anchor="w",
+                                        justify="left")
+        self.lich_songay.pack(side="left", fill="x", expand=True)
+
         # 1) Gio TOOL CHAY -- hai kieu: danh sach moc gio, hoac cu cach N phut.
-        hang(0, "Giờ tool chạy (theo khung giờ máy)")
+        hang(1, "Giờ tool chạy (theo khung giờ máy)")
         o_chay = ctk.CTkFrame(wrap, fg_color="transparent")
-        o_chay.grid(row=0, column=1, sticky="ew", padx=(0, 14), pady=(14, 2))
+        o_chay.grid(row=1, column=1, sticky="ew", padx=(0, 14), pady=(14, 2))
         self.lich_mode = ctk.CTkOptionMenu(o_chay, width=160, values=[NHAN_LIST, NHAN_DELAY],
                                            command=lambda _v: self._doi_kieu_chay())
         self.lich_mode.pack(side="left", padx=(0, 8))
@@ -382,9 +412,9 @@ class JobPanel(ctk.CTkFrame):
                      text_color="gray60").pack(side="left")
 
         # 2) Mui gio cua PAGE.
-        hang(1, "Múi giờ")
+        hang(2, "Múi giờ")
         o_tz = ctk.CTkFrame(wrap, fg_color="transparent")
-        o_tz.grid(row=1, column=1, sticky="ew", padx=(0, 14), pady=(14, 2))
+        o_tz.grid(row=2, column=1, sticky="ew", padx=(0, 14), pady=(14, 2))
         self.tz_menu = ctk.CTkOptionMenu(o_tz, width=280, values=ld.danh_sach_nhan(),
                                          command=lambda _v: self._lich_nhap_doi())
         self.tz_menu.pack(side="left")
@@ -393,24 +423,48 @@ class JobPanel(ctk.CTkFrame):
         self.lich_bay_gio.pack(side="left", padx=(12, 0))
 
         # 3) Gio DAT LICH video -- go theo mui gio o tren.
-        hang(2, "Giờ đặt lịch video")
+        hang(3, "Giờ đặt lịch video")
         self.e_dang = ctk.CTkEntry(
             wrap, placeholder_text="07:00, 15:00, 20:00 — giờ ở múi giờ đã chọn")
-        self.e_dang.grid(row=2, column=1, sticky="ew", padx=(0, 14), pady=(14, 2))
-        # Dong chu MO: gio vua go quy doi ve gio may + ket qua hai cua.
-        self.lich_quydoi = ctk.CTkLabel(wrap, text="", text_color="gray55", anchor="w",
-                                        justify="left")
-        self.lich_quydoi.grid(row=3, column=1, sticky="ew", padx=(0, 14), pady=(0, 6))
-
+        self.e_dang.grid(row=3, column=1, sticky="ew", padx=(0, 14), pady=(14, 2))
+        # Dong TOM TAT nam TREN danh sach gio (nguoi dung chot 02/10: de thay ngay,
+        # khong phai do xuong duoi mot rung gio).
         self.lich_tom = ctk.CTkLabel(wrap, text="", text_color="gray55", anchor="w",
                                      justify="left")
-        self.lich_tom.grid(row=4, column=0, columnspan=2, sticky="ew", padx=14, pady=(8, 12))
+        self.lich_tom.grid(row=4, column=0, columnspan=2, sticky="ew", padx=14, pady=(10, 2))
+
+        # Danh sach gio CUA CA DOT (N ngay) -- de trong khung CUON duoc: 3 ngay x nhieu gio
+        # la vai chuc dong, khong the tran het ra man hinh.
+        self.lich_cuon = ctk.CTkScrollableFrame(wrap, height=150, fg_color="transparent")
+        self.lich_cuon.grid(row=5, column=0, columnspan=2, sticky="nsew",
+                            padx=14, pady=(0, 10))
+        self.lich_quydoi = ctk.CTkLabel(self.lich_cuon, text="", text_color="gray55",
+                                        anchor="w", justify="left")
+        self.lich_quydoi.pack(fill="x", anchor="w")
         wrap.grid_rowconfigure(5, weight=1)
         # Go toi dau quy doi toi do (cho 350ms cho go xong moi tinh).
         self.lich_tree = None
         self._hen_id = None
         for o in (self.e_chay, self.e_dang):
             o.bind("<KeyRelease>", lambda _e: self._hen_lich_ve())
+
+    def chay_lai_tu_dau(self) -> None:
+        """Nut "↺ Chạy lại từ đầu": xoa dau lich + con tro bai, dang lai tu bai dau."""
+        job = self.auto
+        if not messagebox.askyesno(
+            "Chạy lại từ đầu",
+            f"Cho trang “{job.name}” đăng lại TỪ BÀI ĐẦU?" + chr(10) * 2
+            + "• Xoá dấu lịch của các khung giờ — khung sẽ tới lượt lại ngay." + chr(10)
+            + "• Mở đợt đặt lịch mới tính từ hôm nay." + chr(10)
+            + "• Con trỏ bài về bài 1, bỏ danh sách bài từng bị bỏ qua." + chr(10) * 2
+            + "Các bài ĐÃ ĐĂNG vẫn được nhớ để không đăng trùng.",
+                parent=self.app):
+            return
+        kq = job.chay_lai_tu_dau()
+        self._load_from_config()
+        self.app.set_status(
+            f"Đã cho '{job.name}' chạy lại từ đầu (xoá {kq['lich']} dấu lịch, "
+            f"bỏ {kq['bo_video']} bài từng bị bỏ qua).")
 
     def _doi_kieu_chay(self) -> None:
         """Doi kieu gio chay: hien o hop voi kieu vua chon roi luu."""
@@ -452,6 +506,8 @@ class JobPanel(ctk.CTkFrame):
         self.e_an_toan.insert(0, str(cfg.an_toan_phut or ld.AN_TOAN_MAC_DINH))
         self.e_bat_dau.delete(0, "end")
         self.e_bat_dau.insert(0, cfg.gio_bat_dau or autoup_module.GIO_BAT_DAU_MAC_DINH)
+        self.e_so_ngay.delete(0, "end")
+        self.e_so_ngay.insert(0, str(getattr(cfg, "so_ngay_dat_lich", None) or 1))
         self.lich_mode.set(NHAN_DELAY if cfg.schedule_mode == "delay" else NHAN_LIST)
         self.e_delay.delete(0, "end")
         self.e_delay.insert(0, str(cfg.delay_minutes or autoup_module.DELAY_LICH_MAC_DINH))
@@ -490,6 +546,12 @@ class JobPanel(ctk.CTkFrame):
         cfg.mui_gio = ld.iana_tu_nhan(self.tz_menu.get())
         cfg.gio_bat_dau = (self.e_bat_dau.get() or "").strip()
         cfg.schedule_mode = "delay" if self.lich_mode.get() == NHAN_DELAY else "list"
+        # So ngay dat truoc: go bay thi ve 1 (chi dat cho hom nay), khong chan Luu.
+        try:
+            so_ngay = int((self.e_so_ngay.get() or "").strip())
+        except ValueError:
+            so_ngay = 1
+        cfg.so_ngay_dat_lich = max(1, min(autoup_module.SO_NGAY_DAT_LICH_TOI_DA, so_ngay))
         for o, khoa, mac_dinh in ((self.e_tre, "tre_phut", ld.TRE_MAC_DINH),
                                   (self.e_an_toan, "an_toan_phut", ld.AN_TOAN_MAC_DINH),
                                   (self.e_delay, "delay_minutes",
@@ -516,7 +578,16 @@ class JobPanel(ctk.CTkFrame):
         from core import lich_dang as ld
         if not getattr(self, "lich_quydoi", None):
             return
-        cham = self.auto.lich_danh_gia()
+        # Cham CA DOT: dat 3 ngay thi bang gio phai hien du gio cua ca 3 ngay.
+        cham = self.auto.lich_danh_gia_dot()
+        # Dong chu mo canh o "So ngay dat lich": dat den het ngay nao, hom nao chay dot moi.
+        # Doc THANG tu o nhap de go toi dau hien toi do (chua bam Luu cung thay).
+        if getattr(self, "lich_songay", None) is not None:
+            try:
+                so = int((self.e_so_ngay.get() or "").strip())
+            except ValueError:
+                so = self.auto.so_ngay_lich()
+            self.lich_songay.configure(text=autoup_module.ghi_chu_so_ngay(so))
         # Bay gio ben nuoc do la NGAY MAY, GIO MAY — go "20:00" nghia la 20:00 CUA NGAY DO.
         try:
             tz_page = ld.vung(self.auto.config.mui_gio or self.tz_menu.get())
@@ -530,7 +601,14 @@ class JobPanel(ctk.CTkFrame):
         dau = {ld.CHAY: "✅", ld.CHO: "⏳", ld.BO_LO: "❌", ld.QUA_GAN: "❌",
                ld.DA_QUA: "❌", ld.DA_DANG: "✅"}
         dong = []
+        lech_cu = None
         for i, d in enumerate(cham, 1):
+            # Dau moi NGAY cua dot: mot dong tieu de nho cho de doc.
+            lech = int(d.get("lech") or 0)
+            if lech != lech_cu:
+                lech_cu = lech
+                if lech:
+                    dong.append(f"— ngày {lech + 1}/{self.auto.so_ngay_lich()} —")
             if d["ly_do"] and not d["quy_doi"]:
                 dong.append(f"{i}. {d['dang']} — {d['ly_do']}")
                 continue
@@ -1121,6 +1199,9 @@ class JobPanel(ctk.CTkFrame):
         self.page_entry.insert(0, cfg.page_id)
         self.group_entry.delete(0, "end")
         self.group_entry.insert(0, cfg.group_id)
+        self.spam_entry.delete(0, "end")
+        self.spam_entry.insert(0, str(getattr(cfg, "spam_ngay", None)
+                                      or autoup_module.SPAM_NGAY_MAC_DINH))
         self._show_kind_row()
         self.delete_var.set(bool(cfg.delete_after))
         self.enabled_var.set(bool(cfg.enabled))
@@ -1203,6 +1284,13 @@ class JobPanel(ctk.CTkFrame):
             cfg.page_name = ""
             cfg.asset_id = ""
             self._show_page()
+        # So ngay nghi khi bi chan spam: go bay thi giu so cu (khong chan nguoi dung luu).
+        try:
+            so_ngay = int((self.spam_entry.get() or "").strip())
+            if so_ngay > 0:
+                cfg.spam_ngay = so_ngay
+        except ValueError:
+            pass
         cfg.delete_after = bool(self.delete_var.get())
         cfg.enabled = bool(self.enabled_var.get())
         cfg.method = "api" if self.method_menu.get() == NHAN_API else "browser"
@@ -1644,6 +1732,36 @@ class JobPanel(ctk.CTkFrame):
 
         threading.Thread(target=work, daemon=True).start()
 
+    def _open_page(self) -> None:
+        """Mo CHINH trang fanpage bang acc da chon -- de xem bai da len the nao."""
+        if not self._save_from_ui(quiet=True):
+            return
+        cfg = self.auto.config
+        if not cfg.page_id:
+            messagebox.showinfo("Mở fanpage", "Chưa nhập ID fanpage.", parent=self.app)
+            return
+        acc = self.account()
+        if acc is None:
+            messagebox.showinfo("Mở fanpage", "Chưa chọn acc.", parent=self.app)
+            return
+        url = autoup_module.page_url(cfg.page_id)
+
+        def work():
+            try:
+                self.profiles.launch(
+                    acc, url=url,
+                    on_status=lambda m: self.app._post(lambda t=m: self.app.set_status(t)))
+            except Exception as exc:
+                self.app._post(lambda e=exc: messagebox.showerror("Mở fanpage", str(e),
+                                                                  parent=self.app))
+                return
+            self.acc_store.mark_opened(acc.id)
+            self.app._post(self.app.refresh)
+
+        threading.Thread(target=work, daemon=True).start()
+        ten = cfg.page_name or cfg.page_id
+        self.app.set_status(f"Đang mở fanpage {ten} bằng acc {acc.id}...")
+
     def _open_group(self) -> None:
         """Mo trang nhom bang acc da chon, de xem da tham gia nhom do chua."""
         if not self._save_from_ui(quiet=True):
@@ -1987,9 +2105,11 @@ class AutoUpTab(ctk.CTkFrame):
     """
 
     def __init__(self, parent, app, kind: str = "page", manager=None,
-                 acc_store=None, profiles=None):
+                 acc_store=None, profiles=None, tab_id: str = ""):
         super().__init__(parent, fg_color="transparent")
         self.app = app
+        #: Tab con dang xem (rong = tab mac dinh). Danh sach trang cua tab nay RIENG.
+        self.tab_id = tab_id or ""
         # Manager rieng cho tung he: Facebook = app.autoup, X = app.autoup_x.
         # Mac dinh app.autoup de goi cu AutoUpTab(parent, app, kind) van chay.
         self.manager = manager or app.autoup
@@ -2011,8 +2131,13 @@ class AutoUpTab(ctk.CTkFrame):
                       width=160, font=dam, command=self.add_job).pack(side="left")
         ctk.CTkButton(thanh, text="✏️ Đổi tên", width=100, fg_color="gray45",
                       command=self.rename_job).pack(side="left", padx=6)
-        ctk.CTkButton(thanh, text="🗑 Xoá", width=90, fg_color="#a33",
-                      command=self.remove_job).pack(side="left")
+        self.xoa_btn = ctk.CTkButton(thanh, text="🗑 Xoá", width=110, fg_color="#a33",
+                                     command=self.remove_job)
+        self.xoa_btn.pack(side="left")
+        # Gom cac trang thanh NHOM cho de quan ly. Mac dinh KHONG co nhom nao -> danh sach
+        # phang nhu cu; tao nhom roi thi keo tha trang qua lai giua cac nhom.
+        ctk.CTkButton(thanh, text="🗂 Nhóm mới", width=110, fg_color="#2f6f8f",
+                      command=self.add_nhom).pack(side="left", padx=6)
         # Cong cu nho: tao list gio dang lech dan de nhieu acc khong dang trung gio.
         ctk.CTkButton(thanh, text="🕒 Tạo giờ đăng bài", width=150, fg_color="#6a4fa5",
                       command=self.open_schedule_gen).pack(side="left", padx=6)
@@ -2053,34 +2178,67 @@ class AutoUpTab(ctk.CTkFrame):
             than, width=220,
             label_text={"group": "Nhóm", "lich": "Đặt lịch"}.get(self.kind, "Fanpage"))
         self.list_frame.pack(side="left", fill="y")
+        # Keo chuot tu CHO TRONG = quet chon nhieu trang (keo trung mot dong thi la
+        # di chuyen trang do vao nhom -- xem _keo_bat_dau).
+        self.list_frame.bind("<Button-1>", self._quet_bat_dau)
+        self.list_frame.bind("<B1-Motion>", self._quet_di)
+        self.list_frame.bind("<ButtonRelease-1>", self._quet_tha)
         self.body = ctk.CTkFrame(than, fg_color="transparent")
         self.body.pack(side="left", fill="both", expand=True, padx=(8, 0))
 
         self.current_id = ""
         self.buttons: dict = {}
+        #: Nhom nao dang mo (ten -> True/False). Mac dinh mo het.
+        self._nhom_mo: dict = {}
+        #: Cac trang DANG CHON (job_id). Keo vung trong / Ctrl+bam / Shift+bam de chon nhieu,
+        #: roi xoa hoac chuyen nhom ca loat.
+        self._chon: set = set()
+        #: Dang keo vung trong de QUET CHON: (y bat dau, khung ve duong vien).
+        self._quet = None
+        #: Dang keo trang nao + o tha dang di qua (to mau de nguoi dung biet se tha vao dau).
+        self._keo_job = ""
+        self._keo_that = False
+        self._o_sang = None
         self._rebuild()
         self._tick_running()
 
     # ---------------------------------------------------------------- danh sach
     @property
     def jobs(self) -> list:
-        """Chi cac trang thuoc dung loai cua tab nay."""
-        return self.manager.by_kind(self.kind)
+        """Chi cac trang thuoc dung loai VA dung tab con dang xem."""
+        return self.manager.by_kind(self.kind, self.tab_id)
 
     def _rebuild(self, chon: str = "") -> None:
-        """Ve lai danh sach trang. Chi dung bang dieu khien cua trang dang xem."""
+        """Ve lai danh sach trang. Chi dung bang dieu khien cua trang dang xem.
+
+        Chua tao nhom nao -> danh sach PHANG y nhu truoc. Co nhom -> moi nhom mot tieu de
+        (bam de thu/mo), duoi la cac trang cua nhom, cuoi cung la "Chua phan nhom".
+        """
         for w in self.list_frame.winfo_children():
             w.destroy()
         self.buttons = {}
+        self._o_sang = None
+
+        nhoms = self.manager.cac_nhom(self.kind, self.tab_id)
+        theo_nhom: dict = {ten: [] for ten in nhoms}
+        chua: list = []
         for job in self.jobs:
-            nut = ctk.CTkButton(
-                self.list_frame, text=self._label(job), anchor="w", height=30,
-                fg_color="transparent", text_color=("gray10", "gray90"),
-                hover_color=("gray80", "gray30"),
-                command=lambda j=job: self.select(j.job_id),
-            )
-            nut.pack(fill="x", pady=1)
-            self.buttons[job.job_id] = nut
+            ten = str(getattr(job.config, "nhom", "") or "")
+            (theo_nhom[ten] if ten in theo_nhom else chua).append(job)
+
+        if not nhoms:
+            for job in chua:
+                self._ve_dong(self.list_frame, job)
+        else:
+            for ten in nhoms:
+                self._ve_tieu_de_nhom(ten, len(theo_nhom[ten]))
+                if self._nhom_mo.get(ten, True):
+                    for job in theo_nhom[ten]:
+                        self._ve_dong(self.list_frame, job, trong_nhom=True)
+            self._ve_tieu_de_nhom("", len(chua))
+            if self._nhom_mo.get("", True):
+                for job in chua:
+                    self._ve_dong(self.list_frame, job, trong_nhom=True)
 
         cua_tab = {j.job_id for j in self.jobs}
         muon = chon if chon in cua_tab else (self.current_id
@@ -2098,6 +2256,374 @@ class AutoUpTab(ctk.CTkFrame):
             ctk.CTkLabel(
                 self.body, text=f"Chưa có {nhan} nào. Bấm “Thêm {nhan}” để tạo.",
                 text_color="gray60").pack(pady=40)
+
+    # ---- ve mot dong / mot tieu de nhom -------------------------------
+    def _ve_tieu_de_nhom(self, ten: str, so: int) -> None:
+        """Tieu de mot nhom -- cung la O THA khi keo trang vao nhom do."""
+        mo = self._nhom_mo.get(ten, True)
+        nhan = ten or "Chưa phân nhóm"
+        khung = ctk.CTkFrame(self.list_frame, fg_color=("gray82", "gray22"), height=26)
+        khung.pack(fill="x", pady=(6, 1))
+        khung._nhom_dich = ten                      # o tha: keo trang vao day = vao nhom nay
+        khung._mau_goc = ("gray82", "gray22")
+        chu = ctk.CTkLabel(khung, text=f"{'▾' if mo else '▸'}  {nhan}  ({so})",
+                           anchor="w", font=ctk.CTkFont(weight="bold"))
+        chu.pack(side="left", fill="x", expand=True, padx=(6, 0), pady=2)
+        for w in (khung, chu):
+            w.bind("<Button-1>", lambda _e, t=ten: self._bat_tat_nhom(t))
+            if ten:
+                w.bind("<Button-3>", lambda e, t=ten: self._menu_nhom(e, t))
+
+    def _ve_dong(self, cha, job, trong_nhom: bool = False) -> None:
+        """Mot trang = mot dong bam duoc + KEO duoc (khong dung CTkButton de tu xu ly keo)."""
+        khung = ctk.CTkFrame(cha, fg_color="transparent", height=28)
+        khung.pack(fill="x", pady=1)
+        khung._job_id = job.job_id
+        khung._mau_goc = "transparent"
+        chu = ctk.CTkLabel(khung, text=self._label(job), anchor="w",
+                           text_color=("gray10", "gray90"))
+        chu.pack(side="left", fill="x", expand=True, padx=(18 if trong_nhom else 6, 4), pady=2)
+        khung._nhan = chu
+        for w in (khung, chu):
+            w.bind("<Button-1>", lambda e, j=job.job_id: self._keo_bat_dau(e, j))
+            w.bind("<B1-Motion>", self._keo_di)
+            w.bind("<ButtonRelease-1>", self._keo_tha)
+            w.bind("<Button-3>", lambda e, j=job.job_id: self._menu_job(e, j))
+            w.bind("<Control-Button-1>", lambda e, j=job.job_id: self._bam_ctrl(j))
+            w.bind("<Shift-Button-1>", lambda e, j=job.job_id: self._bam_shift(j))
+        self.buttons[job.job_id] = khung
+
+    # ---- chon nhieu trang -------------------------------------------
+    def _thu_tu_hien(self) -> list:
+        """job_id theo DUNG thu tu dang hien tren thanh ben (de Shift chon ca doan)."""
+        return [ma for ma in self.buttons]
+
+    def _dat_chon(self, ids, mo: str = "") -> None:
+        """Dat tap dang chon; ``mo`` = trang se mo bang dieu khien (rong = giu nguyen)."""
+        self._chon = {m for m in ids if m in self.buttons}
+        if mo:
+            self.select(mo)
+        self._to_mau()
+
+    def _bam_ctrl(self, job_id: str) -> str:
+        """Ctrl+bam: them/bo mot trang khoi tap dang chon."""
+        if job_id in self._chon:
+            self._chon.discard(job_id)
+        else:
+            self._chon.add(job_id)
+        if job_id not in self._chon and self.current_id == job_id:
+            con = next(iter(self._chon), "")
+            if con:
+                self.select(con)
+        elif job_id in self._chon:
+            self.select(job_id)
+        self._to_mau()
+        return "break"
+
+    def _bam_shift(self, job_id: str) -> str:
+        """Shift+bam: chon CA DOAN tu trang dang mo toi trang vua bam."""
+        ds = self._thu_tu_hien()
+        if self.current_id not in ds or job_id not in ds:
+            return self._bam_ctrl(job_id)
+        i, j = ds.index(self.current_id), ds.index(job_id)
+        if i > j:
+            i, j = j, i
+        self._chon = set(ds[i:j + 1])
+        self._to_mau()
+        return "break"
+
+    def _to_mau(self) -> None:
+        """To lai mau cac dong: trang dang MO dam nhat, cac trang dang CHON xanh nhat."""
+        for ma, dong in self.buttons.items():
+            if ma == self.current_id:
+                mau = ("gray75", "gray28")
+            elif ma in self._chon:
+                mau = ("#bcd7ee", "#1f4e6e")
+            else:
+                mau = "transparent"
+            dong._mau_goc = mau
+            try:
+                dong.configure(fg_color=mau)
+            except tk.TclError:
+                pass
+        self._cap_nhat_nut_chon()
+
+    def _cap_nhat_nut_chon(self) -> None:
+        """Nut Xoa doi chu theo so trang dang chon."""
+        so = len(self._chon)
+        try:
+            self.xoa_btn.configure(text=f"🗑 Xoá ({so})" if so > 1 else "🗑 Xoá")
+        except (AttributeError, tk.TclError):
+            pass
+
+    def _dang_chon(self) -> list:
+        """Cac trang se chiu tac dong: tap dang chon, khong co thi la trang dang mo."""
+        ds = [m for m in self._thu_tu_hien() if m in self._chon]
+        if ds:
+            return ds
+        return [self.current_id] if self.current_id else []
+
+    # ---- keo vung trong de QUET CHON ---------------------------------
+    def _quet_bat_dau(self, event) -> None:
+        self._quet = {"y": event.y_root, "vien": []}
+
+    def _quet_di(self, event) -> None:
+        if not self._quet:
+            return
+        tren, duoi = sorted((self._quet["y"], event.y_root))
+        self._ve_vien(tren, duoi)
+        chon = set()
+        for ma, dong in self.buttons.items():
+            try:
+                d_tren = dong.winfo_rooty()
+                d_duoi = d_tren + dong.winfo_height()
+            except tk.TclError:
+                continue
+            if d_duoi >= tren and d_tren <= duoi:      # co giao nhau theo chieu doc
+                chon.add(ma)
+        self._chon = chon
+        self._to_mau()
+
+    def _quet_tha(self, _event=None) -> None:
+        self._xoa_vien()
+        self._quet = None
+        if self._chon and self.current_id not in self._chon:
+            dau = self._dang_chon()
+            if dau:
+                self.select(dau[0])          # mo bang dieu khien cua trang dau tap chon
+                self._to_mau()
+
+    def _ve_vien(self, tren: int, duoi: int) -> None:
+        """Khung vien cua vung dang quet -- bon vach mong (Tk khong co nen trong suot)."""
+        if not self._quet:
+            return
+        if not self._quet["vien"]:
+            self._quet["vien"] = [tk.Frame(self.list_frame, bg="#1f6aa5", height=1)
+                                  for _ in range(2)]
+        goc = self.list_frame.winfo_rooty()
+        rong = max(10, self.list_frame.winfo_width())
+        for v, y in zip(self._quet["vien"], (tren - goc, duoi - goc)):
+            try:
+                v.place(x=0, y=max(0, y), width=rong, height=1)
+                v.lift()
+            except tk.TclError:
+                pass
+
+    def _xoa_vien(self) -> None:
+        for v in (self._quet or {}).get("vien", []):
+            try:
+                v.destroy()
+            except tk.TclError:
+                pass
+
+    def _bat_tat_nhom(self, ten: str) -> None:
+        self._nhom_mo[ten] = not self._nhom_mo.get(ten, True)
+        self._rebuild(chon=self.current_id)
+
+    # ---- keo tha trang giua cac nhom ----------------------------------
+    def _keo_bat_dau(self, event, job_id: str) -> None:
+        self._keo_job = job_id
+        self._keo_that = False
+        self._keo_x, self._keo_y = event.x_root, event.y_root
+
+    def _keo_di(self, event) -> None:
+        if not self._keo_job:
+            return
+        if not self._keo_that:
+            # Di qua 6px moi tinh la KEO -- khong thi moi cu bam chon cung thanh keo.
+            if abs(event.x_root - self._keo_x) < 6 and abs(event.y_root - self._keo_y) < 6:
+                return
+            self._keo_that = True
+        self._sang_o(self._o_tha_tai(event.x_root, event.y_root))
+
+    def _keo_tha(self, event) -> None:
+        job_id, keo = self._keo_job, self._keo_that
+        self._keo_job, self._keo_that = "", False
+        self._sang_o(None)
+        if not job_id:
+            return
+        if not keo:                                  # bam thuong -> chon MOT trang
+            self._chon = {job_id}
+            self.select(job_id)
+            self._to_mau()
+            return
+        o = self._o_tha_tai(event.x_root, event.y_root)
+        if o is None:
+            return
+        ten = getattr(o, "_nhom_dich", None)
+        if ten is None:
+            return
+        # Keo mot trang DANG NAM TRONG tap chon -> chuyen ca tap; khong thi chi trang do.
+        ds = self._dang_chon() if job_id in self._chon else [job_id]
+        so = sum(1 for m in ds if self.manager.dat_nhom(m, ten))
+        if not so:
+            return
+        self._rebuild(chon=job_id)
+        cho = f"nhóm '{ten}'." if ten else "mục chưa phân nhóm."
+        if so > 1:
+            self.app.set_status(f"Đã đưa {so} trang vào {cho}")
+        else:
+            self.app.set_status(f"Đã đưa '{self.manager.get(job_id).name}' vào {cho}")
+
+    def _o_tha_tai(self, x_root: int, y_root: int):
+        """O tha (tieu de nhom) nam duoi con tro, hoac None."""
+        try:
+            w = self.winfo_containing(x_root, y_root)
+        except (tk.TclError, KeyError):
+            return None
+        while w is not None:
+            if hasattr(w, "_nhom_dich"):
+                return w
+            w = getattr(w, "master", None)
+        return None
+
+    def _sang_o(self, o) -> None:
+        """To sang o tha dang di qua (va tra mau cho o truoc do)."""
+        if o is self._o_sang:
+            return
+        cu = self._o_sang
+        if cu is not None:
+            try:
+                cu.configure(fg_color=cu._mau_goc)
+            except tk.TclError:
+                pass
+        self._o_sang = o
+        if o is not None:
+            try:
+                o.configure(fg_color="#2f6f8f")
+            except tk.TclError:
+                pass
+
+    # ---- menu chuot phai ----------------------------------------------
+    def _menu_job(self, event, job_id: str) -> None:
+        """Chuot phai mot trang: doi nhom / doi tab (duong du phong cua keo tha)."""
+        job = self.manager.get(job_id)
+        if job is None:
+            return
+        if job_id not in self._chon:
+            self._chon = {job_id}
+        self.select(job_id)
+        self._to_mau()
+        ds = self._dang_chon()
+        nhieu = len(ds) > 1
+        duoi = f" ({len(ds)} trang)" if nhieu else ""
+        menu = tk.Menu(self, tearoff=0)
+        nhoms = self.manager.cac_nhom(self.kind, self.tab_id)
+        m_nhom = tk.Menu(menu, tearoff=0)
+        m_nhom.add_command(label="➕ Nhóm mới...", command=lambda: self.add_nhom(job_id))
+        if nhoms:
+            m_nhom.add_separator()
+        hien = str(getattr(job.config, "nhom", "") or "")
+        for ten in nhoms:
+            dau = "✓ " if (not nhieu and ten == hien) else "    "
+            m_nhom.add_command(label=dau + ten, command=lambda t=ten: self._dat_nhom_nhieu(t))
+        if hien or nhieu:
+            m_nhom.add_separator()
+            m_nhom.add_command(label="✖ Bỏ khỏi nhóm",
+                               command=lambda: self._dat_nhom_nhieu(""))
+        menu.add_cascade(label="🗂 Chuyển vào nhóm" + duoi, menu=m_nhom)
+
+        cac_tab = self.manager.cac_tab(self.kind)
+        if len(cac_tab) > 1:
+            m_tab = tk.Menu(menu, tearoff=0)
+            for t in cac_tab:
+                dau = "✓ " if t["id"] == self.tab_id else "    "
+                m_tab.add_command(label=dau + t["ten"],
+                                  command=lambda ma=t["id"]: self._dat_tab_nhieu(ma))
+            menu.add_cascade(label="📑 Chuyển sang tab" + duoi, menu=m_tab)
+        menu.add_separator()
+        if not nhieu:
+            menu.add_command(label="✏️ Đổi tên", command=self.rename_job)
+        menu.add_command(label="🗑 Xoá" + duoi, command=self.remove_job)
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _menu_nhom(self, event, ten: str) -> None:
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label="✏️ Đổi tên nhóm", command=lambda: self.rename_nhom(ten))
+        menu.add_command(label="🗑 Bỏ nhóm (trang vẫn còn)",
+                         command=lambda: self.remove_nhom(ten))
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _dat_nhom(self, job_id: str, ten: str) -> None:
+        if self.manager.dat_nhom(job_id, ten):
+            self._rebuild(chon=job_id)
+
+    def _dat_nhom_nhieu(self, ten: str) -> None:
+        """Dua CA TAP dang chon vao mot nhom (ten rong = bo khoi nhom)."""
+        ds = self._dang_chon()
+        so = sum(1 for m in ds if self.manager.dat_nhom(m, ten))
+        if not so:
+            return
+        self._rebuild(chon=self.current_id)
+        cho = f"nhóm '{ten}'." if ten else "mục chưa phân nhóm."
+        self.app.set_status(f"Đã đưa {so} trang vào {cho}" if so > 1
+                            else f"Đã đưa '{self.manager.get(ds[0]).name}' vào {cho}")
+
+    def _dat_tab(self, job_id: str, tab_id: str) -> None:
+        job = self.manager.get(job_id)
+        if job is None or not self.manager.dat_tab(job_id, tab_id):
+            return
+        ten_tab = next((t["ten"] for t in self.manager.cac_tab(self.kind)
+                        if t["id"] == tab_id), tab_id)
+        self.current_id = ""
+        self._rebuild()
+        self.app.set_status(f"Đã chuyển '{job.name}' sang tab '{ten_tab}'.")
+
+    def _dat_tab_nhieu(self, tab_id: str) -> None:
+        """Chuyen CA TAP dang chon sang tab khac."""
+        ds = self._dang_chon()
+        if len(ds) <= 1:
+            self._dat_tab(ds[0] if ds else "", tab_id)
+            return
+        so = sum(1 for m in ds if self.manager.dat_tab(m, tab_id))
+        ten_tab = next((t["ten"] for t in self.manager.cac_tab(self.kind)
+                        if t["id"] == tab_id), tab_id)
+        self._chon = set()
+        self.current_id = ""
+        self._rebuild()
+        self.app.set_status(f"Đã chuyển {so} trang sang tab '{ten_tab}'.")
+
+    # ---- tao / sua / bo nhom -------------------------------------------
+    def add_nhom(self, job_id: str = "") -> None:
+        """Tao nhom moi; co ``job_id`` thi dua luon trang do vao nhom vua tao."""
+        ten = SimplePromptDialog(self.app, "Nhóm mới",
+                                 "Tên nhóm (gom các trang cho dễ quản lý):", "").show()
+        if not ten:
+            return
+        self.manager.them_nhom(self.kind, self.tab_id, ten)
+        if job_id:
+            self.manager.dat_nhom(job_id, ten)
+        self._rebuild(chon=job_id or self.current_id)
+        self.app.set_status(f"Đã tạo nhóm '{ten}'. Kéo trang vào nhóm, hoặc chuột phải trang "
+                            "→ Chuyển vào nhóm.")
+
+    def rename_nhom(self, ten: str) -> None:
+        moi = SimplePromptDialog(self.app, "Đổi tên nhóm", "Tên mới:", ten).show()
+        if not moi or moi == ten:
+            return
+        self.manager.doi_ten_nhom(self.kind, self.tab_id, ten, moi)
+        self._nhom_mo[moi] = self._nhom_mo.pop(ten, True)
+        self._rebuild(chon=self.current_id)
+
+    def remove_nhom(self, ten: str) -> None:
+        so = len([j for j in self.jobs
+                  if str(getattr(j.config, "nhom", "") or "") == ten])
+        hoi = f"Bỏ nhóm '{ten}'?"
+        if so:
+            hoi += chr(10) * 2 + f"{so} trang trong nhóm sẽ về mục “Chưa phân nhóm”, "
+            hoi += "KHÔNG bị xoá."
+        if not messagebox.askyesno("Bỏ nhóm", hoi, parent=self.app):
+            return
+        self.manager.xoa_nhom(self.kind, self.tab_id, ten)
+        self._nhom_mo.pop(ten, None)
+        self._rebuild(chon=self.current_id)
+        self.app.set_status(f"Đã bỏ nhóm '{ten}'.")
 
     def _nhan_loai(self) -> str:
         return {"group": "nhóm", "lich": "trang đặt lịch"}.get(self.kind, "fanpage")
@@ -2120,17 +2646,19 @@ class AutoUpTab(ctk.CTkFrame):
         self.panel = JobPanel(self.body, self.app, job, manager=self.manager,
                               acc_store=self.acc_store, profiles=self.profiles)
         self.panel.pack(fill="both", expand=True)
-        for ma, nut in self.buttons.items():
-            nut.configure(fg_color=("gray75", "gray28") if ma == job_id else "transparent")
+        self._to_mau()
 
     def current(self):
         return self.manager.get(self.current_id)
 
     def refresh_labels(self) -> None:
         for job in self.jobs:
-            nut = self.buttons.get(job.job_id)
-            if nut is not None:
-                nut.configure(text=self._label(job))
+            dong = self.buttons.get(job.job_id)
+            if dong is not None:
+                try:
+                    dong._nhan.configure(text=self._label(job))
+                except (AttributeError, tk.TclError):
+                    pass
 
     def _set_parallel(self, value: str) -> None:
         so = self.manager.set_parallel(value)
@@ -2184,7 +2712,7 @@ class AutoUpTab(ctk.CTkFrame):
             self._rebuild()
 
         ScheduleGenDialog(self.app,
-                          jobs_fn=lambda: self.manager.by_kind(self.kind),
+                          jobs_fn=lambda: self.manager.by_kind(self.kind, self.tab_id),
                           nhan_loai=self._nhan_loai(),
                           on_applied=ap_dung)
 
@@ -2192,18 +2720,27 @@ class AutoUpTab(ctk.CTkFrame):
         """Bảng tổng hợp thống kê các tab cùng loại (fanpage/nhóm)."""
         from ui.stats_dialog import StatsDialog
         nhan = self._nhan_loai()
-        StatsDialog(self.app, lambda: self.manager.by_kind(self.kind),
+        StatsDialog(self.app, lambda: self.manager.by_kind(self.kind, self.tab_id),
                     tieu_de=f"Thống kê Auto đăng {nhan}")
 
     def add_job(self) -> None:
+        """Them mot trang: hoi TEN va NHOM can them (co the tao nhom moi ngay tai do)."""
         nhan = self._nhan_loai()
-        ten = SimplePromptDialog(self.app, f"Thêm {nhan}",
-                                 f"Đặt tên cho {nhan} mới:", "").show()
-        if ten is None:
+        kq = ThemTrangDialog(self.app, nhan,
+                             self.manager.cac_nhom(self.kind, self.tab_id)).show()
+        if not kq:
             return
+        ten, nhom = kq
+        if nhom:
+            self.manager.them_nhom(self.kind, self.tab_id, nhom)
         job = self.manager.add(ten, kind=self.kind)
+        job.config.tab_id = self.tab_id
+        job.config.nhom = nhom
+        job.save()
+        self._chon = {job.job_id}
         self._rebuild(chon=job.job_id)
-        self.app.set_status(f"Đã thêm trang '{job.name}'.")
+        self.app.set_status(f"Đã thêm {nhan} '{job.name}'"
+                            + (f" vào nhóm '{nhom}'." if nhom else "."))
 
     def rename_job(self) -> None:
         job = self.current()
@@ -2218,22 +2755,95 @@ class AutoUpTab(ctk.CTkFrame):
         self.app.set_status(f"Đã đổi tên thành '{job.name}'.")
 
     def remove_job(self) -> None:
-        job = self.current()
-        if job is None:
+        """Xoa CAC trang dang chon (keo vung trong / Ctrl / Shift de chon nhieu)."""
+        ds = [m for m in self._dang_chon() if self.manager.get(m) is not None]
+        if not ds:
             return
+        ten = [self.manager.get(m).name for m in ds]
+        nhan = self._nhan_loai()
+        if len(ds) == 1:
+            hoi = f"Xoá {nhan} '{ten[0]}'?"
+        else:
+            liet = ", ".join(ten[:6]) + (f" và {len(ten) - 6} cái nữa" if len(ten) > 6 else "")
+            hoi = f"Xoá {len(ds)} {nhan}?" + chr(10) + liet
         if not messagebox.askyesno(
             "Xoá trang",
-            f"Xoá trang '{job.name}'?" + chr(10) * 2
-            + "Cấu hình, lịch và nhật ký của trang này sẽ mất. "
+            hoi + chr(10) * 2
+            + "Cấu hình, lịch và nhật ký của các trang này sẽ mất. "
               "Video trong thư mục vẫn còn nguyên.",
             parent=self.app,
         ):
             return
-        self.manager.remove(job.job_id)
+        for m in ds:
+            self.manager.remove(m)
+        self._chon = set()
         self.current_id = ""
         self._rebuild()
-        self.app.set_status(f"Đã xoá trang '{job.name}'.")
+        self.app.set_status(f"Đã xoá {len(ds)} {nhan}." if len(ds) > 1
+                            else f"Đã xoá {nhan} '{ten[0]}'.")
 
+
+
+class ThemTrangDialog(BaseDialog):
+    """Hoi TEN trang moi + NHOM can them. ``.show()`` tra (ten, nhom) hoac None.
+
+    ``nhom`` rong = chua phan nhom. Chon "➕ Nhóm mới..." thi hien them o go ten nhom.
+    """
+
+    CHUA = "— Chưa phân nhóm —"
+    MOI = "➕ Nhóm mới..."
+
+    def __init__(self, parent, nhan_loai: str, nhoms):
+        super().__init__(parent, f"Thêm {nhan_loai}", 480, 300)
+        self.minsize(420, 280)
+        self._nhoms = list(nhoms or [])
+
+        ctk.CTkLabel(self, text=f"Tên {nhan_loai}").pack(anchor="w", padx=PAD, pady=(PAD, 2))
+        self.entry = ctk.CTkEntry(self, placeholder_text=f"Đặt tên cho {nhan_loai} mới")
+        self.entry.pack(fill="x", padx=PAD)
+        self.entry.bind("<Return>", lambda _e: self._submit())
+
+        ctk.CTkLabel(self, text="Thêm vào nhóm").pack(anchor="w", padx=PAD, pady=(10, 2))
+        self.nhom_menu = ctk.CTkOptionMenu(self, values=[self.CHUA] + self._nhoms + [self.MOI],
+                                           command=lambda _v: self._doi_nhom())
+        self.nhom_menu.set(self.CHUA)
+        self.nhom_menu.pack(fill="x", padx=PAD)
+        self.nhom_moi = ctk.CTkEntry(self, placeholder_text="Tên nhóm mới")
+        self.nhom_moi.bind("<Return>", lambda _e: self._submit())
+
+        self.loi = ctk.CTkLabel(self, text="", text_color="#e06c6c", anchor="w")
+        self.loi.pack(fill="x", padx=PAD, pady=(6, 0))
+
+        nut = ctk.CTkFrame(self, fg_color="transparent")
+        nut.pack(fill="x", padx=PAD, pady=PAD, side="bottom")
+        ctk.CTkButton(nut, text="Huỷ", width=90, fg_color="gray35",
+                      command=self._cancel).pack(side="right")
+        ctk.CTkButton(nut, text="Thêm", width=100, command=self._submit).pack(side="right", padx=6)
+        self.after(200, lambda: self.entry.focus_set())
+
+    def _doi_nhom(self) -> None:
+        if self.nhom_menu.get() == self.MOI:
+            self.nhom_moi.pack(fill="x", padx=PAD, pady=(4, 0))
+            self.nhom_moi.focus_set()
+        else:
+            self.nhom_moi.pack_forget()
+
+    def _nhom(self) -> str:
+        chon = self.nhom_menu.get()
+        if chon == self.MOI:
+            return self.nhom_moi.get().strip()
+        return "" if chon == self.CHUA else chon
+
+    def _submit(self) -> None:
+        ten = self.entry.get().strip()
+        if not ten:
+            self.loi.configure(text="Chưa đặt tên.")
+            return
+        if self.nhom_menu.get() == self.MOI and not self._nhom():
+            self.loi.configure(text="Chưa đặt tên nhóm mới.")
+            return
+        self.result = (ten, self._nhom())
+        self.destroy()
 
 
 class AddPostDialog(BaseDialog):
@@ -2411,3 +3021,224 @@ class PromptPickDialog(BaseDialog):
             return
         self.chosen = chosen
         self.destroy()
+
+
+#: Bieu tuong dau ten tab theo loai trang.
+ICON_LOAI = {"page": "🌐", "lich": "🕒", "group": "👥"}
+
+
+class ThemTabDialog(BaseDialog):
+    """Hoi LOAI tab (Cong khai / Dat lich) + TEN tab. ``.show()`` tra (kind, ten) hoac None."""
+
+    def __init__(self, parent, kinds=("page", "lich")):
+        super().__init__(parent, "Thêm tab", 460, 250)
+        self.minsize(400, 230)
+        self._kinds = [k for k in kinds if k in NHAN_TAB_LOAI] or ["page"]
+        ctk.CTkLabel(self, text="Tab mới tạo ra là TRỐNG — bấm “Thêm fanpage” trong tab đó để "
+                                "thêm trang, hoặc chuột phải một trang → Chuyển sang tab.",
+                     justify="left", text_color="gray60", wraplength=420).pack(
+            anchor="w", padx=PAD, pady=(PAD, 8))
+        ctk.CTkLabel(self, text="Loại tab").pack(anchor="w", padx=PAD)
+        self._kind_box = ctk.CTkSegmentedButton(
+            self, values=[NHAN_TAB_LOAI[k] for k in self._kinds])
+        self._kind_box.set(NHAN_TAB_LOAI[self._kinds[0]])
+        self._kind_box.pack(fill="x", padx=PAD, pady=(2, 10))
+        ctk.CTkLabel(self, text="Tên tab").pack(anchor="w", padx=PAD)
+        self.entry = ctk.CTkEntry(self, placeholder_text="vd: Kênh phim, Khách hàng A...")
+        self.entry.pack(fill="x", padx=PAD, pady=(2, 6))
+        self.entry.bind("<Return>", lambda _e: self._submit())
+        nut = ctk.CTkFrame(self, fg_color="transparent")
+        nut.pack(fill="x", padx=PAD, pady=PAD, side="bottom")
+        ctk.CTkButton(nut, text="Huỷ", width=90, fg_color="gray35",
+                      command=self._cancel).pack(side="right")
+        ctk.CTkButton(nut, text="Tạo tab", width=100,
+                      command=self._submit).pack(side="right", padx=6)
+        self.after(200, lambda: self.entry.focus_set())
+
+    def _submit(self) -> None:
+        ten = self.entry.get().strip()
+        if not ten:
+            self.entry.configure(border_color="#e06c6c")
+            return
+        nhan = self._kind_box.get()
+        kind = next((k for k in self._kinds if NHAN_TAB_LOAI[k] == nhan), self._kinds[0])
+        self.result = (kind, ten)
+        self.destroy()
+
+
+#: Tab con (Cong khai / Dat lich / tab nguoi dung them): chu TO + DAM + co VIEN cho de phan biet
+#: (nguoi dung yeu cau 02/10/2026 — truoc do cac tab chu nho, khong vien, nhin rat giong nhau).
+TAB_CON_CO_CHU = 15
+TAB_CON_CAO = 34
+
+
+def nhan_manh_tab_con(tabview) -> None:
+    """To + dam + ve vien cho thanh tab con cua mot CTkTabview.
+
+    Goi SAU khi da add het tab (moi lan dung lai thanh tab phai goi lai)."""
+    sb = getattr(tabview, "_segmented_button", None)
+    if sb is None:
+        return
+    chu = ctk.CTkFont(size=TAB_CON_CO_CHU, weight="bold")
+    try:
+        sb.configure(font=chu, corner_radius=8, border_width=3,
+                     fg_color=("gray72", "gray18"),              # khe giua cac tab = duong vien
+                     unselected_color=("gray90", "gray26"),
+                     unselected_hover_color=("gray84", "gray34"),
+                     selected_color=("#2f6fb0", "#2f6fb0"),
+                     selected_hover_color=("#3a7cc0", "#3a7cc0"),
+                     text_color=("gray10", "gray95"))
+    except Exception:  # noqa: BLE001
+        pass
+    for nut in list(getattr(sb, "_buttons_dict", {}).values()):
+        try:
+            nut.configure(font=chu, height=TAB_CON_CAO, corner_radius=8,
+                          border_width=2, border_color=("gray45", "gray55"))
+        except Exception:  # noqa: BLE001
+            pass
+
+
+class AutoUpTabs(ctk.CTkFrame):
+    """Khung chua NHIEU tab con: Cong khai + Dat lich, nguoi dung tu them tab.
+
+    Mac dinh dung hai tab (tab mac dinh cua moi loai) y nhu truoc. Them tab -> tab moi
+    TRONG, co danh sach trang RIENG (``AutoUpConfig.tab_id``). Xoa tab -> cac trang trong
+    do CHUYEN ve tab mac dinh, khong mat cau hinh (nguoi dung chot 01/10).
+
+    Dung LUOI: chi dung ``AutoUpTab`` cua tab nguoi dung thuc su mo. Dung het mot luc thi
+    moi tab mot bang dieu khien -> mo tool cham (da do: ca tram bang mat 17 giay).
+    """
+
+    def __init__(self, parent, app, *, manager=None, acc_store=None, profiles=None,
+                 kinds=("page", "lich")):
+        super().__init__(parent, fg_color="transparent")
+        self.app = app
+        self.manager = manager or app.autoup
+        self.acc_store = acc_store
+        self.profiles = profiles
+        self.kinds = tuple(kinds)
+        self._khung: dict = {}          # ten hien thi -> {"kind","id","frame","tab"}
+        self.tabview = None
+
+        thanh = ctk.CTkFrame(self, fg_color="transparent")
+        thanh.pack(fill="x", padx=PAD, pady=(4, 0))
+        ctk.CTkButton(thanh, text="➕ Thêm tab", width=110, fg_color="#2f7d4f",
+                      command=self.them_tab).pack(side="left")
+        ctk.CTkButton(thanh, text="✏️ Đổi tên tab", width=120, fg_color="gray45",
+                      command=self.doi_ten_tab).pack(side="left", padx=6)
+        ctk.CTkButton(thanh, text="🗑 Xoá tab", width=100, fg_color="#a33",
+                      command=self.xoa_tab).pack(side="left")
+        ctk.CTkLabel(thanh, text="· mỗi tab có danh sách trang riêng; hai tab mặc định "
+                                 "không xoá được",
+                     text_color="gray60").pack(side="left", padx=10)
+        self._than = ctk.CTkFrame(self, fg_color="transparent")
+        self._than.pack(fill="both", expand=True)
+        self._ve()
+
+    # ---- dung lai thanh tab ------------------------------------------
+    def _danh_sach(self) -> list:
+        """[(ten hien thi, kind, tab_id)] theo thu tu: moi loai thi tab mac dinh truoc."""
+        ra, da_co = [], set()
+        for kind in self.kinds:
+            for t in self.manager.cac_tab(kind):
+                ten = f"{ICON_LOAI.get(kind, '')} {t['ten']}".strip()
+                goc, so = ten, 2
+                while ten in da_co:          # trung ten -> them so, thanh tab khong cho trung
+                    ten = f"{goc} ({so})"
+                    so += 1
+                da_co.add(ten)
+                ra.append((ten, kind, t["id"]))
+        return ra
+
+    def _ve(self, chon: str = "") -> None:
+        cu = chon or (self.tabview.get() if self.tabview is not None else "")
+        for w in self._than.winfo_children():
+            w.destroy()
+        self._khung = {}
+        self.tabview = ctk.CTkTabview(self._than, anchor="w", command=self._doi_tab)
+        self.tabview.pack(fill="both", expand=True)
+        for ten, kind, tab_id in self._danh_sach():
+            self._khung[ten] = {"kind": kind, "id": tab_id,
+                                "frame": self.tabview.add(ten), "tab": None}
+        nhan_manh_tab_con(self.tabview)      # chu to + dam + vien cho de phan biet tab
+        if cu not in self._khung:
+            cu = next(iter(self._khung), "")
+        if cu:
+            self.tabview.set(cu)
+            self._dung(cu)
+
+    def _doi_tab(self) -> None:
+        """Nguoi dung bam sang tab khac -> dung bang cua tab do (neu chua dung)."""
+        try:
+            self._dung(self.tabview.get())
+        except tk.TclError:
+            pass
+
+    def _dung(self, ten: str) -> None:
+        o = self._khung.get(ten)
+        if o is None or o["tab"] is not None:
+            return
+        o["tab"] = AutoUpTab(o["frame"], self.app, kind=o["kind"], manager=self.manager,
+                             acc_store=self.acc_store, profiles=self.profiles,
+                             tab_id=o["id"])
+        o["tab"].pack(fill="both", expand=True)
+
+    # ---- tab dang xem -------------------------------------------------
+    @property
+    def tab_hien(self):
+        """``AutoUpTab`` cua tab dang xem (dung roi), hoac None."""
+        o = self._khung.get(self.tabview.get() if self.tabview is not None else "")
+        return o["tab"] if o else None
+
+    def _o_hien(self) -> dict:
+        return self._khung.get(self.tabview.get() if self.tabview is not None else "") or {}
+
+    # ---- them / doi ten / xoa tab -------------------------------------
+    def them_tab(self) -> None:
+        kq = ThemTabDialog(self.app, self.kinds).show()
+        if not kq:
+            return
+        kind, ten = kq
+        tab = self.manager.them_tab(kind, ten)
+        self._ve(chon=f"{ICON_LOAI.get(kind, '')} {tab['ten']}".strip())
+        self.app.set_status(f"Đã thêm tab '{tab['ten']}' — tab trống, bấm “Thêm fanpage” "
+                            "hoặc chuột phải một trang → Chuyển sang tab.")
+
+    def doi_ten_tab(self) -> None:
+        o = self._o_hien()
+        if not o:
+            return
+        if not o["id"]:
+            messagebox.showinfo("Đổi tên tab", "Hai tab mặc định (Công khai / Đặt lịch) "
+                                               "không đổi tên được.", parent=self.app)
+            return
+        hien = next((t["ten"] for t in self.manager.cac_tab(o["kind"])
+                     if t["id"] == o["id"]), "")
+        ten = SimplePromptDialog(self.app, "Đổi tên tab", "Tên mới:", hien).show()
+        if not ten or ten == hien:
+            return
+        self.manager.doi_ten_tab(o["id"], ten)
+        self._ve(chon=f"{ICON_LOAI.get(o['kind'], '')} {ten}".strip())
+
+    def xoa_tab(self) -> None:
+        o = self._o_hien()
+        if not o:
+            return
+        if not o["id"]:
+            messagebox.showinfo("Xoá tab", "Hai tab mặc định (Công khai / Đặt lịch) "
+                                           "không xoá được.", parent=self.app)
+            return
+        ten = next((t["ten"] for t in self.manager.cac_tab(o["kind"])
+                    if t["id"] == o["id"]), "")
+        so = len(self.manager.by_kind(o["kind"], o["id"]))
+        hoi = f"Xoá tab '{ten}'?"
+        if so:
+            mac = NHAN_TAB_LOAI.get(o["kind"], "mặc định")
+            hoi += (chr(10) * 2 + f"{so} trang trong tab này sẽ CHUYỂN về tab '{mac}', "
+                    "giữ nguyên cấu hình, lịch và nhật ký.")
+        if not messagebox.askyesno("Xoá tab", hoi, parent=self.app):
+            return
+        chuyen = self.manager.xoa_tab(o["id"])
+        self._ve()
+        self.app.set_status(f"Đã xoá tab '{ten}'." +
+                            (f" Chuyển {chuyen} trang về tab mặc định." if chuyen > 0 else ""))

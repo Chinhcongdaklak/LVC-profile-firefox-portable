@@ -465,10 +465,25 @@ class TieuDeHangLoatDialog(BaseDialog):
             row=0, column=0, sticky="w", pady=(0, 4))
         ctk.CTkLabel(giua, text="Tiêu đề mới (mỗi dòng một cái)", font=dam).grid(
             row=0, column=1, sticky="w", padx=(6, 0), pady=(0, 4))
-        self.cu_box = tk.Listbox(giua, activestyle="none", exportselection=False, highlightthickness=0)
+        # selectmode="extended": keo chuot chon nhieu dong, Shift/Ctrl nhu moi danh sach khac.
+        self.cu_box = tk.Listbox(giua, activestyle="none", exportselection=False, highlightthickness=0,
+                                 selectmode="extended")
         self.cu_box.grid(row=1, column=0, sticky="nsew", padx=(0, 3))
         for i, t in enumerate(self._ten, start=1):
             self.cu_box.insert("end", f"{i}. {t}")
+        self.cu_box.bind("<Control-a>", self._chon_het_cu)
+        self.cu_box.bind("<Control-A>", self._chon_het_cu)
+        self.cu_box.bind("<Control-c>", lambda _e: self._copy_cu(chon=True))
+        self.cu_box.bind("<Control-C>", lambda _e: self._copy_cu(chon=True))
+        self.cu_box.bind("<<ListboxSelect>>", lambda _e: self._cap_nhat_nut_copy())
+
+        nut_cu = ctk.CTkFrame(giua, fg_color="transparent")
+        nut_cu.grid(row=2, column=0, sticky="w", padx=(0, 3), pady=(4, 0))
+        self.copy_chon_btn = ctk.CTkButton(nut_cu, text="📋 Copy dòng đã chọn", width=170,
+                                           fg_color="gray45", command=lambda: self._copy_cu(chon=True))
+        self.copy_chon_btn.pack(side="left")
+        ctk.CTkButton(nut_cu, text="📋 Copy hết tên", width=140, fg_color="gray45",
+                      command=lambda: self._copy_cu(chon=False)).pack(side="left", padx=6)
         self.box = ctk.CTkTextbox(giua, wrap="none")
         self.box.grid(row=1, column=1, sticky="nsew", padx=(3, 0))
         if ban_dau:
@@ -507,6 +522,34 @@ class TieuDeHangLoatDialog(BaseDialog):
         else:
             chu, mau = f"{k}/{n} tiêu đề — thừa {k - n} dòng, phần dư bỏ qua.", "#ffd28a"
         self.dem_lbl.configure(text=chu, text_color=mau)
+
+    def _chon_het_cu(self, _e=None) -> str:
+        self.cu_box.selection_set(0, "end")
+        self._cap_nhat_nut_copy()
+        return "break"
+
+    def _ten_dang_chon(self) -> list:
+        return [self._ten[i] for i in self.cu_box.curselection() if 0 <= i < len(self._ten)]
+
+    def _cap_nhat_nut_copy(self) -> None:
+        k = len(self.cu_box.curselection())
+        self.copy_chon_btn.configure(text=f"📋 Copy {k} dòng đã chọn" if k else "📋 Copy dòng đã chọn")
+
+    def _copy_cu(self, chon: bool = True) -> str:
+        """Chep TEN FILE (khong kem so thu tu) ra clipboard — dong da chon hoac toan bo."""
+        ds = self._ten_dang_chon() if chon else list(self._ten)
+        if not ds:
+            self._bao_tam("Chưa chọn dòng nào — kéo chuột (hoặc Ctrl+A) để chọn.", "#ffd28a")
+            return "break"
+        self.clipboard_clear()
+        self.clipboard_append("\n".join(ds))
+        self._bao_tam(f"✔ Đã copy {len(ds)} tên file.", "#7ac47a")
+        return "break"
+
+    def _bao_tam(self, chu: str, mau: str) -> None:
+        """Hien bao ngan o dong dem roi tra lai so dem sau 2 giay."""
+        self.dem_lbl.configure(text=chu, text_color=mau)
+        self.after(2000, self._dem)
 
     def _lay_ten_cu(self) -> None:
         self.box.delete("1.0", "end")

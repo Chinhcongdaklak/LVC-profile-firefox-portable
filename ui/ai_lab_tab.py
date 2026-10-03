@@ -414,8 +414,13 @@ class AiLabTab(ctk.CTkFrame):
         threading.Thread(target=work, daemon=True).start()
 
     def _sang_tab_nhom(self, job) -> None:
+        # Tab nhom co hai tab con (Dang nhom / Quet bai) -> qua App.mo_tab_nhom.
         try:
-            self.app.tabs.set(TAB_NHOM)
+            mo = getattr(self.app, "mo_tab_nhom", None)
+            if mo is not None:
+                mo()
+            else:
+                self.app.tabs.set(TAB_NHOM)
         except Exception:  # noqa: BLE001
             pass
         self._lam_moi_bang_nhom(job)

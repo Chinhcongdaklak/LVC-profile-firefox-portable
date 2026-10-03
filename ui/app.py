@@ -35,7 +35,7 @@ from core.proxy_relay import RelayManager, test_proxy
 from core.store import Account, AccountStore, STATUSES
 
 from . import login
-from .autoup_tab import AutoUpTab
+from .autoup_tab import AutoUpTab, AutoUpTabs
 from .dialogs import (
     AccountDialog,
     ColumnDialog,
@@ -57,6 +57,14 @@ PAD = 8
 SANG = "☀ Sáng"
 TOI = "🌙 Tối"
 DETAIL_WIDTH = 340   # be ngang bang thong tin acc ben phai
+
+# Tab "Auto dang nhom" gom hai tab con: dang nhom (JobPanel) va quet bai (AiLabTab).
+NHOM_TAB = "👥 Auto đăng nhóm"
+NHOM_CON_DANG = "👥 Đăng nhóm"
+NHOM_CON_QUET = "🔎 Quét bài"
+# Tab "Tuong tac" cung co hai tab con: acc Facebook va acc X.com (kho acc rieng).
+TT_CON_FB = "📘 Facebook"
+TT_CON_X = "𝕏 X.com"
 
 # Treeview va tk.Menu khong tu doi mau theo customtkinter, phai to tay.
 THEMES = {
@@ -179,11 +187,8 @@ class App(ctk.CTk):
         self.tabs.pack(fill="both", expand=True, padx=PAD, pady=(0, 4))
         tab_acc = self.tabs.add("📋 Quản lý acc")
         tab_page = self.tabs.add("🎬 Auto đăng fanpage")
-        tab_group = self.tabs.add("👥 Auto đăng nhóm")
+        tab_group = self.tabs.add(NHOM_TAB)
         tab_x_dang = self.tabs.add("🐦 Auto đăng X")
-        # Lan 4 (ADR-009): tab "Quet bai nhom" cu bo; tab Thu nghiem AI doi ten thanh
-        # "Quet bai" -- quet -> gui vao Auto dang nhom -> xao o do -> dang theo lich.
-        tab_ailab = self.tabs.add("🔎 Quét bài")
         tab_chat = self.tabs.add("💬 Nhắn tin AI")
         tab_create = self.tabs.add("🏗 Tạo fanpage")
         tab_tuongtac = self.tabs.add("🤝 Tương tác")
@@ -203,20 +208,24 @@ class App(ctk.CTk):
         self.x_acc_tab = XAccTab(tab_x, self)
         self.x_acc_tab.pack(fill="both", expand=True)
         self.acc_tabs.set("📘 Facebook")
-        # "Auto dang fanpage" co HAI TAB CON: Cong khai (dang ngay) va Dat lich
-        # (hen gio). Cung la AutoUpTab, chi khac loai trang -> danh sach trang
-        # RIENG cho tung tab con, khong tron vao nhau.
-        self.fanpage_tabs = ctk.CTkTabview(tab_page, anchor="w")
+        # "Auto dang fanpage": hai tab con mac dinh "🌐 Công khai" (dang ngay) va
+        # "🕒 Đặt lịch" (hen gio), nguoi dung THEM duoc tab moi. Moi tab co danh sach
+        # trang RIENG (AutoUpConfig.tab_id), khong tron vao nhau.
+        self.fanpage_tabs = AutoUpTabs(tab_page, self)
         self.fanpage_tabs.pack(fill="both", expand=True)
-        tab_congkhai = self.fanpage_tabs.add("🌐 Công khai")
-        tab_datlich = self.fanpage_tabs.add("🕒 Đặt lịch")
-        self.autoup_tab = AutoUpTab(tab_congkhai, self, kind="page")
-        self.autoup_tab.pack(fill="both", expand=True)
-        self.thu_lich_tab = AutoUpTab(tab_datlich, self, kind="lich")
-        self.thu_lich_tab.pack(fill="both", expand=True)
-        self.fanpage_tabs.set("🌐 Công khai")
-        self.group_tab = AutoUpTab(tab_group, self, kind="group")
+        # "Auto dang nhom" co HAI TAB CON: "Dang nhom" (JobPanel nhu cu) va "Quet bai"
+        # (AiLabTab, truoc day la tab rieng o thanh tren). Chi doi CHO, chuc nang khong doi:
+        # quet -> gui vao job nhom -> xao o hang doi -> dang theo lich (ADR-009).
+        from .ai_lab_tab import AiLabTab
+        self.group_tabs = ctk.CTkTabview(tab_group, anchor="w")
+        self.group_tabs.pack(fill="both", expand=True)
+        g_dang = self.group_tabs.add(NHOM_CON_DANG)
+        g_quet = self.group_tabs.add(NHOM_CON_QUET)
+        self.group_tab = AutoUpTab(g_dang, self, kind="group")
         self.group_tab.pack(fill="both", expand=True)
+        self.ai_lab_tab = AiLabTab(g_quet, self)
+        self.ai_lab_tab.pack(fill="both", expand=True)
+        self.group_tabs.set(NHOM_CON_DANG)
         # "Auto dang X" giong het "Auto dang fanpage": 2 tab con Cong khai + Dat lich.
         # Dung manager RIENG self.autoup_x -> job X khong tron voi job Facebook.
         self.x_fanpage_tabs = ctk.CTkTabview(tab_x_dang, anchor="w")
@@ -232,19 +241,29 @@ class App(ctk.CTk):
                                     acc_store=self.x_acc_tab.store,
                                     profiles=self.x_acc_tab.manager)
         self.x_lich_tab.pack(fill="both", expand=True)
+        from .autoup_tab import nhan_manh_tab_con
+        nhan_manh_tab_con(self.x_fanpage_tabs)   # tab con X: cùng kiểu chữ to + viền như fanpage
         self.x_fanpage_tabs.set("🌐 Công khai")
-        from .ai_lab_tab import AiLabTab
-        self.ai_lab_tab = AiLabTab(tab_ailab, self)
-        self.ai_lab_tab.pack(fill="both", expand=True)
         from .chat_tab import ChatTab
         self.chat_tab = ChatTab(tab_chat, self)
         self.chat_tab.pack(fill="both", expand=True)
         from .create_page_tab import CreatePageTab
         self.create_page_tab = CreatePageTab(tab_create, self)
         self.create_page_tab.pack(fill="both", expand=True)
+        # "Tuong tac" co HAI TAB CON: Facebook (giu nguyen) va X.com (giao dien y het,
+        # kho acc + cau hinh RIENG cua X; co che tuong tac X lam sau).
         from .tuong_tac_tab import TuongTacTab
-        self.tuong_tac_tab = TuongTacTab(tab_tuongtac, self)
+        self.tuong_tac_tabs = ctk.CTkTabview(tab_tuongtac, anchor="w")
+        self.tuong_tac_tabs.pack(fill="both", expand=True)
+        tt_fb = self.tuong_tac_tabs.add(TT_CON_FB)
+        tt_x = self.tuong_tac_tabs.add(TT_CON_X)
+        self.tuong_tac_tab = TuongTacTab(tt_fb, self)
         self.tuong_tac_tab.pack(fill="both", expand=True)
+        self.tuong_tac_x_tab = TuongTacTab(tt_x, self, platform="x",
+                                           acc_store=self.x_acc_tab.store,
+                                           profiles=self.x_acc_tab.manager)
+        self.tuong_tac_x_tab.pack(fill="both", expand=True)
+        self.tuong_tac_tabs.set(TT_CON_FB)
         from .rename_tab import RenameTab
         self.rename_tab = RenameTab(tab_rename, self)
         self.rename_tab.pack(fill="both", expand=True)
@@ -1324,8 +1343,14 @@ class App(ctk.CTk):
             command=self.kill_all_browsers,
         )
         self.kill_button.pack(side="left", padx=(0, 6), pady=3)
+        # Gom cua so: chi hien khi da tich o Cai dat (tinh nang thu nghiem).
+        self.gom_button = ctk.CTkButton(
+            bar, text="🪟 Gom cửa sổ", width=130, fg_color="#46617d", hover_color="#5a7694",
+            command=self.open_khung_gom)
+        self._cap_nhat_nut_gom()
         # Ap trang thai da luu ngay luc mo (lan dau = mac dinh bat -> dang ky khoi dong).
         self.after(300, self._ap_mo_cung_windows)
+        self.after(900, self._don_cua_so_ma)
         self.status_label = ctk.CTkLabel(bar, text="Sẵn sàng.", anchor="w")
         self.status_label.pack(side="left", padx=6, pady=4)
         self.progress = ctk.CTkProgressBar(bar, width=180, mode="indeterminate")
@@ -1338,6 +1363,43 @@ class App(ctk.CTk):
             command=self.open_shutdown_dialog)
         self.shutdown_button.place(relx=0.5, rely=0.5, anchor="center")
         self._tick_shutdown()
+
+    def _cap_nhat_nut_gom(self) -> None:
+        """Nut "Gom cua so" chi hien khi nguoi dung tich o Cai dat."""
+        nut = getattr(self, "gom_button", None)
+        if nut is None:
+            return
+        if bool(getattr(self.settings, "gom_cua_so", False)):
+            if not nut.winfo_manager():
+                nut.pack(side="left", padx=(0, 6), pady=3)
+        elif nut.winfo_manager():
+            nut.pack_forget()
+
+    def open_khung_gom(self) -> None:
+        """Mo khung gom cua so (mot khung chua moi Firefox dang mo)."""
+        from .khung_gom import KhungGom
+        cu = getattr(self, "khung_gom", None)
+        if cu is not None and cu.winfo_exists():
+            cu.lift()
+            cu.xep_lai()
+            return
+        self.khung_gom = KhungGom(self, che_do=getattr(self.settings, "gom_che_do", "luoi"),
+                                  cot=getattr(self.settings, "gom_cot", 2),
+                                  hang_nhin=getattr(self.settings, "gom_hang_nhin", 2))
+
+    def _don_cua_so_ma(self) -> None:
+        """Lan truoc tool chet khi dang NHOT cua so -> Firefox mat cua so ma tien trinh con song.
+
+        CHI don theo SO NHOT (data/gom_nhot.json). Khong quet chung moi Firefox: trinh duyet
+        vua khoi dong cung chua co cua so -> quet chung la GIET NHAM (da mac khi chay that 02/10).
+        """
+        from core import cuaso
+        try:
+            n = cuaso.don_tien_trinh_ma()
+        except Exception:  # noqa: BLE001
+            return
+        if n:
+            self.set_status(f"Đã dọn {n} trình duyệt chạy ngầm không còn cửa sổ (lần trước gom cửa sổ).")
 
     def _ap_mo_cung_windows(self) -> None:
         """Dong bo khoa Run cua Windows voi cai dat (goi luc mo tool, khong hoi)."""
@@ -1859,13 +1921,35 @@ class App(ctk.CTk):
             "tao_fanpage_acc": lambda: tab("🏗 Tạo fanpage"), "tao_fanpage_bm": lambda: tab("🏗 Tạo fanpage"),
             "add_page_bm": lambda: tab("🏗 Tạo fanpage"), "tao_bm": lambda: tab("🏗 Tạo fanpage"),
             "dang_fanpage_tu_dong": lambda: self.mo_tab_fanpage("🌐 Công khai"),
-            "dang_nhom_tu_dong": lambda: tab("👥 Auto đăng nhóm"),
-            "quet_bai": lambda: tab("🔎 Quét bài"), "nhan_tin_ai": lambda: tab("💬 Nhắn tin AI"),
-            "tuong_tac": lambda: tab("🤝 Tương tác"),
+            "dang_nhom_tu_dong": lambda: self.mo_tab_nhom(NHOM_CON_DANG),
+            "quet_bai": lambda: self.mo_tab_nhom(NHOM_CON_QUET), "nhan_tin_ai": lambda: tab("💬 Nhắn tin AI"),
+            "tuong_tac": lambda: self.mo_tab_tuong_tac(TT_CON_FB),
             "doi_ten_file": lambda: tab("✏️ Đổi tên file"),
             "xoa_bai": lambda: tab("🗑 Xoá bài viết"),
             "mo_cung_windows": self._gat_mo_cung_windows,   # cong tac goc duoi trai
         }
+
+    def mo_tab_tuong_tac(self, con: str = TT_CON_FB) -> None:
+        """Mo tab "Tuong tac" roi chon dung TAB CON (Facebook / X.com)."""
+        try:
+            self.tabs.set("🤝 Tương tác")
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self.tuong_tac_tabs.set(con)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def mo_tab_nhom(self, con: str = NHOM_CON_DANG) -> None:
+        """Mo tab "Auto dang nhom" roi chon dung TAB CON (Dang nhom / Quet bai)."""
+        try:
+            self.tabs.set(NHOM_TAB)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self.group_tabs.set(con)
+        except Exception:  # noqa: BLE001
+            pass
 
     def mo_tab_fanpage(self, con: str = "🌐 Công khai") -> None:
         """Mo tab "Auto dang fanpage" roi chon dung TAB CON (Cong khai / Dat lich)."""
@@ -2390,11 +2474,8 @@ class App(ctk.CTk):
         self.goi_modun("dong_profile", selected, done_message="Đã đóng profile đã chọn.")
 
     def open_posts(self) -> None:
-        """Chuyen sang tab Quet bai (ex Thu nghiem AI, lan 4)."""
-        try:
-            self.tabs.set("🔎 Quét bài")
-        except Exception:
-            pass
+        """Chuyen sang tab con "Quet bai" trong tab Auto dang nhom."""
+        self.mo_tab_nhom(NHOM_CON_QUET)
 
     def scan_existing(self) -> None:
         """Tim cac thu muc profile co san tren o dia va them vao bang."""
@@ -2933,6 +3014,7 @@ class App(ctk.CTk):
         self.manager.settings = self.settings
         self._apply_theme()
         self.refresh()
+        self._cap_nhat_nut_gom()        # tich/bo tich "Gom cua so" -> hien/an nut o thanh duoi
         self.set_status("Đã lưu cài đặt.")
 
         if os.path.normcase(os.path.abspath(old_root)) != os.path.normcase(
@@ -2995,6 +3077,12 @@ class App(ctk.CTk):
 
     def _on_close(self) -> None:
         self._da_dong = True            # cac bo theo doi nen tu thoi
+        # Dang NHOT cua so Firefox vao khung -> PHAI tha ra, khong thi cua so chet theo tool.
+        try:
+            from core import cuaso
+            cuaso.tha_het()
+        except Exception:  # noqa: BLE001
+            pass
         try:
             self.autoup.stop()
         except Exception:

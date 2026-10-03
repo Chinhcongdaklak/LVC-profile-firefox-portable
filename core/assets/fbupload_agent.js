@@ -167,6 +167,34 @@ if (typeof sendAsyncMessage === "function") {
    * chan doc dia) roi dung mozSetFileArray gan vao o chon -- trang thay y het
    * nhu nguoi dung tu chon file. Day cung la cach WebDriver cua Firefox nap file.
    */
+  /** Dung File do cha gui sang thanh File dung duoc cho o chon file.
+   *
+   * Cha co the gui MOT TRONG HAI:
+   *   * ``data.file`` -- File tao tu DUONG DAN (do dia do, khong gioi han dung luong);
+   *   * ``data.bytes`` -- noi dung nhi phan (duong du phong, toi da 400 MB).
+   */
+  function fileTuTin(win, data, mime) {
+    if (data.file) { return data.file; }
+    var bytes = Cu.cloneInto(data.bytes, win);
+    return new win.File([bytes], data.name || "file",
+                        { type: mime || "application/octet-stream" });
+  }
+
+  /** Gan danh sach File vao o chon. mozSetFileArray nhan File cua tien trinh cha;
+   *  DataTransfer thi khong, nen uu tien mozSetFileArray.
+   */
+  function ganFile(win, input, files) {
+    if (typeof input.mozSetFileArray === "function") {
+      input.mozSetFileArray(files);
+    } else {
+      var dt = new win.DataTransfer();
+      files.forEach(function (f) { dt.items.add(f); });
+      input.files = dt.files;
+    }
+    input.dispatchEvent(new win.Event("input", { bubbles: true }));
+    input.dispatchEvent(new win.Event("change", { bubbles: true }));
+  }
+
   function attachFile(win, input, path, done, cmd_mime) {
     var xong = false;
 
@@ -181,19 +209,10 @@ if (typeof sendAsyncMessage === "function") {
         return;
       }
       try {
-        var bytes = Cu.cloneInto(data.bytes, win);
-        var file = new win.File([bytes], data.name || "file",
-                                { type: cmd_mime || "application/octet-stream" });
-        if (typeof input.mozSetFileArray === "function") {
-          input.mozSetFileArray([file]);
-        } else {
-          var dt = new win.DataTransfer();
-          dt.items.add(file);
-          input.files = dt.files;
-        }
-        input.dispatchEvent(new win.Event("input", { bubbles: true }));
-        input.dispatchEvent(new win.Event("change", { bubbles: true }));
-        report("file-attached", file.name + " (" + file.size + " byte)");
+        var file = fileTuTin(win, data, cmd_mime);
+        ganFile(win, input, [file]);
+        report("file-attached", file.name + " (" + file.size + " byte, "
+               + (data.cach || "?") + ")");
         try {
           done(true, file);          // dua File ra: duong du phong keo-tha can no
         } catch (e2) {
@@ -225,10 +244,7 @@ if (typeof sendAsyncMessage === "function") {
       if (k >= items.length) {
         if (!files.length) { done(false, 0); return; }
         try {
-          if (typeof input.mozSetFileArray === "function") { input.mozSetFileArray(files); }
-          else { var dt = new win.DataTransfer(); files.forEach(function (f) { dt.items.add(f); }); input.files = dt.files; }
-          input.dispatchEvent(new win.Event("input", { bubbles: true }));
-          input.dispatchEvent(new win.Event("change", { bubbles: true }));
+          ganFile(win, input, files);
           report("files-attached", files.length + " file");
           done(true, files.length);
         } catch (e) { report("attach-error", String(e)); done(false, 0); }
@@ -242,9 +258,7 @@ if (typeof sendAsyncMessage === "function") {
         var data = msg.data || {};
         if (data.ok) {
           try {
-            var bytes = Cu.cloneInto(data.bytes, win);
-            files.push(new win.File([bytes], data.name || "file",
-                       { type: it.mime || "application/octet-stream" }));
+            files.push(fileTuTin(win, data, it.mime));
           } catch (e) { report("attach-error", String(e)); }
         } else {
           report("file-read-error", data.error || ("không đọc được " + it.path));
@@ -306,11 +320,110 @@ if (typeof sendAsyncMessage === "function") {
     return chon[0].el;
   }
 
+  /** DANH SACH o soan ung vien, xep hang: o kha nang la "Mo ta" dung TRUOC.
+   *
+   * Truoc day chi lay DUNG MOT o -> page nao bay composer khac (cot Tieu de/Mo ta doi cho,
+   * o chua kich hoat) la go vao o chet roi bao caption-failed du video da len
+   * (nguoi dung bao 02/10). Gio go hong o nay thi sang o KE TIEP.
+   */
+  function captionUngVien(doc, win, hop) {
+    var list = [];
+    try {
+      list = Array.prototype.slice.call(
+        doc.querySelectorAll('[contenteditable="true"], textarea'));
+    } catch (e) { return []; }
+    var khung = null;
+    if (hop) { try { khung = hop.getBoundingClientRect(); } catch (e) {} }
+
+    var ung = [];
+    for (var i = 0; i < list.length; i++) {
+      var el = list[i], box = null;
+      if (!el.offsetParent) { continue; }
+      try { box = el.getBoundingClientRect(); } catch (e) { continue; }
+      if (box.width < 40 || box.height < 12) { continue; }
+      if (khung) {
+        if (box.left < khung.left - 4 || box.right > khung.right + 4) { continue; }
+        if (box.top < khung.top - 4 || box.bottom > khung.bottom + 4) { continue; }
+      }
+      ung.push({ el: el, top: box.top, left: box.left, rong: box.width, cao: box.height,
+                 trong: boxText(el).trim() === "" });
+    }
+    // BO UNG VIEN LONG NHAU: o ngoai chua o trong thi go vao o ngoai chu cung roi vao o
+    // trong -> tinh la HAI o, go hai lan, mo ta bi LAP (nguoi dung bao 03/10). Giu o TRONG CUNG.
+    ung = ung.filter(function (a) {
+        for (var j = 0; j < ung.length; j++) {
+          if (ung[j].el === a.el) { continue; }
+          try {
+            if (a.el.contains(ung[j].el)) { return false; }
+          } catch (e) {}
+        }
+        return true;
+      });
+    // O TRONG truoc (o "Tieu de" thuong da co san ten file), trong do o PHAI nhat truoc
+    // (cot Mo ta dung sau cot Tieu de); con lai xep sau de con duong thu tiep.
+    ung.sort(function (a, b) {
+      if (a.trong !== b.trong) { return a.trong ? -1 : 1; }
+      return b.left - a.left;
+    });
+    return ung;
+  }
+
+  /** Mo ta mot o soan de ghi vao nhat ky (chan doan khi go nham o). */
+  function taOSoan(x) {
+    var el = x.el;
+    var nhan = "";
+    try {
+      nhan = el.getAttribute("aria-label") || el.getAttribute("placeholder")
+          || el.getAttribute("data-testid") || "";
+    } catch (e) {}
+    return (el.tagName || "?").toLowerCase() + (nhan ? "[" + nhan.slice(0, 30) + "]" : "")
+        + " " + Math.round(x.rong) + "x" + Math.round(x.cao)
+        + " @" + Math.round(x.left) + "," + Math.round(x.top)
+        + (x.trong ? " (trống)" : " (có sẵn chữ)");
+  }
+
   function boxText(box) {
     try {
       if (box.tagName.toLowerCase() === "textarea") { return box.value || ""; }
       return (box.innerText || box.textContent || "");
     } catch (e) { return ""; }
+  }
+
+  /** O soan co phai DraftJS (composer CU cua Facebook) khong.
+   *  Dau hieu: div[data-contents="true"] / [data-editor] / class _5rpu ben trong. */
+  function laDraft(box) {
+    try {
+      return !!(box.querySelector('[data-contents="true"], [data-block="true"]')
+                || (box.className || "").indexOf("_5rpu") !== -1
+                || box.getAttribute("data-editor"));
+    } catch (e) { return false; }
+  }
+
+  /** Cho caret vao dung cho trong o soan DraftJS.
+   *
+   * Cau truc THAT (nguoi dung gui 02/10, o dang RONG):
+   *   div[contenteditable] > div[data-contents] > div[data-block] > div._1mf
+   *     > span[data-offset-key] > <br data-text="true">
+   * Dat caret o cuoi div GOC, hay "sau" the <br>, thi DraftJS bo qua -> phai nam TRONG
+   * span[data-offset-key]: co chu thi cuoi text node, rong (chi co <br>) thi offset 0 cua span.
+   */
+  function diemCaret(box) {
+    var span = null;
+    try {
+      var ds = box.querySelectorAll('span[data-offset-key]');
+      span = ds.length ? ds[ds.length - 1] : null;
+    } catch (e) {}
+    var goc = span || box;
+    var n = goc;
+    for (var b = 0; b < 12; b++) {
+      if (!n || !n.lastChild) { break; }
+      if (n.lastChild.nodeType === 1 && (n.lastChild.tagName || "").toLowerCase() === "br") {
+        return { node: n, offset: 0 };          // o RONG: caret nam TRONG span, truoc <br>
+      }
+      n = n.lastChild;
+    }
+    if (n && n.nodeType === 3) { return { node: n, offset: n.length }; }
+    return { node: goc, offset: (goc.childNodes ? goc.childNodes.length : 0) };
   }
 
   /** Dat con tro vao cuoi o soan. execCommand chi an khi vung chon nam trong o. */
@@ -322,12 +435,126 @@ if (typeof sendAsyncMessage === "function") {
         return;
       }
       var range = doc.createRange();
-      range.selectNodeContents(box);
-      range.collapse(false);
+      try {
+        var d = diemCaret(box);
+        range.setStart(d.node, d.offset);
+        range.setEnd(d.node, d.offset);
+      } catch (e) {
+        range.selectNodeContents(box);
+        range.collapse(false);
+      }
       var sel = win.getSelection();
       sel.removeAllRanges();
       sel.addRange(range);
     } catch (e) {}
+  }
+
+  /** XOA SACH o soan truoc khi go.
+   *
+   * Business Suite TU DIEN san o "Mô tả" = TEN FILE. Truoc day agent dat con tro o CUOI
+   * roi chen them caption (cung la ten file) -> mo ta thanh HAI LAN -> Facebook bao
+   * "Một bài viết của bạn có tiêu đề quá dài" va khoa nut Dang, trong khi KEO TAY cung
+   * video do thi dang binh thuong (nguoi dung bao 01/10).
+   */
+  /** CLICK THAT vao o soan roi dat con tro: o Lexical cua Facebook co khi chi "song"
+   *  sau khi duoc BAM — focus() suong thi go vao khong an (page bay composer khac, 02/10). */
+  function bamVaoO(win, box) {
+    try {
+      var r = box.getBoundingClientRect();
+      var cx = r.left + Math.min(40, r.width / 2), cy = r.top + r.height / 2;
+      var handle = null;
+      try { handle = win.windowUtils.setHandlingUserInput(true); } catch (e) {}
+      try {
+        ["pointerdown", "mousedown", "pointerup", "mouseup", "click"].forEach(function (t) {
+          var E = (t.indexOf("pointer") === 0) ? win.PointerEvent : win.MouseEvent;
+          box.dispatchEvent(new E(t, { bubbles: true, cancelable: true,
+                                       clientX: cx, clientY: cy, button: 0 }));
+        });
+      } finally {
+        if (handle) { try { handle.destruct(); } catch (e) {} }
+      }
+      box.focus();
+    } catch (e) {}
+  }
+
+  /** O THAT se nhan chu: su kien dispatch tren o boc se NOI LEN editor that (DraftJS /
+   *  Lexical mount o phan tu khac). Lay ``activeElement`` neu no soan duoc, khong thi lay o boc.
+   */
+  function oThat(win, doc, box) {
+    try {
+      var a = doc.activeElement;
+      if (a && a !== box && a.offsetParent) {
+        var the = (a.tagName || "").toLowerCase();
+        if (the === "textarea" || the === "input"
+            || a.getAttribute("contenteditable") === "true") {
+          return a;
+        }
+      }
+    } catch (e) {}
+    return box;
+  }
+
+  function xoaOSoan(win, doc, box) {
+    var the = (box.tagName || "").toLowerCase();
+    try {
+      box.focus();
+      if (the === "textarea" || the === "input") {
+        box.value = "";
+        box.dispatchEvent(new win.Event("input", { bubbles: true }));
+        return;
+      }
+      var range = doc.createRange();
+      range.selectNodeContents(box);
+      var sel = win.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      try { doc.execCommand("delete", false, null); } catch (e) {}
+      if (boxText(box).trim()) {
+        // O soan Lexical bo qua execCommand -> ban su kien xoa that.
+        box.dispatchEvent(new win.InputEvent("beforeinput", {
+          bubbles: true, cancelable: true, inputType: "deleteContentBackward" }));
+        box.dispatchEvent(new win.InputEvent("input", {
+          bubbles: true, inputType: "deleteContentBackward" }));
+      }
+    } catch (e) {}
+  }
+
+  /** Xoa SACH moi o ung vien VA o that dang nhan chu -- goi truoc khi go lai / doi o,
+   *  khong thi chu cu con nam lai va mo ta bi LAP.
+   */
+  function xoaHetOSoan(win, doc, ds) {
+    for (var i = 0; i < (ds || []).length; i++) {
+      try { xoaOSoan(win, doc, ds[i].el); } catch (e) {}
+    }
+    try {
+      var that = oThat(win, doc, null);
+      if (that) { xoaOSoan(win, doc, that); }
+    } catch (e) {}
+  }
+
+  /** ``moc`` xuat hien may lan trong CA KHUNG (hop thoai, khong co thi ca trang).
+   *
+   * Phai dem o khung chu khong chi trong mot o: chu co the da roi sang o khac (o long
+   * nhau / Facebook soi guong) ma dem trong o nay van thay 1 lan.
+   */
+  function demLapKhung(doc, hop, moc) {
+    var goc = hop || (doc && doc.body);
+    var chu = "";
+    try { chu = (goc && goc.innerText) || ""; } catch (e) { return 0; }
+    chu = chu.replace(/\s+/g, " ").trim();
+    if (!moc) { return 0; }
+    var so = 0, i = chu.indexOf(moc);
+    while (i !== -1) { so += 1; i = chu.indexOf(moc, i + moc.length); }
+    return so;
+  }
+
+  /** Doan ``moc`` xuat hien may lan trong o -- 2 lan tro len la mo ta bi LAP. */
+  function demLap(box, moc) {
+    var chu = boxText(box).replace(/\s+/g, " ").trim();
+    if (!moc) { return 0; }
+    var so = 0, i = chu.indexOf(moc);
+    while (i !== -1) { so += 1; i = chu.indexOf(moc, i + moc.length); }
+    return so;
   }
 
   /** Cach 1: go tung chu qua execCommand -- o soan cua Facebook (Lexical) nhan. */
@@ -411,46 +638,150 @@ if (typeof sendAsyncMessage === "function") {
    * nao ma nhat ky van bao dien duoc. O soan cua Facebook do Lexical dieu khien,
    * khong phai lam gi cung an, nen phai kiem lai va thu cach khac neu truot.
    */
+  /** Cach 5 (DraftJS tren Firefox): go TUNG KY TU bang KEYPRESS.
+   *
+   * React dung cho composer cu (DraftJS) KHONG dung `beforeinput` tren Firefox — no dung
+   * `keypress` (charCode) de dung ra su kien nhap. Thieu keypress thi go kieu gi o cung
+   * tron tro (dung lo loi "go vao nhung o van trong" tren page bay composer cu, 02/10).
+   */
+  function keypressInsert(win, doc, box, caption) {
+    focusEnd(win, doc, box);
+    var handle = null;
+    try { handle = win.windowUtils.setHandlingUserInput(true); } catch (e) {}
+    try {
+      for (var i = 0; i < caption.length; i++) {
+        var c = caption[i], ma = caption.charCodeAt(i);
+        box.dispatchEvent(new win.KeyboardEvent("keydown", {
+          bubbles: true, cancelable: true, key: c, charCode: 0, keyCode: 229, which: 229 }));
+        box.dispatchEvent(new win.KeyboardEvent("keypress", {
+          bubbles: true, cancelable: true, key: c, charCode: ma, keyCode: ma, which: ma }));
+        box.dispatchEvent(new win.InputEvent("beforeinput", {
+          bubbles: true, cancelable: true, inputType: "insertText", data: c }));
+        box.dispatchEvent(new win.InputEvent("input", {
+          bubbles: true, inputType: "insertText", data: c }));
+        box.dispatchEvent(new win.KeyboardEvent("keyup", {
+          bubbles: true, cancelable: true, key: c, charCode: 0, keyCode: ma, which: ma }));
+      }
+    } catch (e) {
+      report("caption-error", String(e));
+    } finally {
+      if (handle) { try { handle.destruct(); } catch (e) {} }
+    }
+  }
+
   function fillCaption(win, doc, caption, done, hop) {
     if (!caption) { done(false, "không có mô tả"); return; }
 
-    // 4 cach, XAC MINH sau moi cach (o soan Lexical hay bo qua execCommand -> phai doi cach):
+    // 4 cach go, XAC MINH sau moi cach (o soan Lexical hay bo qua execCommand -> phai doi cach):
     // execCommand -> beforeinput -> paste -> tung ky tu (giong o soan Messenger da fix).
-    var cach = [typeInsert, beforeInputInsert, pasteInsert, perCharInsert];
-    var ten = ["execCommand", "beforeinput", "paste", "tung-ky-tu"];
+    // Go hong HET 4 cach o mot o -> sang O KE TIEP (page bay composer khac: cot Tieu de/Mo ta
+    // doi cho, hoac o chua kich hoat -> truoc day ket o mot o roi bao caption-failed oan).
+    var cach = [typeInsert, beforeInputInsert, pasteInsert, perCharInsert, keypressInsert];
+    var ten = ["execCommand", "beforeinput", "paste", "tung-ky-tu", "keypress"];
     var muon = caption.replace(/\s+/g, " ").trim();
     var mocKiem = muon.slice(0, Math.min(20, muon.length));
-    var vong = 0;
+    var vong = 0, daTaUngVien = false;
 
     function coChu(box) {
-      return boxText(box).replace(/\s+/g, " ").trim().indexOf(mocKiem) !== -1;
+      if (boxText(box).replace(/\s+/g, " ").trim().indexOf(mocKiem) !== -1) { return true; }
+      // Chu co the da roi vao O THAT (editor long ben trong) -> do tren CA KHUNG.
+      // Khong do thi lan nao cung tuong "o van trong" -> go lai -> mo ta bi LAP.
+      return demLapKhung(doc, hop, mocKiem) >= 1;
     }
 
     function thu() {
-      // Uu tien o trong khung hop thoai; sau vai giay khong thay (hop co the da re-render)
-      // thi tim tren ca trang de khoi ket vi tham chieu hop cu.
-      var box = captionBox(doc, win, hop) || (vong >= 3 ? captionBox(doc, win, null) : null);
-      if (!box) {
+      var ds = captionUngVien(doc, win, hop);
+      if (!ds.length && vong >= 3) { ds = captionUngVien(doc, win, null); }
+      if (!ds.length) {
         if (vong < 10) { vong += 1; win.setTimeout(thu, 1000); return; }
         done(false, "không thấy ô soạn chữ");
         return;
       }
-      var i = 0;
-      (function keTiep() {
-        if (i >= cach.length) {
-          // Het 4 cach ma o van trong -> thu lai tu dau (o co the vua san sang), toi da 3 vong.
+      if (!daTaUngVien) {
+        daTaUngVien = true;
+        report("caption-o-soan", ds.length + " ô ứng viên: "
+               + ds.slice(0, 4).map(taOSoan).join(" | "));
+      }
+
+      var oi = 0;
+
+      function moO() {
+        if (oi >= ds.length) {
           vong += 1;
           if (vong < 3) { win.setTimeout(thu, 1200); return; }
-          done(false, "gõ vào nhưng ô vẫn trống (còn: "
-               + boxText(box).replace(/\s+/g, " ").slice(0, 40) + ")");
+          done(false, "gõ vào nhưng ô vẫn trống sau " + ds.length + " ô × 4 cách (ô cuối còn: "
+               + boxText(ds[ds.length - 1].el).replace(/\s+/g, " ").slice(0, 40) + ")");
           return;
         }
-        cach[i](win, doc, box, caption);
-        win.setTimeout(function () {
-          if (coChu(box)) { done(true, ten[i] + ": " + boxText(box).replace(/\s+/g, " ").slice(0, 50)); return; }
-          i += 1; keTiep();
-        }, 700);
-      })();
+        var box = ds[oi].el;
+        var i = 0;
+        // Sang o MOI -> xoa het cac o truoc da, khong thi chu cu con nam lai -> mo ta lap.
+        if (oi > 0) { xoaHetOSoan(win, doc, ds); }
+        // O DraftJS (composer CU cua Facebook): keypress la cach DUY NHAT an tren Firefox
+        // -> thu NO TRUOC cho nhanh, khoi mat 4 vong go tron tro.
+        if (laDraft(box)) {
+          cach = [keypressInsert, perCharInsert, typeInsert, beforeInputInsert, pasteInsert];
+          ten = ["keypress", "tung-ky-tu", "execCommand", "beforeinput", "paste"];
+          if (oi === 0 && vong === 0) {
+            report("caption-draftjs", "ô soạn là composer CŨ (DraftJS) — gõ bằng keypress trước");
+          }
+        }
+
+        // Mo ta Facebook TU DIEN san (= ten file): ghi ra de chan doan va XOA truoc khi go.
+        var san = boxText(box).replace(/\s+/g, " ").trim();
+        if (san && vong === 0 && oi === 0) {
+          report("caption-prefilled", "ô mô tả có sẵn " + san.length + " ký tự: "
+                 + san.slice(0, 40) + " — sẽ xoá trước khi gõ");
+        }
+
+        function xong() {
+          // KIEM LAN CUOI tren ca khung: con lap thi xoa het va go lai (toi da 2 lan).
+          var lapc = demLapKhung(doc, hop, mocKiem);
+          if (lapc >= 2 && vong < 3) {
+            report("caption-doubled", "mô tả bị lặp " + lapc + " lần (kiểm cuối) — gõ lại");
+            xoaHetOSoan(win, doc, ds);
+            vong += 1;
+            win.setTimeout(thu, 800);
+            return;
+          }
+          var chu = boxText(box).replace(/\s+/g, " ").trim();
+          var byte = 0;
+          try { byte = unescape(encodeURIComponent(chu)).length; } catch (e) {}
+          // Facebook do tieu de theo BYTE UTF-8: chu Thai moi chu 3 byte.
+          done(true, ten[i] + " | ô " + (oi + 1) + "/" + ds.length + ": " + chu.length
+               + " ký tự / " + byte + " byte | cần " + muon.length + " | \""
+               + chu.slice(0, 160) + "\"");
+        }
+
+        (function keTiep() {
+          if (i >= cach.length) { oi += 1; moO(); return; }   // o nay chiu -> sang o ke tiep
+          bamVaoO(win, box);                                  // CLICK THAT: Lexical chi mount khi duoc bam
+          xoaOSoan(win, doc, box);                            // XOA o boc...
+          try { xoaOSoan(win, doc, oThat(win, doc, box)); } catch (eX) {}   // ...VA o that
+          // CHAN DOAN: o con gi TRUOC khi go (xoa co sach khong) -- mo ta bi lap thi nhin day.
+          report("caption-go", "ô " + (oi + 1) + "/" + ds.length + " cách " + ten[i]
+                 + " · trước khi gõ ô còn " + boxText(box).length + " ký tự: \""
+                 + boxText(box).replace(/\s+/g, " ").slice(0, 40) + "\"");
+          cach[i](win, doc, box, caption);
+          // KIEM HAI NHIP: Lexical ve lai bat dong bo, kiem ngay la tuong trong (bai hoc o soan X).
+          win.setTimeout(function () {
+            // Dem tren CA KHUNG: chu co the da roi sang o khac (o long nhau / soi guong).
+            var lap = Math.max(demLap(box, mocKiem), demLapKhung(doc, hop, mocKiem));
+            if (lap >= 2) {
+              report("caption-doubled", "mô tả bị lặp " + lap + " lần — xoá hết rồi gõ lại");
+              xoaHetOSoan(win, doc, ds);
+              i += 1; keTiep(); return;
+            }
+            if (coChu(box)) { xong(); return; }
+            win.setTimeout(function () {                      // nhip SAU moi ket luan hong
+              if (coChu(box)) { xong(); return; }
+              i += 1; keTiep();
+            }, 900);
+          }, 700);
+        })();
+      }
+
+      moO();
     }
 
     thu();
@@ -522,6 +853,10 @@ if (typeof sendAsyncMessage === "function") {
   function clickPublish(win, doc, cmd) {
     var tim = describePublish(win, doc);
     if (!tim) {
+      // Nut "Đăng" bi khoa (aria-disabled) nen findPublish khong thay. Hay gap nhat
+      // la Facebook che TIEU DE QUA DAI -> bao dung ly do thay vi "khong thay nut".
+      var td0 = loiTieuDeDai(doc);
+      if (td0) { report("title-too-long", td0); return; }
       try { dumpPage(doc, true); } catch (eD) {}
       report("no-publish-button", "không thấy nút hành động chính (nút nền màu)");
       return;
@@ -725,6 +1060,27 @@ if (typeof sendAsyncMessage === "function") {
     }
   }
 
+  // ------------------------------------------------------- TIEU DE QUA DAI
+  // Facebook tu choi bai vi TIEU DE (ten video) qua dai: hien thong bao goc duoi
+  // phai "Một bài viết của bạn có tiêu đề quá dài." va nut "Đăng" KHONG BAO GIO
+  // sang. Doi den het gio cung vo ich -> phai nhan ra ngay de bo qua video do.
+  var TIEU_DE_DAI = new RegExp(
+    "(ti\u00eau \u0111\u1ec1|tieu de|title|caption)[^.\n]{0,40}"
+    + "(qu\u00e1 d\u00e0i|qua dai|too long)"
+    + "|(qu\u00e1 d\u00e0i|too long)[^.\n]{0,40}(ti\u00eau \u0111\u1ec1|title)", "i");
+
+  /** Cau thong bao "tieu de qua dai" dang hien tren trang, hoac "" neu khong co. */
+  function loiTieuDeDai(doc) {
+    var chu = "";
+    try { chu = (doc.body && doc.body.innerText) || ""; } catch (e) { return ""; }
+    var m = TIEU_DE_DAI.exec(chu);
+    if (!m) { return ""; }
+    var dau = chu.lastIndexOf("\n", m.index);
+    var cuoi = chu.indexOf("\n", m.index);
+    return chu.slice(dau < 0 ? 0 : dau + 1,
+                    cuoi < 0 ? chu.length : cuoi).trim().slice(0, 160);
+  }
+
   function waitReady(win, doc, cmd, file, done) {
     report("ready-start", "bắt đầu chờ check xong");
     var giay = 0;
@@ -746,6 +1102,15 @@ if (typeof sendAsyncMessage === "function") {
       // khong biet agent con song hay da chet (da gap: im lang suot 9 phut).
       if (giay === 1 || giay % 15 === 0 || pt > 0) {
         report("checking", cao_nhat + "% (" + giay + "s)");
+      }
+      // Tieu de qua dai -> nut Dang se KHONG BAO GIO sang. Dung ngay, bao de
+      // tool bo qua video nay va chuyen sang video ke tiep.
+      var td = loiTieuDeDai(doc);
+      if (td) {
+        win.clearInterval(timer);
+        report("title-too-long", td);
+        done(false);
+        return;
       }
       if (cao_nhat >= 100) {
         win.clearInterval(timer);
@@ -1725,7 +2090,11 @@ if (typeof sendAsyncMessage === "function") {
     if (cmd.action === "dumpbuttons") { dumpButtons(doc); return; }
     if (cmd.action === "groupdump") {
       var o = findComposerEntry(win, doc);
-      if (!o) { try { dumpPage(doc, true); } catch (eD) {} report("no-composer", "không thấy ô soạn bài trên trang nhóm"); return; }
+      if (!o) { try { dumpPage(doc, true); } catch (eD) {} (function () {
+        var dn2 = laTrangDangNhap(win, doc, win.location.href || "");
+        if (dn2) { report("logged-out", dn2.slice(0, 160)); return; }
+        report("no-composer", "không thấy ô soạn bài trên trang nhóm");
+      })(); return; }
       report("composer-found", textOf(o) + " | " + Math.round(
         o.getBoundingClientRect().width) + "px");
       clickIt(win, o);
@@ -1838,6 +2207,10 @@ if (typeof sendAsyncMessage === "function") {
       cho += 1;
       if (cho >= toi_da) {
         try { dumpPage(doc, true); } catch (eD) {}
+        // Het gio ma khong co o chon file: thuong la acc DA BI DANG XUAT (trang chi moi
+        // dang nhap). Bao dung ly do de core goi mo-dun dang nhap roi dang lai.
+        var dn1 = laTrangDangNhap(win, doc, win.location.href || "");
+        if (dn1) { report("logged-out", dn1.slice(0, 160)); return; }
         report("no-file-input", "chờ " + cho + " giây mà trang chưa có ô chọn file");
         return;
       }
@@ -1985,7 +2358,11 @@ if (typeof sendAsyncMessage === "function") {
     }
     var o = findComposerEntry(win, doc);
     if (!o) {
-      try { dumpPage(doc, true); } catch (eD) {} report("no-composer", "không thấy ô soạn bài trên trang nhóm");
+      try { dumpPage(doc, true); } catch (eD) {} (function () {
+        var dn2 = laTrangDangNhap(win, doc, win.location.href || "");
+        if (dn2) { report("logged-out", dn2.slice(0, 160)); return; }
+        report("no-composer", "không thấy ô soạn bài trên trang nhóm");
+      })();
       return;
     }
     report("composer-found", textOf(o));
@@ -2311,6 +2688,12 @@ if (typeof sendAsyncMessage === "function") {
         report("no-publish-button", "hộp soạn bài đã đóng trước khi kịp bấm Đăng");
         return;
       }
+      var spam = canhBaoSpam(doc);
+      if (spam) {
+        win.clearInterval(timer);
+        report("spam-limit", spam);
+        return;
+      }
       var nut = dialogButtons(win, doc);
       var dung = nut.filter(function (x) { return !x.khoa; });
       var mau = dung.filter(function (x) { return x.mau; });
@@ -2340,6 +2723,30 @@ if (typeof sendAsyncMessage === "function") {
     }, 1000);
   }
 
+  // Facebook chan dang vi SPAM: hop soan bai hien dong chu do, nut Dang van bam duoc
+  // nhung bai KHONG len. Bat ca tieng Viet lan tieng Anh; phai co CA "spam" lan cum
+  // "gioi han tan suat" de khong nham voi chu spam o cho khac trong trang nhom.
+  var SPAM_CHU = new RegExp(
+    "(t\u1ea7n su\u1ea5t b\u1ea1n \u0111\u0103ng|gi\u1edbi h\u1ea1n t\u1ea7n su\u1ea5t"
+    + "|limit how often|limit how frequently|limit the rate)", "i");
+
+  /** Dong canh bao SPAM dang hien (hoac "" neu khong co). */
+  function canhBaoSpam(doc) {
+    var chu = "";
+    try {
+      var goc = openDialog(doc) || doc.body;
+      chu = (goc && goc.innerText) || "";
+    } catch (e) { return ""; }
+    if (!/spam/i.test(chu) || !SPAM_CHU.test(chu)) { return ""; }
+    var dong = chu.split("\n");
+    for (var i = 0; i < dong.length; i++) {
+      if (/spam/i.test(dong[i]) || SPAM_CHU.test(dong[i])) {
+        return dong[i].trim().slice(0, 200);
+      }
+    }
+    return chu.trim().slice(0, 200);
+  }
+
   function waitGroupDone(win, doc, cmd) {
     var giay = 0;
     var timer = win.setInterval(function () {
@@ -2347,6 +2754,12 @@ if (typeof sendAsyncMessage === "function") {
       if (!openDialog(doc)) {
         win.clearInterval(timer);
         report("publish-done", "hộp soạn bài đã đóng sau " + giay + " giây");
+        return;
+      }
+      var spam2 = canhBaoSpam(doc);
+      if (spam2) {
+        win.clearInterval(timer);
+        report("spam-limit", spam2);
         return;
       }
       if (giay >= Math.max(30, cmd.doneTimeout || 300)) {
@@ -2358,6 +2771,46 @@ if (typeof sendAsyncMessage === "function") {
   }
 
   /* -------------------------------------------------------------- khoi dong */
+
+  /** Lay document cua cua so (co the chua san sang). */
+  function doc0(win) {
+    try { return win.document; } catch (e) { return null; }
+  }
+
+  /** Trang dang mo CO PHAI trang dang nhap khong -> tra ly do, "" la khong.
+   *
+   * Khong chi do mot chuoi URL: Facebook da vang acc ra nhieu dia chi khac nhau --
+   * /login, /login.php, va "/index.php?next=..." (anh nguoi dung 02/10). Chac an nhat
+   * la do CHINH CAI FORM dang nhap (o email + o mat khau) dang hien tren trang.
+   */
+  // Business Suite KHONG dua ve /login khi het phien: no giu nguyen URL composer va hien
+  // trang chao "Đăng nhập vào công cụ kinh doanh của Meta / Tiếp tục bằng Facebook"
+  // (da do that 02/10). Khong co o email/mat khau nen phai do theo CHU.
+  var BS_DANG_NHAP = new RegExp(
+    "\u0111\u0103ng nh\u1eadp v\u00e0o c\u00f4ng c\u1ee5 kinh doanh"
+    + "|ti\u1ebfp t\u1ee5c b\u1eb1ng facebook"
+    + "|log in to .{0,24}business tools|continue with facebook", "i");
+
+  function laTrangDangNhap(win, doc, href) {
+    href = href || "";
+    if (href.indexOf("facebook.com") === -1) { return ""; }
+    if (href.indexOf("facebook.com/login") !== -1) { return href; }
+    if (!doc) { return ""; }
+    try {
+      var email = doc.querySelector('input[name="email"], input#email');
+      var pass = doc.querySelector('input[name="pass"], input#pass');
+      if (email && pass && email.offsetParent && pass.offsetParent) {
+        return href + " (có form đăng nhập)";
+      }
+    } catch (e) {}
+    try {
+      var chu = (doc.body && doc.body.innerText) || "";
+      if (BS_DANG_NHAP.test(chu)) {
+        return href + " (trang mời đăng nhập của Business Suite)";
+      }
+    } catch (e) {}
+    return "";
+  }
 
   function onPage(win) {
     var href = "";
@@ -2377,8 +2830,9 @@ if (typeof sendAsyncMessage === "function") {
       }, 12000);
       return;
     }
-    if (href.indexOf("facebook.com/login") !== -1) {
-      if (getCommand()) { report("logged-out", href.slice(0, 160)); }
+    var dn = laTrangDangNhap(win, doc0(win), href);
+    if (dn) {
+      if (getCommand()) { report("logged-out", dn.slice(0, 160)); }
       return;
     }
     var cmd = getCommand();

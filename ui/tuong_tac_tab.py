@@ -20,14 +20,26 @@ from .dialogs import AccountPickerDialog
 
 PAD = 8
 DATA = os.path.join("data", "tuong_tac.json")
+DATA_X = os.path.join("data", "tuong_tac_x.json")   # tab con X.com: cau hinh + acc RIENG
 CHECK_MS = 5 * 60 * 1000     # 5 phút: nhịp kiểm tra tới lượt chưa (nhẹ máy)
 BATCH = 10                   # mỗi nhịp xử tối đa 10 acc (không quét cả bảng liên tục)
 
 
 class TuongTacTab(ctk.CTkFrame):
-    def __init__(self, parent, app):
+    """Giao dien tuong tac dung chung cho HAI tab con.
+
+    ``platform="fb"`` (mac dinh) = acc Facebook, chay mo-dun tuong_tac nhu cu.
+    ``platform="x"`` = acc X.com (store/profile RIENG cua tab Quan ly acc X): giao dien y het,
+    nhung CO CHE tuong tac X chua lam -> bam Bat dau thi bao ro, khong mo Firefox.
+    """
+
+    def __init__(self, parent, app, platform: str = "fb", acc_store=None, profiles=None):
         super().__init__(parent, fg_color="transparent")
         self.app = app
+        self.platform = "x" if platform == "x" else "fb"
+        self._data = DATA_X if self.platform == "x" else DATA
+        self.acc_store = acc_store if acc_store is not None else getattr(app, "store", None)
+        self.profiles = profiles if profiles is not None else getattr(app, "manager", None)
         self._acc_ids: list[str] = []
         self._running = False
         self._stop = False
@@ -37,6 +49,7 @@ class TuongTacTab(ctk.CTkFrame):
         self._acc_xem: dict[str, int] = {}
         self._acc_like: dict[str, int] = {}
         self._acc_tb: dict[str, int] = {}
+        self._acc_cmt: dict[str, int] = {}
         self._build()
         self._load_cfg()
         self._nap_mau_menu()
@@ -94,18 +107,28 @@ class TuongTacTab(ctk.CTkFrame):
         dam = ctk.CTkFont(weight="bold")
         top = ctk.CTkFrame(self, fg_color="transparent")
         top.pack(fill="x", padx=PAD, pady=(PAD, 2))
-        ctk.CTkLabel(top, text="Số video muốn xem:", font=dam).pack(side="left")
+        la_x = self.platform == "x"
+        ctk.CTkLabel(top, text="Số video bấm xem:" if la_x else "Số video muốn xem:",
+                     font=dam).pack(side="left")
         self.e_video = ctk.CTkEntry(top, width=60)
-        self.e_video.insert(0, "10")
+        self.e_video.insert(0, "3" if la_x else "10")
         self.e_video.pack(side="left", padx=(4, 14))
-        ctk.CTkLabel(top, text="Số like:", font=dam).pack(side="left")
+        ctk.CTkLabel(top, text="Số bài thả tim:" if la_x else "Số like:", font=dam).pack(side="left")
         self.e_like = ctk.CTkEntry(top, width=60)
         self.e_like.insert(0, "5")
         self.e_like.pack(side="left", padx=(4, 14))
-        ctk.CTkLabel(top, text="Số thông báo đọc:", font=dam).pack(side="left")
+        # X khong co "thong bao" -> van tao o (de cau hinh/thuoc dung chung) nhung KHONG hien.
         self.e_thongbao = ctk.CTkEntry(top, width=50)
         self.e_thongbao.insert(0, "0")
-        self.e_thongbao.pack(side="left", padx=(4, 14))
+        if not la_x:
+            ctk.CTkLabel(top, text="Số thông báo đọc:", font=dam).pack(side="left")
+            self.e_thongbao.pack(side="left", padx=(4, 14))
+        # X: so bai VAO lay comment dau tien dang lai + 3-5 icon.
+        self.e_comment = ctk.CTkEntry(top, width=60)
+        self.e_comment.insert(0, "2" if la_x else "0")
+        if la_x:
+            ctk.CTkLabel(top, text="Số bài comment:", font=dam).pack(side="left")
+            self.e_comment.pack(side="left", padx=(4, 14))
         ctk.CTkLabel(top, text="Luồng:", font=dam).pack(side="left")
         self.e_luong = ctk.CTkEntry(top, width=50)
         self.e_luong.insert(0, "1")
@@ -127,6 +150,18 @@ class TuongTacTab(ctk.CTkFrame):
         self.e_gh_max.insert(0, "180")
         self.e_gh_max.pack(side="left", padx=4)
         ctk.CTkLabel(hxem, text="giây (ngẫu nhiên mỗi acc)", text_color="gray60").pack(side="left", padx=(2, 0))
+
+        # X: thoi gian DUNG LAI o MOT bai viet (mac dinh 5-10 giay, nguoi dung chinh).
+        self.e_dung_min = ctk.CTkEntry(hxem, width=50)
+        self.e_dung_min.insert(0, "5")
+        self.e_dung_max = ctk.CTkEntry(hxem, width=50)
+        self.e_dung_max.insert(0, "10")
+        if self.platform == "x":
+            ctk.CTkLabel(hxem, text="    ·  Dừng ở 1 bài: từ", font=dam).pack(side="left")
+            self.e_dung_min.pack(side="left", padx=4)
+            ctk.CTkLabel(hxem, text="đến", font=dam).pack(side="left")
+            self.e_dung_max.pack(side="left", padx=4)
+            ctk.CTkLabel(hxem, text="giây", text_color="gray60").pack(side="left", padx=(2, 0))
 
         # Hàng MẪU: chọn mẫu đã lưu -> áp vào ô cài đặt; lưu/xoá mẫu (mẫu dùng chung cho các tab khác).
         hmau = ctk.CTkFrame(self, fg_color="transparent")
@@ -162,8 +197,10 @@ class TuongTacTab(ctk.CTkFrame):
                 ("nhom", "Nhóm", 110, "w", 80),
                 ("xem", "Đã xem", 70, "center", 60),
                 ("like", "Đã like", 70, "center", 60),
-                ("tb", "TB đọc", 70, "center", 60),
-                ("tt", "Trạng thái", 160, "w", 110))
+                ("tb", "Video" if self.platform == "x" else "TB đọc", 70, "center", 60))
+        if self.platform == "x":
+            cols += (("cmt", "Comment", 80, "center", 70),)
+        cols += (("tt", "Trạng thái", 160, "w", 110),)
         left = ctk.CTkFrame(than, fg_color="transparent")
         left.pack(side="left", fill="both", expand=True)
         self.acc_tree = ttk.Treeview(left, columns=[c[0] for c in cols], show="headings",
@@ -186,14 +223,16 @@ class TuongTacTab(ctk.CTkFrame):
     # ------------------------------------------------------------------ cấu hình
     def _load_cfg(self) -> None:
         try:
-            with open(DATA, encoding="utf-8") as fh:
+            with open(self._data, encoding="utf-8") as fh:
                 d = json.load(fh)
         except (OSError, ValueError):
             return
         for e, k, mac in ((self.e_video, "so_video", "10"),
                           (self.e_like, "so_like", "5"), (self.e_delay, "delay", "600"),
                           (self.e_thongbao, "so_thong_bao", "0"), (self.e_luong, "so_luong", "1"),
-                          (self.e_gh_min, "gioi_han_min", "60"), (self.e_gh_max, "gioi_han_max", "180")):
+                          (self.e_gh_min, "gioi_han_min", "60"), (self.e_gh_max, "gioi_han_max", "180"),
+                          (self.e_dung_min, "dung_min", "5"), (self.e_dung_max, "dung_max", "10"),
+                          (self.e_comment, "so_comment", "2" if self.platform == "x" else "0")):
             e.delete(0, "end")
             e.insert(0, str(d.get(k, mac)))
         self._acc_ids = [str(x) for x in (d.get("acc_ids") or [])]
@@ -203,10 +242,12 @@ class TuongTacTab(ctk.CTkFrame):
              "so_like": self._int(self.e_like, 5), "delay": self._int(self.e_delay, 600),
              "so_thong_bao": self._int(self.e_thongbao, 0), "so_luong": self._int(self.e_luong, 1),
              "gioi_han_min": self._int(self.e_gh_min, 60), "gioi_han_max": self._int(self.e_gh_max, 180),
+             "dung_min": self._int(self.e_dung_min, 5), "dung_max": self._int(self.e_dung_max, 10),
+             "so_comment": self._int(self.e_comment, 0),
              "acc_ids": self._acc_ids}
         try:
-            os.makedirs(os.path.dirname(DATA), exist_ok=True)
-            with open(DATA, "w", encoding="utf-8") as fh:
+            os.makedirs(os.path.dirname(self._data), exist_ok=True)
+            with open(self._data, "w", encoding="utf-8") as fh:
                 json.dump(d, fh, ensure_ascii=False, indent=2)
         except OSError:
             pass
@@ -220,7 +261,7 @@ class TuongTacTab(ctk.CTkFrame):
 
     # ------------------------------------------------------------------ acc
     def _pick_accounts(self) -> None:
-        chon = AccountPickerDialog(self.app, self.app.store.accounts, self._acc_ids).show()
+        chon = AccountPickerDialog(self.app, self.acc_store.accounts, self._acc_ids).show()
         if chon is None:
             return
         seen, sach = set(), []
@@ -243,7 +284,7 @@ class TuongTacTab(ctk.CTkFrame):
     def _accounts(self) -> list:
         out = []
         for i in self._acc_ids:
-            a = self.app.store.get(i)
+            a = self.acc_store.get(i)
             if a:
                 out.append(a)
         return out
@@ -252,15 +293,18 @@ class TuongTacTab(ctk.CTkFrame):
         tree = self.acc_tree
         tree.delete(*tree.get_children())
         for ma in self._acc_ids:
-            a = self.app.store.get(ma)
+            a = self.acc_store.get(ma)
             con = a is not None
             hien = ma if con else f"{ma} (mất)"
             ten = (getattr(a, "fb_name", "") or getattr(a, "name", "") or "") if con else ""
             nhom = (getattr(a, "group", "") or "") if con else ""
             tt = self._acc_tt.get(ma, "chờ chạy" if con else "mất profile")
-            tree.insert("", "end", iid=ma, values=(hien, ten, nhom,
-                        self._acc_xem.get(ma, ""), self._acc_like.get(ma, ""),
-                        self._acc_tb.get(ma, ""), tt))
+            gt = [hien, ten, nhom, self._acc_xem.get(ma, ""), self._acc_like.get(ma, ""),
+                  self._acc_tb.get(ma, "")]
+            if self.platform == "x":
+                gt.append(self._acc_cmt.get(ma, ""))
+            gt.append(tt)
+            tree.insert("", "end", iid=ma, values=tuple(gt))
 
     def _cap_nhat_dong(self, acc_id: str, info: dict) -> None:
         if "tt" in info:
@@ -271,11 +315,15 @@ class TuongTacTab(ctk.CTkFrame):
             self._acc_like[acc_id] = info["like"]
         if info.get("tb") is not None:
             self._acc_tb[acc_id] = info["tb"]
+        if info.get("cmt") is not None:
+            self._acc_cmt[acc_id] = info["cmt"]
         if self.acc_tree.exists(acc_id):
             self.acc_tree.set(acc_id, "tt", self._acc_tt.get(acc_id, ""))
             self.acc_tree.set(acc_id, "xem", self._acc_xem.get(acc_id, ""))
             self.acc_tree.set(acc_id, "like", self._acc_like.get(acc_id, ""))
             self.acc_tree.set(acc_id, "tb", self._acc_tb.get(acc_id, ""))
+            if self.platform == "x":
+                self.acc_tree.set(acc_id, "cmt", self._acc_cmt.get(acc_id, ""))
 
     # ------------------------------------------------------------------ log / trạng thái
     def _log(self, chu: str) -> None:
@@ -300,10 +348,18 @@ class TuongTacTab(ctk.CTkFrame):
         self._stop = False
         self.btn_start.configure(state="disabled")
         self.btn_stop.configure(state="normal")
-        self._log(f"=== BẮT ĐẦU tương tác {len(accs)} acc: {self._int(self.e_video, 10)} video, "
-                  f"{self._int(self.e_like, 5)} like, giới hạn {self._int(self.e_gh_min, 60)}–"
-                  f"{self._int(self.e_gh_max, 180)} giây/acc (ngẫu nhiên); "
-                  f"hết lượt chờ {self._int(self.e_delay, 600)} phút ===")
+        if self.platform == "x":
+            self._log(f"=== BẮT ĐẦU tương tác X {len(accs)} acc: thả tim {self._int(self.e_like, 5)} bài, "
+                      f"bấm xem {self._int(self.e_video, 3)} video, "
+                      f"comment {self._int(self.e_comment, 0)} bài, dừng "
+                      f"{self._int(self.e_dung_min, 5)}–{self._int(self.e_dung_max, 10)} giây/bài, "
+                      f"giới hạn {self._int(self.e_gh_min, 60)}–{self._int(self.e_gh_max, 180)} giây/acc; "
+                      f"hết lượt chờ {self._int(self.e_delay, 600)} phút ===")
+        else:
+            self._log(f"=== BẮT ĐẦU tương tác {len(accs)} acc: {self._int(self.e_video, 10)} video, "
+                      f"{self._int(self.e_like, 5)} like, giới hạn {self._int(self.e_gh_min, 60)}–"
+                      f"{self._int(self.e_gh_max, 180)} giây/acc (ngẫu nhiên); "
+                      f"hết lượt chờ {self._int(self.e_delay, 600)} phút ===")
         self._chay_luot()
 
     def _stop_run(self) -> None:
@@ -331,15 +387,26 @@ class TuongTacTab(ctk.CTkFrame):
         gh_max = max(gh_min, self._int(self.e_gh_max, 180))     # y >= x (giây)
         delay = self._int(self.e_delay, 600)
 
+        so_comment = self._int(self.e_comment, 0)
+        dung_min = max(1, self._int(self.e_dung_min, 5))
+        dung_max = max(dung_min, self._int(self.e_dung_max, 10))
+
         def work():
             from core import modun as modun_module
             nc = modun_module.ngu_canh_tu(
                 self.app, log=lambda m: self.app._post(lambda t=m: self._log(t)))
+            if self.platform == "x":
+                # Acc X dung KHO ACC + PROFILE rieng cua tab Quan ly acc X.
+                nc = modun_module.NguCanh(manager=self.profiles, store=self.acc_store,
+                                          settings=getattr(self.app, "settings", None),
+                                          log=nc.log, post=nc.post, so_luong=so_luong)
+            ma = "tuong_tac_x" if self.platform == "x" else "tuong_tac"
             try:
                 kq = modun_module.chay(
-                    "tuong_tac", nc, accs, so_video=so_video, so_like=so_like,
-                    so_thong_bao=so_thong_bao, so_luong=so_luong,
+                    ma, nc, accs, so_video=so_video, so_like=so_like,
+                    so_thong_bao=so_thong_bao, so_comment=so_comment, so_luong=so_luong,
                     gioi_han_min=gh_min, gioi_han_max=gh_max,
+                    dung_min=dung_min, dung_max=dung_max,
                     on_row=lambda aid, info: self.app._post(lambda a=aid, i=info: self._cap_nhat_dong(a, i)),
                     nen_dung=lambda: self._stop)
                 self.app._post(lambda g=kq.ghi_chu: self._log("Lượt xong: " + g))
