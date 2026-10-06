@@ -3,7 +3,8 @@
 dang lai kem 3-5 icon ngau nhien. Chay TUNG acc (song song theo
 so_luong; moi acc 1 Firefox, profile X rieng).
 
-tham_so: so_like, so_video, so_comment, gioi_han_min/gioi_han_max (GIAY, ngau nhien moi acc),
+tham_so: so_like, so_video, so_comment, so_follow, tu_khoa (list), so_bai_tim,
+  gioi_han_min/gioi_han_max (GIAY, ngau nhien moi acc),
 dung_min/dung_max (GIAY dung lai moi bai), so_luong, url,
 on_row(callable(acc_id, dict)), nen_dung(callable()->bool).
 
@@ -27,6 +28,9 @@ def chay(nc: NguCanh, accs: list, tham_so: dict) -> KetQua:
     so_like = int(tham_so.get("so_like", 0) or 0)
     so_video = int(tham_so.get("so_video", 0) or 0)
     so_comment = int(tham_so.get("so_comment", 0) or 0)
+    so_follow = int(tham_so.get("so_follow", 0) or 0)
+    so_bai_tim = int(tham_so.get("so_bai_tim", 0) or 0)
+    tu_khoa = [str(t).strip() for t in (tham_so.get("tu_khoa") or []) if str(t).strip()]
     gh_min = max(10, int(tham_so.get("gioi_han_min", 60) or 60))
     gh_max = max(gh_min, int(tham_so.get("gioi_han_max", gh_min) or gh_min))
     dung_min = max(1, int(tham_so.get("dung_min", xwatch.DUNG_MIN) or xwatch.DUNG_MIN))
@@ -36,7 +40,7 @@ def chay(nc: NguCanh, accs: list, tham_so: dict) -> KetQua:
     on_row = tham_so.get("on_row")
     nen_dung = tham_so.get("nen_dung")
     lock = threading.Lock()
-    tong = {"xem": 0, "like": 0, "video": 0, "cmt": 0}
+    tong = {"xem": 0, "like": 0, "video": 0, "cmt": 0, "follow": 0}
 
     def mot_acc(a) -> None:
         if callable(nen_dung) and nen_dung():
@@ -50,7 +54,9 @@ def chay(nc: NguCanh, accs: list, tham_so: dict) -> KetQua:
 
         def _chay_1():
             return xwatch.tuong_tac(nc.manager, a, so_like=so_like, so_video=so_video,
-                                    so_comment=so_comment, gioi_han_giay=gh, dung_min=dung_min, dung_max=dung_max,
+                                    so_comment=so_comment, so_follow=so_follow,
+                                    tu_khoa=tu_khoa, so_bai_tim=so_bai_tim,
+                                    gioi_han_giay=gh, dung_min=dung_min, dung_max=dung_max,
                                     url=url, log=nc.log)
 
         r = _chay_1()
@@ -71,13 +77,21 @@ def chay(nc: NguCanh, accs: list, tham_so: dict) -> KetQua:
             tong["like"] += int(r.get("like") or 0)
             tong["video"] += int(r.get("video") or 0)
             tong["cmt"] += int(r.get("cmt") or 0)
+            tong["follow"] = tong.get("follow", 0) + int(r.get("follow") or 0)
             if r.get("ok"):
                 kq.them_ok(a.id)
                 tt = (f"xong: xem {r.get('xem')} bài, tim {r.get('like')}, "
-                      f"video {r.get('video')}, cmt {r.get('cmt')}")
+                      f"video {r.get('video')}, cmt {r.get('cmt')}, follow {r.get('follow', 0)}")
             else:
                 kq.them_loi(a.id, r.get("detail") or r.get("state") or "lỗi")
-                tt = f"lỗi: {r.get('state')}"
+                # Noi RO ly do thay vi ma trang thai tron: nguoi dung thay "lỗi: vpn-loi"
+                # khong hieu la KHONG CHAY GI CA (khong tim, khong comment) — 06/10.
+                tt = {"vpn-loi": "⛔ VPN chưa nối — KHÔNG lướt, không tim/comment",
+                      "logged-out": "⛔ acc đã đăng xuất x.com",
+                      "x-locked": "⛔ acc bị X khoá/treo",
+                      "timeout": "⏱ hết giờ mà chưa xong",
+                      "browser-gone": "⛔ trình duyệt bị đóng giữa chừng",
+                      }.get(str(r.get("state") or ""), f"lỗi: {r.get('state')}")
         if callable(on_row):
             try:
                 on_row(a.id, {"tt": tt, "xem": r.get("xem"), "like": r.get("like"),
@@ -97,7 +111,7 @@ def chay(nc: NguCanh, accs: list, tham_so: dict) -> KetQua:
     kq.ghi_chu = (f"tương tác X {len(accs)} acc ({workers} luồng) — tổng xem {tong['xem']} bài, "
                   f"tim {tong['like']}, video {tong['video']}, comment {tong['cmt']}")
     kq.du_lieu = {"tong_xem": tong["xem"], "tong_like": tong["like"], "tong_video": tong["video"],
-                  "tong_cmt": tong["cmt"]}
+                  "tong_cmt": tong["cmt"], "tong_follow": tong.get("follow", 0)}
     return kq
 
 

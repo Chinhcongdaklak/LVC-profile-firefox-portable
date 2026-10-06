@@ -47,6 +47,41 @@ function xwNenTim(conTim, conBai, rnd) {
   var r = typeof rnd === "number" ? rnd : Math.random();
   return r < Math.max(0.35, conTim / Math.max(1, conBai));
 }
+/* ---- NHIP COMMENT (nguoi dung chot 06/10) ------------------------------------
+ * Khong duoc comment don dap mot cho: luot ~30% thoi gian roi moi comment lan dau;
+ * giua hai comment phai luot 3-4 bai (co tha tim / xem video xen vao); moi comment
+ * mot BAI KHAC NHAU va khong gui lai noi dung da gui. */
+var CMT_BAT_DAU_TI_LE = 0.30;    // comment dau tien: sau khi da luot 30% thoi gian
+var CMT_CACH_BAI_MIN = 3;        // giua hai comment: it nhat 3 bai
+var CMT_CACH_BAI_MAX = 4;        // ... toi da 4 bai
+var CMT_XEM_VIDEO_GIAY = 5;      // bai co video thi xem ~5 giay roi moi vao comment
+var CMT_MOI_CAI_GIAY = 45;       // uoc moi comment ton ~45s (de biet khi nao "sap het gio")
+
+/** Giua hai comment thi phai luot bao nhieu bai (3-4, ngau nhien). THUAN. */
+function xwCachBai(rnd) {
+  return xwGiayDung(CMT_CACH_BAI_MIN, CMT_CACH_BAI_MAX, rnd);
+}
+
+/** Co nen COMMENT o bai nay khong. THUAN (de thuoc chay bang node).
+ *  st = {daCmt, soComment, troiMs, hanMs, baiTuCmt, cachBai, daCmtBai}
+ *    daCmt     so comment da gui          soComment  tong so can gui
+ *    troiMs    da luot bao lau            hanMs      tong thoi gian cua luot
+ *    baiTuCmt  so bai da luot ke tu comment gan nhat
+ *    cachBai   lan nay can cach bao nhieu bai (xwCachBai)
+ *    daCmtBai  bai nay da comment roi (true/false)
+ */
+function xwNenComment(st) {
+  var can = (st.soComment || 0) - (st.daCmt || 0);
+  if (can <= 0) { return false; }
+  if (st.daCmtBai) { return false; }                       // moi bai chi comment MOT lan
+  var con = Math.max(0, (st.hanMs || 0) - (st.troiMs || 0));
+  if (con <= can * CMT_MOI_CAI_GIAY * 1000) { return true; }   // sap het gio -> thoi rai
+  if (!st.daCmt) {                                          // comment DAU TIEN
+    return st.troiMs >= st.hanMs * CMT_BAT_DAU_TI_LE;
+  }
+  return (st.baiTuCmt || 0) >= (st.cachBai || CMT_CACH_BAI_MIN);
+}
+
 /** Bang icon de chen sau comment (emoji pho thong, 1 ky tu hoac co bien the mau). */
 var XW_ICONS = ["😀", "😁", "😂", "🤣", "😊", "😍", "🥰", "😎", "🤩", "🥳", "👍", "👏",
                 "🙌", "🔥", "✨", "💯", "❤️", "🧡", "💛", "💚", "💙", "💜", "🌟", "⭐",
@@ -81,17 +116,21 @@ function xwSoanComment(text, icon, toiDa) {
 }
 if (typeof module !== "undefined" && module.exports) {
   module.exports = { phanLoai: xwPhanLoai, giayDung: xwGiayDung, nenTim: xwNenTim,
-                     icons: xwIcons, soanComment: xwSoanComment, ICONS: XW_ICONS };
+                     icons: xwIcons, soanComment: xwSoanComment, ICONS: XW_ICONS,
+                     nenComment: xwNenComment, cachBai: xwCachBai,
+                     CMT: { BAT_DAU_TI_LE: CMT_BAT_DAU_TI_LE, CACH_BAI_MIN: CMT_CACH_BAI_MIN,
+                            CACH_BAI_MAX: CMT_CACH_BAI_MAX, XEM_VIDEO_GIAY: CMT_XEM_VIDEO_GIAY } };
 }
 
 if (typeof sendAsyncMessage === "function") {
 
   var lines = [];
-  var dem = { xem: 0, like: 0, video: 0, cmt: 0 };
+  var dem = { xem: 0, like: 0, video: 0, cmt: 0, follow: 0 };
   function report(state, detail, extra) {
     lines.push(state + (detail ? ": " + detail : ""));
     var obj = { state: state, detail: detail || "", log: lines.slice(-30),
-                xem: dem.xem, like: dem.like, video: dem.video, cmt: dem.cmt };
+                xem: dem.xem, like: dem.like, video: dem.video, cmt: dem.cmt,
+                follow: dem.follow };
     if (extra) { for (var k in extra) { obj[k] = extra[k]; } }
     try { sendAsyncMessage("qlfpxw:report", obj); } catch (e) {}
   }
@@ -427,7 +466,7 @@ if (typeof sendAsyncMessage === "function") {
   }
   /** Vao bai ``bai``, lay comment dau tien, dang lai + 3-5 icon, roi ve /home.
    *  ``xong(ok, moTa)``. KHONG nem; moi buoc hong deu bao ro ly do. */
-  function lamComment(win, doc, bai, xong, thu) {
+  function lamComment(win, doc, bai, xong, thu, daChu) {
     var truoc = String(win.location.href || "");
     // Phai doi SANG trang bai viet KHAC trang dang mo — con o trang bai cu thi se doc lai
     // dung comment cu (loi that 2026-10-02: 2 bai lien tiep ra cung mot comment).
@@ -452,6 +491,16 @@ if (typeof sendAsyncMessage === "function") {
             veHome(win, doc, function () { xong(false, "comment dau tien khong co chu"); });
             return;
           }
+          // KHONG gui lai noi dung da gui o bai truoc (nguoi dung 06/10: "lay 1 comment
+          // dang lai 5 lan"). So theo PHAN CHU, bo icon (icon moi lan mot khac).
+          var khoaChu = String(c.chu).replace(/\s+/g, " ").trim().toLowerCase().slice(0, 80);
+          if (daChu && khoaChu && daChu[khoaChu]) {
+            veHome(win, doc, function () {
+              xong(false, "bo qua: comment nay da dang o bai truoc (\"" + khoaChu.slice(0, 40) + "\")");
+            });
+            return;
+          }
+          if (daChu && khoaChu) { daChu[khoaChu] = 1; }
           report("progress", "comment: bai goc o article " + (c.goc + 1) + ", comment la article "
                  + (c.vi_tri + 1) + "/" + c.tong
                  + " \"" + c.chu.slice(0, 50) + "\" | " + chanDoanSoan(doc));
@@ -527,6 +576,200 @@ if (typeof sendAsyncMessage === "function") {
     });
   }
 
+  /* ---- di chuyen trong SPA (KHONG dat location.href: se huy agent) ------------- */
+  /** Bam the <a href="..."> trong trang (X router xu ly -> KHONG tai lai tai lieu). */
+  function bamLink(win, doc, href) {
+    var ds = Array.prototype.slice.call(doc.querySelectorAll('a[href="' + href + '"]'));
+    for (var i = 0; i < ds.length; i++) {
+      if (vis(ds[i])) { clickReal(win, ds[i]); return true; }
+    }
+    return false;
+  }
+
+  function oTimKiem(doc) {
+    var o = doc.querySelector('input[data-testid="SearchBox_Search_Input"]')
+         || doc.querySelector('input[enterkeyhint="search"]')
+         || doc.querySelector('input[type="text"][role="combobox"]');
+    return o && vis(o) ? o : null;
+  }
+
+  /** Go tu khoa vao o tim kiem roi MO ket qua. Tra ve qua ``xong(ok)``.
+   *  TUYET DOI khong ban su kien PHIM vao o nay: o tim cua X la role="combobox", ban don
+   *  keydown/keypress/keyup lam CHET TAB (da do that 06/10 — "Gah. Your tab just crashed.").
+   *  Thay vao do: go bang native setter + input, roi BAM goi y <a href="/search?q=..."> (SPA). */
+  function goTimKiem(win, doc, tu, xong) {
+    var o = oTimKiem(doc);
+    if (!o) { xong(false); return; }
+    withUserInput(win, function () {
+      try {
+        o.focus();
+        var set = Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value").set;
+        set.call(o, tu);
+        o.dispatchEvent(new win.Event("input", { bubbles: true }));
+      } catch (e) {}
+    });
+    // Cho X do goi y roi bam dong "/search?q=..." (hoac submit form) — KHONG dung phim.
+    cho(win, function () { return !!doc.querySelector('a[href^="/search?q="]'); }, 6000,
+        function (coGoiY) {
+          if (coGoiY) {
+            var a = doc.querySelector('a[href^="/search?q="]');
+            if (a && vis(a)) { clickReal(win, a); xong(true); return; }
+          }
+          var form = o.closest ? o.closest("form") : null;
+          if (form && form.requestSubmit) {
+            withUserInput(win, function () { try { form.requestSubmit(); } catch (e) {} });
+            xong(true);
+            return;
+          }
+          xong(false);
+        });
+  }
+
+  /* ---- FOLLOW kenh + TIM KIEM theo tu khoa ------------------------------------ */
+  //: Nut Follow that cua X mang data-testid "<id>-follow"; follow xong doi thanh "<id>-unfollow"
+  //: -> do bang testid moi CHAC, khong do theo chu (acc doi ngon ngu la hong).
+  var FOLLOW_CHU = /^(follow|theo dõi|theo doi)$/i;
+
+  function nutFollow(goc) {
+    var ds = Array.prototype.slice.call(goc.querySelectorAll('[data-testid$="-follow"]'));
+    for (var i = 0; i < ds.length; i++) {
+      if (vis(ds[i]) && FOLLOW_CHU.test(txt(ds[i]))) { return ds[i]; }
+    }
+    return null;
+  }
+
+  function daFollowRoi(goc, tid) {
+    try {
+      if (goc.querySelector('[data-testid="' + tid.replace(/-follow$/, "-unfollow") + '"]')) { return true; }
+      // Mot so cho X khong doi testid ma chi doi CHU ("Following"/"Dang theo doi") -> nut
+      // "-follow" bien mat hoac khong con chu Follow cung la DA FOLLOW.
+      var n = goc.querySelector('[data-testid="' + tid + '"]');
+      return !n || !FOLLOW_CHU.test(txt(n));
+    } catch (e) { return false; }
+  }
+
+  /** Bam nut Follow dau tien thay duoc trong ``goc``; XAC MINH da doi sang "-unfollow". */
+  function bamFollow(win, goc, xong) {
+    var nut = nutFollow(goc);
+    if (!nut) { xong(false, "khong thay nut Follow"); return; }
+    var tid = nut.getAttribute("data-testid") || "";
+    // GHIM theo dung testid: hoverRoiBamLay co lay lai phan tu, ma sau cu bam dau "nut Follow
+    // dau tien" co the da la nut CUA NGUOI KHAC -> xac minh truot (do that 06/10).
+    var lay = function () {
+      try { return goc.querySelector('[data-testid="' + tid + '"]'); } catch (e) { return null; }
+    };
+    // CUON nut vao tam nhin truoc: nut Follow o thanh ben phai co the nam ngoai man hinh ->
+    // bam tong hop khong an (do that 06/10: bam o trang bai truot, cung acc do follow duoc o trang goi y).
+    try { withUserInput(win, function () { nut.scrollIntoView({ block: "center" }); }); } catch (e) {}
+    hoverRoiBamLay(win, lay, function (ok) {
+      if (!ok) { xong(false, "bam Follow khong an"); return; }
+      cho(win, function () { return daFollowRoi(goc, tid); }, 8000, function (doi) {
+        if (doi) { dem.follow += 1; }
+        xong(!!doi, (doi ? "da follow " : "bam roi nhung chua doi sang Following: ")
+             + tid.replace(/-follow$/, ""));
+      });
+    });
+  }
+
+  /** Follow ``can`` kenh o trang goi y (x.com/i/connect_people). */
+  function chayFollow(win, doc, can, hetGio, xong) {
+    if (can <= 0) { xong(); return; }
+    report("progress", "sang trang goi y de follow " + can + " kenh");
+    if (!bamLink(win, doc, "/i/connect_people")) {
+      report("progress", "khong thay muc 'Follow' o thanh ben — bo qua pha follow");
+      xong(); return;
+    }
+    cho(win, function () { return !!nutFollow(doc); }, 15000, function (co) {
+      if (!co) { report("progress", "trang goi y khong co nut Follow nao"); xong(); return; }
+      (function ke() {
+        if (dem.follow >= can || hetGio()) { xong(); return; }
+        if (!nutFollow(doc)) {
+          try { withUserInput(win, function () { win.scrollBy({ top: 600, left: 0, behavior: "auto" }); }); }
+          catch (e) {}
+          win.setTimeout(function () { nutFollow(doc) ? ke() : xong(); }, 1500);
+          return;
+        }
+        bamFollow(win, doc, function (ok, mo) {
+          report("progress", "follow " + dem.follow + "/" + can + " — " + mo);
+          win.setTimeout(ke, ok ? 1500 : 800);
+        });
+      })();
+    });
+  }
+
+  /** Tim kiem tung tu khoa -> mo ``soBai`` bai -> follow kenh cua bai do -> quay lai. */
+  function chayTimKiem(win, doc, dsTu, soBai, hetGio, xong) {
+    if (!dsTu.length || soBai <= 0) { xong(); return; }
+    var k = 0;
+    (function tuKe() {
+      if (k >= dsTu.length || hetGio()) { xong(); return; }
+      var tu = dsTu[k++];
+      report("progress", "tim kiem: " + tu);
+      // Phai go vao O TIM (SPA). Chua thay o tim -> sang /explore truoc.
+      (function moOTim(lan) {
+        if (oTimKiem(doc)) { goRoiCho(); return; }
+        if (lan > 2) { report("progress", "khong thay o tim kiem"); win.setTimeout(tuKe, 800); return; }
+        bamLink(win, doc, "/explore");
+        cho(win, function () { return !!oTimKiem(doc); }, 8000, function () {
+          win.setTimeout(function () { moOTim(lan + 1); }, 600);
+        });
+      })(0);
+
+      function goRoiCho() {
+      goTimKiem(win, doc, tu, function (goOk) {
+      if (!goOk) { report("progress", "khong go duoc tu khoa"); win.setTimeout(tuKe, 800); return; }
+      cho(win, function () { return /\/search\b/.test(String(win.location.href || ""))
+                                    && dsBai(doc).length > 0; }, 15000, function (co) {
+        if (!co) { report("progress", "tim '" + tu + "' khong ra bai nao"); win.setTimeout(tuKe, 800); return; }
+        var daMo = 0, daLink = {};
+        (function baiKe() {
+          if (daMo >= soBai || hetGio()) { win.setTimeout(tuKe, 600); return; }
+          // Dang o trang KET QUA thi moi chon bai; o trang bai thi quay ve truoc.
+          if (!/\/search\b/.test(String(win.location.href || ""))) {
+            try { win.history.back(); } catch (e) {}
+            cho(win, function () { return /\/search\b/.test(String(win.location.href || "")); },
+                8000, function () { win.setTimeout(baiKe, 900); });
+            return;
+          }
+          var ds = dsBai(doc), lk = null;
+          for (var i = 0; i < ds.length; i++) {
+            var a = linkBai(ds[i]);
+            if (a && !daLink[a.getAttribute("href") || ""]) { lk = a; break; }
+          }
+          if (!lk) {
+            try { withUserInput(win, function () { win.scrollBy({ top: 700, left: 0, behavior: "auto" }); }); }
+            catch (e) {}
+            win.setTimeout(function () { daMo += 0.0001; baiKe(); }, 1200);   // cuon roi thu lai
+            return;
+          }
+          daLink[lk.getAttribute("href") || ""] = 1;
+          var truoc = String(win.location.href || "");
+          clickReal(win, lk);
+          cho(win, function () { return String(win.location.href || "") !== truoc; }, 9000, function (doi) {
+            if (!doi) { win.setTimeout(baiKe, 800); return; }
+            daMo += 1;
+            report("progress", "mo bai " + Math.floor(daMo) + "/" + soBai + " cua '" + tu + "'");
+            // CHO khung "Relevant people" dung xong moi bam: bam ngay sau khi chuyen trang SPA
+            // thi nut chua hydrate -> bam truot / khong thay nut (do that 06/10, 2 lan).
+            cho(win, function () { return !!nutFollow(doc); }, 9000, function (coNut) {
+              if (!coNut) {
+                report("progress", "trang bai khong co nut Follow (co the da follow roi)");
+                win.setTimeout(baiKe, 1000);
+                return;
+              }
+              bamFollow(win, doc, function (ok, mo) {
+                report("progress", "follow kenh cua bai: " + mo);
+                win.setTimeout(baiKe, 1200);
+              });
+            });
+          });
+        })();
+      });
+      });
+      }
+    })();
+  }
+
   /* ---- vong tuong tac -------------------------------------------------------- */
   var DANG_CHAY = false;
   function chayTuongTac(win, doc, cmd) {
@@ -540,18 +783,35 @@ if (typeof sendAsyncMessage === "function") {
     var daXem = [];          // node cac bai da dung lai (tranh xem lai khi DOM doi)
     var daId = {};           // id bai da xem (ben vung khi ve tu trang bai -> DOM dung moi)
     var khongThayLan = 0;
+    // Nhip COMMENT: moi bai chi comment mot lan, khong gui trung noi dung, va phai
+    // luot xen ke (xem muc CMT_* o dau file).
+    var daCmtBai = {};       // id bai DA comment
+    var daCmtChu = {};       // noi dung comment DA gui (chuan hoa) -> khong gui lai
+    var baiTuCmt = 0;        // so bai da luot ke tu comment gan nhat
+    var cachBai = xwCachBai();
 
-    report("on-home", "bat dau luot newfeed: " + soLike + " tim, " + soVideo + " video, "
-           + soComment + " comment, " + Math.round(han / 1000) + "s, dung "
-           + dungMin + "-" + dungMax + "s/bai");
+    var soFollow = parseInt(cmd.so_follow || 0, 10) || 0;
+    var soBaiTim = parseInt(cmd.so_bai_tim || 0, 10) || 0;
+    var dsTuKhoa = [];
+    try {
+      dsTuKhoa = (cmd.tu_khoa || []).map(function (t) { return String(t || "").trim(); })
+                                    .filter(function (t) { return t; });
+    } catch (e) { dsTuKhoa = []; }
+
+    report("on-home", "bat dau: " + soLike + " tim, " + soVideo + " video, "
+           + soComment + " comment, " + soFollow + " follow, "
+           + dsTuKhoa.length + " tu khoa x " + soBaiTim + " bai, "
+           + Math.round(han / 1000) + "s, dung " + dungMin + "-" + dungMax + "s/bai");
 
     function conGiay() { return Math.max(0, Math.round((han - (Date.now() - batDau)) / 1000)); }
 
     function xong(vi) {
       report("done", "xong: xem " + dem.xem + " bai, tim " + dem.like + "/" + soLike
              + ", video " + dem.video + "/" + soVideo + ", comment " + dem.cmt + "/" + soComment
+             + ", follow " + dem.follow + "/" + soFollow
              + (vi ? " (" + vi + ")" : ""));
     }
+    function hetGio() { return Date.now() - batDau >= han; }
 
     function baiKeTiep() {
       var ds = dsBai(doc);
@@ -631,17 +891,35 @@ if (typeof sendAsyncMessage === "function") {
 
         function ketBai() {
           // COMMENT: vao bai, lay comment dau tien dang lai + 3-5 icon (lam SAU CUNG vi roi /home).
-          if (dem.cmt < soComment && Date.now() - batDau < han && linkBai(bai)) {
+          // Nhip do xwNenComment quyet dinh: luot ~30% thoi gian moi comment lan dau, giua hai
+          // lan phai luot 3-4 bai, moi bai mot lan. Truoc day chi kiem "con thieu comment" nen
+          // bai nao cung comment lien tay -> nguoi dung thay "lay 1 comment dang lai 5 lan".
+          var nen = Date.now() - batDau < han && !!linkBai(bai) && xwNenComment({
+            daCmt: dem.cmt, soComment: soComment, troiMs: Date.now() - batDau, hanMs: han,
+            baiTuCmt: baiTuCmt, cachBai: cachBai, daCmtBai: !!(maBai && daCmtBai[maBai])
+          });
+          if (!nen) { baiTuCmt += 1; baoRoiDoi(); return; }
+
+          function vaoComment() {
             report("progress", "bai " + dem.xem + ": vao bai lay comment dau tien... (comment "
-                   + dem.cmt + "/" + soComment + ")");
+                   + dem.cmt + "/" + soComment + ", da luot " + baiTuCmt + " bai tu lan truoc)");
+            if (maBai) { daCmtBai[maBai] = 1; }   // danh dau TRUOC: hong cung khong lam lai bai nay
             lamComment(win, doc, bai, function (ok, mo) {
               if (ok) { dem.cmt += 1; }
+              baiTuCmt = 0;
+              cachBai = xwCachBai();              // lan sau cach 3-4 bai (ngau nhien lai)
               viec.push(mo || (ok ? "comment" : "comment hong"));
               baoRoiDoi();
-            }, !!cmd.thu);
-            return;
+            }, !!cmd.thu, daCmtChu);
           }
-          baoRoiDoi();
+
+          // Bai co VIDEO -> bam xem ~5 giay roi moi vao comment (nguoi that xem roi moi binh luan).
+          var nvc = coVideo(bai) ? nutXemVideo(bai) : null;
+          if (!nvc) { vaoComment(); return; }
+          if (clickReal(win, nvc)) {
+            viec.push("xem video " + CMT_XEM_VIDEO_GIAY + "s truoc khi comment");
+          }
+          win.setTimeout(vaoComment, CMT_XEM_VIDEO_GIAY * 1000);
         }
         function baoRoiDoi() {
           report("progress", "bai " + dem.xem + ": dung " + giay + "s"
@@ -672,7 +950,16 @@ if (typeof sendAsyncMessage === "function") {
       });
     }
 
-    win.setTimeout(motBai, 1500);
+    // THU TU: tim kiem theo tu khoa (mo bai + follow kenh cua bai) -> follow them o trang goi y
+    // -> con gio thi luot /home nhu cu. Moi pha deu bi chan boi gioi han giay.
+    win.setTimeout(function () {
+      chayTimKiem(win, doc, dsTuKhoa, soBaiTim, hetGio, function () {
+        chayFollow(win, doc, soFollow, hetGio, function () {
+          if (hetGio()) { xong("het gio sau follow/tim kiem"); return; }
+          veHome(win, doc, function () { win.setTimeout(motBai, 1200); });
+        });
+      });
+    }, 1500);
   }
 
   /* ---- SOI (chan doan, chi doc + thu go 1 lan) -------------------------------- */

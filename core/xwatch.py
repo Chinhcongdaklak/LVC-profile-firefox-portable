@@ -60,6 +60,7 @@ def _read_result(profile_dir: str) -> Optional[dict]:
 
 
 def tuong_tac(manager, account, *, so_like: int = 0, so_video: int = 0, so_comment: int = 0,
+              so_follow: int = 0, tu_khoa=None, so_bai_tim: int = 0,
               gioi_han_giay: int = 120, dung_min: int = DUNG_MIN, dung_max: int = DUNG_MAX,
               url: str = X_HOME_URL, timeout: Optional[float] = None, thu: bool = False,
               log: Optional[Callable[[str], None]] = None) -> dict:
@@ -87,8 +88,10 @@ def tuong_tac(manager, account, *, so_like: int = 0, so_video: int = 0, so_comme
         pass
     manager.configure(account)
     _clear(profile)
+    ds_tu = [str(t).strip() for t in (tu_khoa or []) if str(t).strip()]
     put_command(profile, action="xwatch", url=url, so_like=int(so_like), so_video=int(so_video),
-                so_comment=int(so_comment), gioi_han_giay=han, dung_min=dmin, dung_max=dmax,
+                so_comment=int(so_comment), so_follow=int(so_follow), tu_khoa=ds_tu,
+                so_bai_tim=int(so_bai_tim), gioi_han_giay=han, dung_min=dmin, dung_max=dmax,
                 thu=bool(thu))
 
     noi(f"[{account.id}] mo Firefox → x.com/home: {so_like} tim, {so_video} video, "
@@ -98,22 +101,24 @@ def tuong_tac(manager, account, *, so_like: int = 0, so_video: int = 0, so_comme
     if not cong["ok"]:
         _clear(profile)
         return {"ok": False, "state": "vpn-loi", "xem": 0, "like": 0, "video": 0, "cmt": 0,
+                "follow": 0,
                 "detail": f"VPN CHƯA NỐI: {cong['detail']}"}
 
-    ket = {"ok": False, "state": "", "xem": 0, "like": 0, "video": 0, "cmt": 0, "detail": ""}
+    ket = {"ok": False, "state": "", "xem": 0, "like": 0, "video": 0, "cmt": 0,
+           "follow": 0, "detail": ""}
     seen: set = set()
-    deadline = time.time() + timeout
-    from core.fbbusiness import app_dir_cua, firefox_pids
-    app_dir = app_dir_cua(manager, account)
-    da_thay_browser = False
-    ke_tiep_kiem = 0.0
+    # TRINH DUYET DA MO (qua cong VPN) -> tat ca phai nam trong try/finally.
     try:
+        deadline = time.time() + timeout
+        from core import procutil
+        from core.fbbusiness import app_dir_cua
+        app_dir = app_dir_cua(manager, account)
+        canh_ff = procutil.CanhTrinhDuyet(app_dir)
+        ke_tiep_kiem = 0.0
         while time.time() < deadline:
             if app_dir and time.time() >= ke_tiep_kiem:
                 ke_tiep_kiem = time.time() + 3.0
-                if firefox_pids(app_dir):
-                    da_thay_browser = True
-                elif da_thay_browser:
+                if canh_ff.da_dong():
                     ket.update(ok=False, state="browser-gone",
                                detail="trình duyệt đã đóng giữa chừng")
                     break
@@ -125,6 +130,7 @@ def tuong_tac(manager, account, *, so_like: int = 0, so_video: int = 0, so_comme
                 ket["like"] = int(r.get("like") or ket["like"])
                 ket["video"] = int(r.get("video") or ket["video"])
                 ket["cmt"] = int(r.get("cmt") or ket["cmt"])
+                ket["follow"] = int(r.get("follow") or ket["follow"])
                 key = st + "|" + det
                 if key not in seen:
                     seen.add(key)
@@ -151,5 +157,5 @@ def tuong_tac(manager, account, *, so_like: int = 0, so_video: int = 0, so_comme
             pass
         _clear(profile)
     noi(f"[{account.id}] KẾT QUẢ tương tác X: {ket['state']} — xem {ket['xem']} bài, "
-        f"tim {ket['like']}, video {ket['video']}, comment {ket['cmt']}")
+        f"tim {ket['like']}, video {ket['video']}, comment {ket['cmt']}, follow {ket['follow']}")
     return ket

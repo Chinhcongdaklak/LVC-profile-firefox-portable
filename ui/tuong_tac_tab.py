@@ -50,6 +50,7 @@ class TuongTacTab(ctk.CTkFrame):
         self._acc_like: dict[str, int] = {}
         self._acc_tb: dict[str, int] = {}
         self._acc_cmt: dict[str, int] = {}
+        self._acc_follow: dict[str, int] = {}
         self._build()
         self._load_cfg()
         self._nap_mau_menu()
@@ -71,8 +72,11 @@ class TuongTacTab(ctk.CTkFrame):
         if not m:
             return
         giay = max(1, int(m.get("so_phut", 1))) * 60      # mẫu lưu phút -> đổi ra giây cho giới hạn
-        for e, v in ((self.e_video, m["so_video"]), (self.e_like, m["so_like"]),
-                     (self.e_gh_min, giay), (self.e_gh_max, giay)):
+        o = [(self.e_video, m["so_video"]), (self.e_like, m["so_like"]),
+             (self.e_gh_min, giay), (self.e_gh_max, giay)]
+        if self.platform == "x":
+            o.append((self.e_comment, m.get("so_comment", 0)))
+        for e, v in o:
             e.delete(0, "end"); e.insert(0, str(v))
         self.set_status(f"Đã áp mẫu '{m['ten']}'.")
 
@@ -82,13 +86,17 @@ class TuongTacTab(ctk.CTkFrame):
         from .dialogs import SimplePromptDialog
         phut = max(1, round(self._int(self.e_gh_max, 60) / 60))
         goi_y = f"{phut} phút · {self._int(self.e_like, 0)} like · {self._int(self.e_video, 1)} video"
+        if self.platform == "x" and self._int(self.e_comment, 0):
+            goi_y += f" · {self._int(self.e_comment, 0)} comment"
         ten = SimplePromptDialog(self.app, "Lưu mẫu tương tác", "Tên mẫu:", goi_y).show()
         if not ten:
             return
         ten = ten.strip()
         ds = [m for m in ttm.nap() if m["ten"] != ten]
         ds.append({"ten": ten, "so_phut": phut,
-                   "so_like": self._int(self.e_like, 0), "so_video": self._int(self.e_video, 1)})
+                   "so_like": self._int(self.e_like, 0), "so_video": self._int(self.e_video, 1),
+                   # Chi co y nghia voi acc X; tab Facebook luu 0.
+                   "so_comment": self._int(self.e_comment, 0) if self.platform == "x" else 0})
         ttm.luu(ds)
         self._nap_mau_menu()
         self.mau_menu.set(ten)
@@ -163,6 +171,33 @@ class TuongTacTab(ctk.CTkFrame):
             self.e_dung_max.pack(side="left", padx=4)
             ctk.CTkLabel(hxem, text="giây", text_color="gray60").pack(side="left", padx=(2, 0))
 
+        # Hàng FOLLOW + TÌM KIẾM (CHỈ tab X) — người dùng chốt 06/10.
+        if self.platform == "x":
+            hfl = ctk.CTkFrame(self, fg_color="transparent")
+            hfl.pack(fill="x", padx=PAD, pady=(0, 2))
+            ctk.CTkLabel(hfl, text="Follow kênh:", font=dam).pack(side="left")
+            self.e_follow = ctk.CTkEntry(hfl, width=50)
+            self.e_follow.insert(0, "0")
+            self.e_follow.pack(side="left", padx=4)
+            ctk.CTkLabel(hfl, text="kênh (ở trang gợi ý)", text_color="gray60").pack(side="left")
+            ctk.CTkLabel(hfl, text="    ·  Mỗi từ khoá mở", font=dam).pack(side="left")
+            self.e_bai_tim = ctk.CTkEntry(hfl, width=50)
+            self.e_bai_tim.insert(0, "0")
+            self.e_bai_tim.pack(side="left", padx=4)
+            ctk.CTkLabel(hfl, text="bài (mở bài xong tự follow kênh của bài)",
+                         text_color="gray60").pack(side="left")
+
+            htu = ctk.CTkFrame(self, fg_color="transparent")
+            htu.pack(fill="x", padx=PAD, pady=(0, 2))
+            ctk.CTkLabel(htu, text="Từ khoá tìm kiếm:", font=dam).pack(side="left", anchor="n")
+            self.o_tu_khoa = ctk.CTkTextbox(htu, height=52)
+            self.o_tu_khoa.pack(side="left", fill="x", expand=True, padx=(4, 0))
+            ctk.CTkLabel(htu, text="mỗi dòng (hoặc dấu phẩy) một từ khoá",
+                         text_color="gray60").pack(side="left", padx=(6, 0))
+        else:
+            self.e_follow = self.e_bai_tim = None
+            self.o_tu_khoa = None
+
         # Hàng MẪU: chọn mẫu đã lưu -> áp vào ô cài đặt; lưu/xoá mẫu (mẫu dùng chung cho các tab khác).
         hmau = ctk.CTkFrame(self, fg_color="transparent")
         hmau.pack(fill="x", padx=PAD, pady=(0, 2))
@@ -199,7 +234,7 @@ class TuongTacTab(ctk.CTkFrame):
                 ("like", "Đã like", 70, "center", 60),
                 ("tb", "Video" if self.platform == "x" else "TB đọc", 70, "center", 60))
         if self.platform == "x":
-            cols += (("cmt", "Comment", 80, "center", 70),)
+            cols += (("cmt", "Comment", 80, "center", 70), ("follow", "Follow", 70, "center", 60))
         cols += (("tt", "Trạng thái", 160, "w", 110),)
         left = ctk.CTkFrame(than, fg_color="transparent")
         left.pack(side="left", fill="both", expand=True)
@@ -235,6 +270,15 @@ class TuongTacTab(ctk.CTkFrame):
                           (self.e_comment, "so_comment", "2" if self.platform == "x" else "0")):
             e.delete(0, "end")
             e.insert(0, str(d.get(k, mac)))
+        if self.platform == "x":
+            for e, k, mac in ((self.e_follow, "so_follow", "0"), (self.e_bai_tim, "so_bai_tim", "0")):
+                e.delete(0, "end")
+                e.insert(0, str(d.get(k, mac)))
+            try:
+                self.o_tu_khoa.delete("1.0", "end")
+                self.o_tu_khoa.insert("1.0", "\n".join(d.get("tu_khoa") or []))
+            except Exception:  # noqa: BLE001
+                pass
         self._acc_ids = [str(x) for x in (d.get("acc_ids") or [])]
 
     def _save_cfg(self) -> None:
@@ -244,6 +288,9 @@ class TuongTacTab(ctk.CTkFrame):
              "gioi_han_min": self._int(self.e_gh_min, 60), "gioi_han_max": self._int(self.e_gh_max, 180),
              "dung_min": self._int(self.e_dung_min, 5), "dung_max": self._int(self.e_dung_max, 10),
              "so_comment": self._int(self.e_comment, 0),
+             "so_follow": self._int(self.e_follow, 0) if self.platform == "x" else 0,
+             "so_bai_tim": self._int(self.e_bai_tim, 0) if self.platform == "x" else 0,
+             "tu_khoa": self._tu_khoa(),
              "acc_ids": self._acc_ids}
         try:
             os.makedirs(os.path.dirname(self._data), exist_ok=True)
@@ -303,6 +350,7 @@ class TuongTacTab(ctk.CTkFrame):
                   self._acc_tb.get(ma, "")]
             if self.platform == "x":
                 gt.append(self._acc_cmt.get(ma, ""))
+                gt.append(self._acc_follow.get(ma, ""))
             gt.append(tt)
             tree.insert("", "end", iid=ma, values=tuple(gt))
 
@@ -317,6 +365,8 @@ class TuongTacTab(ctk.CTkFrame):
             self._acc_tb[acc_id] = info["tb"]
         if info.get("cmt") is not None:
             self._acc_cmt[acc_id] = info["cmt"]
+        if info.get("follow") is not None:
+            self._acc_follow[acc_id] = info["follow"]
         if self.acc_tree.exists(acc_id):
             self.acc_tree.set(acc_id, "tt", self._acc_tt.get(acc_id, ""))
             self.acc_tree.set(acc_id, "xem", self._acc_xem.get(acc_id, ""))
@@ -324,6 +374,7 @@ class TuongTacTab(ctk.CTkFrame):
             self.acc_tree.set(acc_id, "tb", self._acc_tb.get(acc_id, ""))
             if self.platform == "x":
                 self.acc_tree.set(acc_id, "cmt", self._acc_cmt.get(acc_id, ""))
+                self.acc_tree.set(acc_id, "follow", self._acc_follow.get(acc_id, ""))
 
     # ------------------------------------------------------------------ log / trạng thái
     def _log(self, chu: str) -> None:
@@ -336,6 +387,23 @@ class TuongTacTab(ctk.CTkFrame):
         self.app.set_status(chu)
 
     # ------------------------------------------------------------------ chạy
+    def _tu_khoa(self) -> list:
+        """List từ khoá người dùng nhập (mỗi dòng hoặc ngăn bởi dấu phẩy); bỏ dòng trống/trùng."""
+        o = getattr(self, "o_tu_khoa", None)
+        if o is None:
+            return []
+        try:
+            raw = o.get("1.0", "end")
+        except Exception:  # noqa: BLE001
+            return []
+        ra, da = [], set()
+        for dong in str(raw).replace(",", "\n").splitlines():
+            t = dong.strip()
+            if t and t.lower() not in da:
+                da.add(t.lower())
+                ra.append(t)
+        return ra
+
     def _start(self) -> None:
         if self._running:
             return
@@ -388,6 +456,9 @@ class TuongTacTab(ctk.CTkFrame):
         delay = self._int(self.e_delay, 600)
 
         so_comment = self._int(self.e_comment, 0)
+        so_follow = self._int(self.e_follow, 0) if self.platform == "x" else 0
+        so_bai_tim = self._int(self.e_bai_tim, 0) if self.platform == "x" else 0
+        tu_khoa = self._tu_khoa()
         dung_min = max(1, self._int(self.e_dung_min, 5))
         dung_max = max(dung_min, self._int(self.e_dung_max, 10))
 
@@ -405,6 +476,7 @@ class TuongTacTab(ctk.CTkFrame):
                 kq = modun_module.chay(
                     ma, nc, accs, so_video=so_video, so_like=so_like,
                     so_thong_bao=so_thong_bao, so_comment=so_comment, so_luong=so_luong,
+                    so_follow=so_follow, tu_khoa=tu_khoa, so_bai_tim=so_bai_tim,
                     gioi_han_min=gh_min, gioi_han_max=gh_max,
                     dung_min=dung_min, dung_max=dung_max,
                     on_row=lambda aid, info: self.app._post(lambda a=aid, i=info: self._cap_nhat_dong(a, i)),
