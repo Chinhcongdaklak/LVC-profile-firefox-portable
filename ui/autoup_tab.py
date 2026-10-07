@@ -98,10 +98,17 @@ class JobPanel(ctk.CTkFrame):
         self.manager = manager or app.autoup
         # Bang acc + profile cua tab: Facebook = app.store/app.manager (mac dinh),
         # X = store/manager cua tab Quan ly acc X -- de "chon acc" ra dung acc X.
-        self.acc_store = acc_store or getattr(app, "store", None)
-        self.profiles = profiles or getattr(app, "manager", None)
+        # "is not None" chu KHONG phai "or": AccountStore co __len__ nen kho acc RONG la
+        # falsy -> tab X/YouTube chua co acc nao se roi ve kho Facebook (da mac loi 05/10).
+        self.acc_store = acc_store if acc_store is not None else getattr(app, "store", None)
+        self.profiles = profiles if profiles is not None else getattr(app, "manager", None)
         # Nen tang cua job ("fb" | "x") -- quyet dinh hang "Dang len" va _missing.
         self.platform = getattr(self.manager, "platform", "fb")
+        # Nen tang "dang len acc" (khong co ID fanpage): X.com va YouTube.
+        self.acc_rieng = self.platform in ("x", "yt")
+        self.nhan_nen = {"x": "X", "yt": "YouTube"}.get(self.platform, "Facebook")
+        self.trang_nen = {"x": "https://x.com/home",
+                          "yt": "https://studio.youtube.com/"}.get(self.platform, "")
 
         self._build()
         self._load_from_config()
@@ -208,10 +215,27 @@ class JobPanel(ctk.CTkFrame):
         # X: khong co ID fanpage -- bai len TUONG acc da chon. Chi mot dong chu
         # + nut mo x.com bang profile cua acc de nguoi dung kiem tra dang nhap.
         self.x_row = ctk.CTkFrame(khung2, fg_color="transparent")
-        ctk.CTkLabel(self.x_row, text="Tường acc X đã chọn (bài đăng lên trang cá nhân x.com)",
-                     text_color="gray60").pack(side="left")
-        ctk.CTkButton(self.x_row, text="🌐 Mở x.com", width=110, fg_color="#1f6aa5",
-                      command=self._open_x).pack(side="left", padx=(10, 0))
+        mo_ta = {"yt": "Kênh YouTube của acc đã chọn (video lên kênh đó)"}.get(
+            self.platform, "Tường acc X đã chọn (bài đăng lên trang cá nhân x.com)")
+        nut = {"yt": "🌐 Mở YouTube Studio"}.get(self.platform, "🌐 Mở x.com")
+        ctk.CTkLabel(self.x_row, text=mo_ta, text_color="gray60").pack(side="left")
+        ctk.CTkButton(self.x_row, text=nut, width=150 if self.platform == "yt" else 110,
+                      fg_color="#1f6aa5", command=self._open_x).pack(side="left", padx=(10, 0))
+
+        # YouTube co HAI KIEU dang: Shorts (video doc <= 3 phut) va Video dai. YouTube tu
+        # quyet dinh theo CHINH FILE, nhung kieu dang doi cach dien sieu du lieu: Shorts
+        # KHONG co o the tag (tag -> hashtag + #Shorts), video dai thi dien o the tag that.
+        self.yt_che_do_var = tk.StringVar(value="tu_dong")
+        if self.platform == "yt":
+            from core import ytpost as _yt
+            ctk.CTkLabel(self.x_row, text="  ·  Kiểu đăng:", font=dam).pack(side="left")
+            self.yt_che_do_menu = ctk.CTkOptionMenu(
+                self.x_row, width=170,
+                values=[_yt.NHAN_CHE_DO[k] for k in (_yt.CD_TU_DONG, _yt.CD_SHORTS, _yt.CD_VIDEO)],
+                command=lambda _v: self._save_from_ui(quiet=True))
+            self.yt_che_do_menu.pack(side="left", padx=(6, 0))
+            self.yt_che_do_hint = ctk.CTkLabel(self.x_row, text="", text_color="gray60")
+            self.yt_che_do_hint.pack(side="left", padx=(8, 0))
 
         self.page_label = ctk.CTkLabel(khung2, text="", text_color="gray60", anchor="w")
         self.page_label.pack(side="left", padx=10, pady=10, fill="x", expand=True)
@@ -411,8 +435,9 @@ class JobPanel(ctk.CTkFrame):
         ctk.CTkLabel(self.lich_delay_row, text="phút chạy 1 bài — lấy giờ đặt lịch kế tiếp",
                      text_color="gray60").pack(side="left")
 
-        # 2) Mui gio cua PAGE.
-        hang(2, "Múi giờ")
+        # 2) Mui gio cua NUOC DANG BAI (mui gio cua PAGE) -- "Gio dat lich video" o duoi
+        # la gio BEN DO. Nguoi dung chot 07/10 goi dung ten cho khoi lan voi hang 3.
+        hang(2, "Múi giờ quốc gia đăng bài")
         o_tz = ctk.CTkFrame(wrap, fg_color="transparent")
         o_tz.grid(row=2, column=1, sticky="ew", padx=(0, 14), pady=(14, 2))
         self.tz_menu = ctk.CTkOptionMenu(o_tz, width=280, values=ld.danh_sach_nhan(),
@@ -422,26 +447,41 @@ class JobPanel(ctk.CTkFrame):
         self.lich_bay_gio = ctk.CTkLabel(o_tz, text="", text_color="gray55", anchor="w")
         self.lich_bay_gio.pack(side="left", padx=(12, 0))
 
-        # 3) Gio DAT LICH video -- go theo mui gio o tren.
-        hang(3, "Giờ đặt lịch video")
+        # 3) Mui gio DONG HO TRINH DUYET cua acc dang bai. Business Suite doc gio hen theo
+        # dong ho TRINH DUYET: acc chay proxy My + da khop mui gio theo proxy thi trang DA
+        # o gio My -> khong duoc quy doi ve gio may nua. Mac dinh TU DONG lay theo proxy.
+        hang(3, "Múi giờ của acc đăng bài")
+        o_tza = ctk.CTkFrame(wrap, fg_color="transparent")
+        o_tza.grid(row=3, column=1, sticky="ew", padx=(0, 14), pady=(14, 2))
+        from .chon_nhanh import ChonNhanhCombo
+        self.tz_acc_menu = ChonNhanhCombo(
+            o_tza, width=280, values=[ld.NHAN_TU_DONG] + ld.danh_sach_nhan(),
+            command=lambda _v: self._lich_nhap_doi())
+        self.tz_acc_menu.pack(side="left")
+        self.tz_acc_hint = ctk.CTkLabel(o_tza, text="", text_color="gray55", anchor="w",
+                                        justify="left")
+        self.tz_acc_hint.pack(side="left", padx=(12, 0), fill="x", expand=True)
+
+        # 4) Gio DAT LICH video -- go theo mui gio o tren.
+        hang(4, "Giờ đặt lịch video")
         self.e_dang = ctk.CTkEntry(
             wrap, placeholder_text="07:00, 15:00, 20:00 — giờ ở múi giờ đã chọn")
-        self.e_dang.grid(row=3, column=1, sticky="ew", padx=(0, 14), pady=(14, 2))
+        self.e_dang.grid(row=4, column=1, sticky="ew", padx=(0, 14), pady=(14, 2))
         # Dong TOM TAT nam TREN danh sach gio (nguoi dung chot 02/10: de thay ngay,
         # khong phai do xuong duoi mot rung gio).
         self.lich_tom = ctk.CTkLabel(wrap, text="", text_color="gray55", anchor="w",
                                      justify="left")
-        self.lich_tom.grid(row=4, column=0, columnspan=2, sticky="ew", padx=14, pady=(10, 2))
+        self.lich_tom.grid(row=5, column=0, columnspan=2, sticky="ew", padx=14, pady=(10, 2))
 
         # Danh sach gio CUA CA DOT (N ngay) -- de trong khung CUON duoc: 3 ngay x nhieu gio
         # la vai chuc dong, khong the tran het ra man hinh.
         self.lich_cuon = ctk.CTkScrollableFrame(wrap, height=150, fg_color="transparent")
-        self.lich_cuon.grid(row=5, column=0, columnspan=2, sticky="nsew",
+        self.lich_cuon.grid(row=6, column=0, columnspan=2, sticky="nsew",
                             padx=14, pady=(0, 10))
         self.lich_quydoi = ctk.CTkLabel(self.lich_cuon, text="", text_color="gray55",
                                         anchor="w", justify="left")
         self.lich_quydoi.pack(fill="x", anchor="w")
-        wrap.grid_rowconfigure(5, weight=1)
+        wrap.grid_rowconfigure(6, weight=1)
         # Go toi dau quy doi toi do (cho 350ms cho go xong moi tinh).
         self.lich_tree = None
         self._hen_id = None
@@ -500,6 +540,10 @@ class JobPanel(ctk.CTkFrame):
         iana = ld.iana_tu_nhan(cfg.mui_gio) if cfg.mui_gio else ""
         self.tz_menu.set(next((n for n in nhan if ld.iana_tu_nhan(n) == iana),
                               nhan[0] if nhan else ""))
+        # Mui gio DONG HO TRINH DUYET cua acc: rong = TU DONG (theo proxy cua acc).
+        tz_a = ld.iana_tu_nhan(cfg.mui_gio_acc) if getattr(cfg, "mui_gio_acc", "") else ""
+        self.tz_acc_menu.set(next((n for n in nhan if ld.iana_tu_nhan(n) == tz_a), "")
+                             if tz_a else ld.NHAN_TU_DONG)
         self.e_tre.delete(0, "end")
         self.e_tre.insert(0, str(cfg.tre_phut or ld.TRE_MAC_DINH))
         self.e_an_toan.delete(0, "end")
@@ -544,6 +588,8 @@ class JobPanel(ctk.CTkFrame):
         """O nhap cua trang LICH -> cau hinh. So sai thi giu mac dinh, khong chan Luu."""
         from core import lich_dang as ld
         cfg.mui_gio = ld.iana_tu_nhan(self.tz_menu.get())
+        chon_a = (self.tz_acc_menu.get() or "").strip()
+        cfg.mui_gio_acc = "" if chon_a in ("", ld.NHAN_TU_DONG) else ld.iana_tu_nhan(chon_a)
         cfg.gio_bat_dau = (self.e_bat_dau.get() or "").strip()
         cfg.schedule_mode = "delay" if self.lich_mode.get() == NHAN_DELAY else "list"
         # So ngay dat truoc: go bay thi ve 1 (chi dat cho hom nay), khong chan Luu.
@@ -573,6 +619,48 @@ class JobPanel(ctk.CTkFrame):
         cfg.khung_lich = [{"chay": c, "dang": d} for c, d in zip(chay, dang)]
         self._lich_ve(du_chay=len(chay), du_dang=len(dang))
 
+    def _tz_acc_ve(self) -> None:
+        """Dong chu canh o "Mui gio cua acc dang bai": tool DANG dung mui gio nao.
+
+        TU DONG = lay theo PROXY cua tung acc (Account.identity do bang geoip). Cac acc
+        cua trang co the o nhieu mui gio khac nhau -> bao ro tung mui gio dang gap.
+        """
+        if getattr(self, "tz_acc_hint", None) is None:
+            return
+        from core import lich_dang as ld
+        chon = (self.tz_acc_menu.get() or "").strip()
+        tay = "" if chon in ("", ld.NHAN_TU_DONG) else ld.iana_tu_nhan(chon)
+        co_shim = bool(getattr(getattr(self.app, "settings", None), "use_tz_shim", True))
+        if tay:
+            self.tz_acc_hint.configure(
+                text=f"điền giờ {tay} vào Business Suite (bạn chọn tay)", text_color="gray55")
+            return
+        kho = self.acc_store
+        nhom: dict = {}
+        for ma in (self.auto.config.account_ids or []):
+            acc = kho.get(ma) if kho is not None else None
+            # KHONG truyen do_proxy: dong goi y ve lai moi ~3 giay, goi geoip o day la
+            # dap mang. Acc chua khop thi noi ro se DO LUC DANG.
+            r = ld.mui_gio_acc(acc, "", co_shim=co_shim)
+            nhan = r["nhan"]
+            if r["nguon"] == ld.NGUON_MAY:
+                try:
+                    co_proxy = acc is not None and acc.get_proxy().enabled
+                except Exception:  # noqa: BLE001
+                    co_proxy = False
+                if co_proxy:
+                    nhan = "sẽ dò theo proxy lúc đăng (chưa chạy 'Khớp múi giờ theo proxy')"
+            nhom.setdefault(nhan, []).append(ma)
+        if not nhom:
+            self.tz_acc_hint.configure(text="chưa chọn acc đăng bài", text_color="gray55")
+            return
+        bit = [f"{nhan} ({len(ds)} acc)" if len(ds) > 1 else nhan for nhan, ds in nhom.items()]
+        mau = "#d08030" if len(nhom) > 1 else "gray55"
+        self.tz_acc_hint.configure(
+            text=("tự động: " + " · ".join(bit))[:170]
+                 + (" — acc khác múi giờ nhau, giờ hẹn mỗi acc mỗi khác" if len(nhom) > 1 else ""),
+            text_color=mau)
+
     def _lich_ve(self, du_chay: int = -1, du_dang: int = -1) -> None:
         """Ve DONG QUY DOI (chu mo) -- chi ve lai ket qua cua core, khong tu tinh."""
         from core import lich_dang as ld
@@ -597,6 +685,7 @@ class JobPanel(ctk.CTkFrame):
                 text=f"bên đó bây giờ: {bg.strftime('%d/%m %H:%M')} ({ten})")
         except Exception:  # noqa: BLE001
             self.lich_bay_gio.configure(text="")
+        self._tz_acc_ve()
 
         dau = {ld.CHAY: "✅", ld.CHO: "⏳", ld.BO_LO: "❌", ld.QUA_GAN: "❌",
                ld.DA_QUA: "❌", ld.DA_DANG: "✅"}
@@ -1186,8 +1275,39 @@ class JobPanel(ctk.CTkFrame):
         self._xao_pending()
 
     # ---------------------------------------------------------------- doc / ghi cau hinh
+    def _yt_che_do_ve(self) -> None:
+        """Dong chu goi y canh o "Kieu dang": noi ro bai KE TIEP se len kieu gi.
+
+        YouTube tu quyet dinh Shorts/video theo CHINH FILE (doc + <= 3 phut), nen o day
+        chi bao truoc + canh bao khi kieu da chon khong khop voi file.
+        """
+        if getattr(self, "yt_che_do_hint", None) is None:
+            return
+        from core import ytpost as _yt
+        cfg = self.auto.config
+        ma = cfg.yt_che_do if cfg.yt_che_do in _yt.NHAN_CHE_DO else _yt.CD_TU_DONG
+        chu, mau = "", "gray60"
+        try:
+            video = self.auto.next_video()
+        except Exception:  # noqa: BLE001
+            video = None
+        if video:
+            r = _yt.che_do_video(video, ma)
+            chu = f"bài kế: {_yt.NHAN_CHE_DO[r['che_do']]} — {r['ly_do']}"
+            if r["canh_bao"]:
+                chu = "⚠ " + r["canh_bao"]
+                mau = "#d08030"
+        elif ma == _yt.CD_TU_DONG:
+            chu = "dọc và ≤3 phút → Shorts, còn lại → video dài"
+        self.yt_che_do_hint.configure(text=chu[:150], text_color=mau)
+
     def _load_from_config(self) -> None:
         cfg = self.auto.config
+        if self.platform == "yt" and getattr(self, "yt_che_do_menu", None) is not None:
+            from core import ytpost as _yt
+            ma = cfg.yt_che_do if cfg.yt_che_do in _yt.NHAN_CHE_DO else _yt.CD_TU_DONG
+            self.yt_che_do_menu.set(_yt.NHAN_CHE_DO[ma])
+            self._yt_che_do_ve()
         self.folder_entry.delete(0, "end")
         self.folder_entry.insert(0, cfg.folder)
         if self.queue_dir_entry is not None:
@@ -1247,6 +1367,12 @@ class JobPanel(ctk.CTkFrame):
     def _save_from_ui(self, quiet: bool = False) -> bool:
         """Doc giao dien vao cau hinh. Tra ve False neu nguoi dung go gio sai."""
         cfg = self.auto.config
+        if self.platform == "yt" and getattr(self, "yt_che_do_menu", None) is not None:
+            from core import ytpost as _yt
+            nhan = self.yt_che_do_menu.get()
+            cfg.yt_che_do = next((k for k, v in _yt.NHAN_CHE_DO.items() if v == nhan),
+                                 _yt.CD_TU_DONG)
+            self._yt_che_do_ve()
         cfg.folder = self.folder_entry.get().strip()
         if self.queue_dir_entry is not None:
             cfg.queue_dir = self.queue_dir_entry.get().strip()
@@ -1600,25 +1726,27 @@ class JobPanel(ctk.CTkFrame):
         threading.Thread(target=work, daemon=True).start()
 
     def _open_x(self) -> None:
-        """Mo x.com bang profile X cua acc dau danh sach -- kiem tra dang nhap."""
+        """Mo trang cua nen tang bang profile cua acc dau danh sach -- kiem tra dang nhap."""
         acc = self.account()
+        ten = "Mở x.com" if self.platform == "x" else "Mở YouTube Studio"
         if acc is None:
-            messagebox.showinfo("Mở x.com", "Chưa chọn acc X.", parent=self.app)
+            messagebox.showinfo(ten, f"Chưa chọn acc {self.nhan_nen}.", parent=self.app)
             return
 
         def work():
             try:
                 if not self.profiles.is_installed(acc):
                     self.profiles.create(acc)
-                self.profiles.launch(acc, url="https://x.com/home")
+                self.profiles.launch(acc, url=self.trang_nen or "https://x.com/home")
             except Exception as exc:  # noqa: BLE001
                 self.app._post(lambda e=exc: messagebox.showerror(
-                    "Mở x.com", str(e), parent=self.app))
+                    ten, str(e), parent=self.app))
                 return
             self.acc_store.mark_opened(acc.id)
 
         threading.Thread(target=work, daemon=True).start()
-        self.app.set_status(f"Đang mở x.com bằng acc {acc.id}...")
+        self.app.set_status(f"Đang mở {'x.com' if self.platform == 'x' else 'YouTube Studio'} "
+                            f"bằng acc {acc.id}...")
 
     def _show_mode_row(self) -> None:
         """Hien o hop voi kieu dat lich dang chon, giau o kia di."""
@@ -1689,7 +1817,7 @@ class JobPanel(ctk.CTkFrame):
         theo thu tu goi, khong pack lai thi nhan nhay len truoc o nhap.
         """
         self.page_label.pack_forget()
-        if self.platform == "x":
+        if self.acc_rieng:
             self.page_row.pack_forget()
             self.group_row.pack_forget()
             self.x_row.pack(side="left", padx=(8, 0), pady=10)
@@ -1867,12 +1995,13 @@ class JobPanel(ctk.CTkFrame):
             elif mat:
                 thieu.append("acc không còn trong bảng: " + ", ".join(mat))
             return thieu
-        if self.platform == "x":
-            # X: khong co ID fanpage; bat buoc co acc X (bai len tuong acc do).
+        if self.acc_rieng:
+            # X / YouTube: khong co ID fanpage; bat buoc co acc (bai len acc do).
             if not ids:
-                thieu.append("acc X đăng bài (chọn từ tab Quản lý acc → X.com)")
+                thieu.append(f"acc {self.nhan_nen} đăng bài "
+                             f"(chọn từ tab Quản lý acc → {self.nhan_nen})")
             elif mat:
-                thieu.append("acc không còn trong bảng X: " + ", ".join(mat))
+                thieu.append(f"acc không còn trong bảng {self.nhan_nen}: " + ", ".join(mat))
             return thieu
         if not cfg.page_id:
             thieu.append("ID fanpage")
@@ -2119,8 +2248,11 @@ class AutoUpTab(ctk.CTkFrame):
         # "page" = fanpage · "group" = nhom · "lich" = fanpage DAT LICH (gio chay + gio dang + mui gio).
         self.kind = kind if kind in ("group", "lich") else "page"
         self.panel = None
-        if getattr(self.manager, "platform", "fb") == "x":
-            nhan_loai = "trang X đặt lịch" if self.kind == "lich" else "trang X"
+        nen = getattr(self.manager, "platform", "fb")
+        if nen in ("x", "yt"):
+            ten_nen = "X" if nen == "x" else "YouTube"
+            nhan_loai = (f"trang {ten_nen} đặt lịch" if self.kind == "lich"
+                         else f"trang {ten_nen}")
         else:
             nhan_loai = {"group": "nhóm", "lich": "trang đặt lịch"}.get(self.kind, "fanpage")
 
