@@ -1,7 +1,8 @@
 """Mo-dun CHECK TƯỜNG (live/die) — nhom acc. KHONG mo trinh duyet (ADR-020).
 
-Dung cookie RIENG tung acc (uu tien cookie TUOI trong profile) goi HTTP mbasic/me qua
-core.checkwall.check_nhieu song song theo so_luong; cap nhat account.status.
+Dung cookie RIENG tung acc (uu tien cookie TUOI trong profile) goi HTTP www.facebook.com/me
+(mbasic da bi FB bo tu 2026 — xem core/checkwall) qua core.checkwall.check_nhieu song song theo
+so_luong; cap nhat account.status, va dien luon cot "Ten acc" vi trang do mang san ten.
 tham_so: khong co. du_lieu["rows"] = ket qua tung acc.
 """
 
@@ -9,9 +10,18 @@ from __future__ import annotations
 
 from core import checkwall
 from core import cookies as cookie_module
+from core import fbthongtin as thongtin
+from core import trang_thai as tt
 from core.modun import KetQua, Modun, NguCanh, dang_ky
 
 MA = "check_tuong"
+
+#: checkwall tra chu tieng Viet -> ma trang thai dung chung (cot "Trạng thái").
+_MA = {checkwall.LIVE: tt.LIVE, checkwall.CHECKPOINT: tt.CHECKPOINT, checkwall.DIE: tt.DIE}
+for _ten, _ma in (("COOKIE_CHET", tt.COOKIE_CHET), ("CHUA_RO", tt.LOI)):
+    _gt = getattr(checkwall, _ten, None)
+    if _gt:
+        _MA[_gt] = _ma
 
 
 def cookie_cua_acc(manager, account) -> str:
@@ -41,6 +51,10 @@ def chay(nc: NguCanh, accs: list, tham_so: dict) -> KetQua:
         acc = by_id.get(r["id"])
         if acc is not None:
             acc.status = r["trang_thai"]
+            tt.ghi(acc, _MA.get(r["trang_thai"], tt.LOI), r.get("chi_tiet", ""), "check tường")
+            # Trang /me mang san ten -> dien luon cot "Ten acc", khong phai goi lai lan nua.
+            if r.get("ten"):
+                thongtin.dat_ten(acc, r["ten"])
         xong["n"] += 1
         nc.log(f"[{xong['n']}/{len(items)}] {r['id']}: {r['trang_thai']}")
         nc.post(lambda: None)
