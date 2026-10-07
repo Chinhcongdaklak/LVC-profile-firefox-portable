@@ -252,12 +252,18 @@ class XoaBaiTab(ctk.CTkFrame):
         """Cot "TT cookie": ket qua kiem cookie gan nhat (nut 🔍 Kiểm cookie / truoc khi xoa)."""
         return self._ck_tt.get(acc_id, "chưa kiểm")
 
+    def _token_acc(self, acc_id: str) -> str:
+        """Token da luu cua acc (cot "Token" bang Quan ly acc = extra["token"]); fallback cache phien."""
+        acc = self.app.store.get(acc_id) if hasattr(self.app, "store") else None
+        tok = str((getattr(acc, "extra", None) or {}).get("token") or "").strip() if acc else ""
+        return tok or (self._acc_token.get(acc_id) or "").strip()
+
     def _o_token(self, d: dict) -> str:
         """Cot "Token": token cua dong, da CHE bot + noi ro tu dau ra."""
         tok = (d.get("token") or "").strip()
         if tok:
             return f"{xb.che_token(tok)} (nhập tay)"
-        tok = (self._acc_token.get(d["acc_id"]) or "").strip()
+        tok = self._token_acc(d["acc_id"])
         if tok:
             return f"{xb.che_token(tok)} (tự lấy)"
         return "— bấm đúp để nhập"
@@ -320,20 +326,33 @@ class XoaBaiTab(ctk.CTkFrame):
         self.app.set_status("Bấm 🔎 Quét fanpage, hoặc ➕ Nhập ID page cho acc vừa chọn (token tự lấy từ cookie).")
 
     def _token_cookie(self, acc_id: str) -> str:
-        """Lấy token TỪ COOKIE của acc (mở trình duyệt acc). Cache theo acc trong phiên. Chạy ở LUỒNG NỀN."""
-        if acc_id in self._acc_token and self._acc_token[acc_id]:
-            return self._acc_token[acc_id]
+        """Lấy token của acc (HTTP business_locations trước, cookie yếu thì mở trình duyệt).
+
+        GHI vào cột "Token" của bảng Quản lý acc (extra["token"]) để hai tab đồng bộ. Chạy ở LUỒNG NỀN.
+        """
+        san = self._token_acc(acc_id)
+        if san:
+            self._acc_token[acc_id] = san
+            return san
         acc = self.app.store.get(acc_id)
         if acc is None:
             self._log(f"[{acc_id}] không thấy acc để lấy token")
             return ""
-        self._log(f"[{acc_id}] lấy token từ cookie (mở trình duyệt acc)...")
+        self._log(f"[{acc_id}] lấy token (business_locations)...")
         tok, loi = xb.token_tu_cookie(self.app.manager, acc, log=self._log)
         self._acc_token[acc_id] = tok
         if tok:
-            self._log(f"[{acc_id}] đã lấy token từ cookie: {xb.che_token(tok)}")
+            if not isinstance(getattr(acc, "extra", None), dict):
+                acc.extra = {}
+            acc.extra["token"] = tok                      # ghi vao cot Token bang Quan ly acc
+            try:
+                self.app.store.save()
+                self.app._post(self.app.refresh)
+            except Exception:  # noqa: BLE001
+                pass
+            self._log(f"[{acc_id}] đã lấy token: {xb.che_token(tok)}")
         else:
-            self._log(f"[{acc_id}] KHÔNG lấy được token từ cookie: {loi}")
+            self._log(f"[{acc_id}] KHÔNG lấy được token: {loi}")
         return tok
 
     def _quet_page(self) -> None:

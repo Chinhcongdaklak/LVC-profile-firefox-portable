@@ -25,6 +25,7 @@ from core.modun import xoa_acc, extension, xoa_cache, doi_ten_file, mo_cung_wind
 from core.modun import tuong_tac_x
 from core.modun import lay_cookie
 from core.modun import lay_thong_tin
+from core.modun import lay_token
 
 #: Cac module mo-dun theo thu tu menu (chinh cac import o tren).
 _MODULES = (
@@ -36,6 +37,7 @@ _MODULES = (
     xoa_acc, extension, xoa_cache, doi_ten_file, mo_cung_windows, tuong_tac, tuong_tac_x,
     lay_cookie,
     lay_thong_tin,
+    lay_token,
 )
 
 #: Ten file mo-dun (dung cho cong kien_truc_modun kiem "du trong DANH_SACH").

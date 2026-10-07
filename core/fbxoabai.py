@@ -42,6 +42,58 @@ NGUONG_DUNG = 95.0
 
 FIELDS = "id,created_time,message,permalink_url,attachments{media_type,type,subattachments{media_type,type}}"
 
+#: Canh bai cua page: thu LAN LUOT. ``published_posts`` can token page + quyen day du; page khong quan ly
+#: (chi co user token) thi Facebook chi cho ``posts`` / ``feed`` (tool tham khao dung ``posts``).
+CANH_BAI = ("published_posts", "posts", "feed")
+#: Ma loi "canh nay khong dung duoc" -> thu canh ke tiep (100 = unknown edge/field, 200/10/3 = thieu quyen).
+MA_DOI_CANH = {3, 10, 100, 200}
+
+#: Header gia lap trinh duyet — Facebook de chan request "tran" (tool tham khao gui y het bo nay).
+HEADERS = {
+    "accept": ("text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,"
+               "image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"),
+    "accept-language": "en-US,en;q=0.9,vi-VN;q=0.8,vi;q=0.7",
+    "sec-ch-ua": '"Chromium";v="142", "Google Chrome";v="142", "Not_A Brand";v="99"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+    "sec-fetch-dest": "document",
+    "sec-fetch-mode": "navigate",
+    "sec-fetch-site": "none",
+    "sec-fetch-user": "?1",
+    "upgrade-insecure-requests": "1",
+    "user-agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                   "(KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"),
+}
+
+
+def cookie_header(cookie_text: str) -> str:
+    """Chuoi cookie (JSON do read_from_profile, hoac dang header 'a=b; c=d') -> 'name=value; ...'
+    de nhet vao header 'cookie'. Chi giu cookie facebook. Rong -> ''."""
+    t = (cookie_text or "").strip()
+    if not t:
+        return ""
+    if "{" not in t and "[" not in t and "\n" not in t and "\t" not in t and "=" in t:
+        return t  # da la chuoi header san
+    try:
+        from core import cookies as _cm
+        phan, seen = [], set()
+        for c in _cm.parse(t, default_domain=".facebook.com"):
+            if not c.name or c.name in seen or "facebook.com" not in (c.host or ".facebook.com"):
+                continue
+            seen.add(c.name)
+            phan.append(f"{c.name}={c.value}")
+        return "; ".join(phan)
+    except Exception:  # noqa: BLE001
+        return t
+
+
+def _headers(cookie_text: str = "") -> dict:
+    h = dict(HEADERS)
+    ch = cookie_header(cookie_text)
+    if ch:
+        h["cookie"] = ch
+    return h
+
 
 class XoaBaiError(Exception):
     """Loi nghiep vu xoa bai (token/han muc/mang)."""
@@ -57,13 +109,13 @@ def _requests():
     return requests
 
 
-def _get(url: str, params: dict) -> tuple:
-    r = _requests().get(url, params=params, timeout=TIMEOUT)
+def _get(url: str, params: dict, cookie: str = "") -> tuple:
+    r = _requests().get(url, params=params, headers=_headers(cookie), timeout=TIMEOUT)
     return r.status_code, _json(r), dict(r.headers)
 
 
-def _delete(url: str, params: dict) -> tuple:
-    r = _requests().delete(url, params=params, timeout=TIMEOUT)
+def _delete(url: str, params: dict, cookie: str = "") -> tuple:
+    r = _requests().delete(url, params=params, headers=_headers(cookie), timeout=TIMEOUT)
     return r.status_code, _json(r), dict(r.headers)
 
 
@@ -158,6 +210,81 @@ def khoang_ngay(tu: str, den: str) -> tuple:
     return since, until, ""
 
 
+# ------------------------------------------------------------------ de xuat khoang ngay
+#: Don vi cho "cu hon N ...": ma -> nhan.
+DON_VI = (("ngay", "ngày"), ("thang", "tháng"), ("nam", "năm"))
+NHAN_DON_VI = dict(DON_VI)
+MA_DON_VI = {v: k for k, v in DON_VI}
+
+
+def _chuoi_ngay(d: datetime) -> str:
+    return d.strftime("%d/%m/%Y")
+
+
+def nam_hien_tai(now: Optional[datetime] = None) -> int:
+    return (now or datetime.now()).year
+
+
+def cac_nam(now: Optional[datetime] = None, lui: int = 8) -> list:
+    """Danh sach nam de do vao o chon: [nam nay, nam truoc, ... lui nam]."""
+    n = nam_hien_tai(now)
+    return [n - i for i in range(max(1, lui))]
+
+
+def khoang_nam(nam) -> tuple:
+    """CA NAM ``nam`` -> (tu, den, loi) = ('01/01/nam', '31/12/nam', '')."""
+    try:
+        n = int(str(nam).strip())
+    except (TypeError, ValueError):
+        return "", "", f"Năm không hợp lệ: {nam}"
+    if not 1990 <= n <= 2999:
+        return "", "", f"Năm ngoài khoảng cho phép: {n}"
+    return f"01/01/{n}", f"31/12/{n}", ""
+
+
+def khoang_truoc_ngay(ngay: str) -> tuple:
+    """Moi bai TRUOC ngay do (KHONG gom chinh ngay do) -> (tu rong = tu dau, den = ngay - 1 hom, loi)."""
+    d = ngay_tu_chuoi(ngay)
+    if d is None:
+        return "", "", f"Ngày sai định dạng (dd/mm/yyyy): {ngay}"
+    return "", _chuoi_ngay(d - timedelta(days=1)), ""
+
+
+def _lui_thang(d: datetime, so: int) -> datetime:
+    import calendar
+    thang = d.month - so
+    nam = d.year + (thang - 1) // 12
+    thang = (thang - 1) % 12 + 1
+    return d.replace(year=nam, month=thang, day=min(d.day, calendar.monthrange(nam, thang)[1]))
+
+
+def khoang_cu_hon(so, don_vi: str = "thang", now: Optional[datetime] = None) -> tuple:
+    """Bai CU HON ``so`` ngay/thang/nam tinh tu hom nay -> (tu rong, den, loi)."""
+    try:
+        n = int(str(so).strip())
+    except (TypeError, ValueError):
+        return "", "", f"Số không hợp lệ: {so}"
+    if n <= 0:
+        return "", "", "Số phải lớn hơn 0."
+    don_vi = MA_DON_VI.get(don_vi, don_vi)
+    goc = (now or datetime.now()).replace(hour=0, minute=0, second=0, microsecond=0)
+    if don_vi == "ngay":
+        moc = goc - timedelta(days=n)
+    elif don_vi == "thang":
+        moc = _lui_thang(goc, n)
+    elif don_vi == "nam":
+        moc = _lui_thang(goc, n * 12)
+    else:
+        return "", "", f"Đơn vị lạ: {don_vi}"
+    return "", _chuoi_ngay(moc - timedelta(days=1)), ""
+
+
+def khoang_n_ngay(n: int, now: Optional[datetime] = None) -> tuple:
+    """N ngay GAN DAY: (hom nay - n, hom nay, '')."""
+    goc = (now or datetime.now()).replace(hour=0, minute=0, second=0, microsecond=0)
+    return _chuoi_ngay(goc - timedelta(days=max(0, int(n)))), _chuoi_ngay(goc), ""
+
+
 def gio_bai(post: dict) -> int:
     """created_time ISO '2026-09-24T10:00:00+0000' -> epoch (0 neu khong doc duoc)."""
     s = str(post.get("created_time") or "")
@@ -214,23 +341,51 @@ def loc_bai(posts: list, loai: str, since: int = 0, until: int = 0) -> list:
     return ra
 
 
+def nam_cua_bai(post: dict) -> int:
+    """Nam dang bai theo created_time (0 neu khong doc duoc)."""
+    g = gio_bai(post)
+    return datetime.fromtimestamp(g).year if g else 0
+
+
+def dem_theo_nam(posts: list) -> dict:
+    """{nam: {tong, video, anh, khac}} — de nguoi dung biet nam nao con bao nhieu bai ma chon xoa."""
+    ra: dict = {}
+    for p in posts or []:
+        n = nam_cua_bai(p)
+        o = ra.setdefault(n, {"tong": 0, "video": 0, "anh": 0, "khac": 0})
+        o["tong"] += 1
+        o[phan_loai(p)] += 1
+    return dict(sorted(ra.items(), reverse=True))
+
+
+def dong_dem_nam(d: dict) -> list:
+    """Cac dong chu de in ra nhat ky tu ``dem_theo_nam``."""
+    ra = []
+    for nam, o in (d or {}).items():
+        ten = str(nam) if nam else "không rõ năm"
+        ra.append(f"{ten}: {o['tong']} bài (video {o['video']} · ảnh {o['anh']} · khác {o['khac']})")
+    return ra
+
+
 # ------------------------------------------------------------------ token / page
-def thong_tin_token(token: str, *, get: Callable = _get) -> dict:
+def thong_tin_token(token: str, *, cookie: str = "", get: Optional[Callable] = None) -> dict:
     """GET /me -> {id, name, loi}. Token page thi me = page; token user thi me = nguoi dung."""
-    st, d, _h = get(f"{GRAPH}/me", {"fields": "id,name", "access_token": token})
+    get = get or _get
+    st, d, _h = get(f"{GRAPH}/me", {"fields": "id,name", "access_token": token}, cookie)
     code, msg = ma_loi(d)
     if code or st >= 400:
         return {"id": "", "name": "", "loi": f"token không dùng được ({code}): {msg}"}
     return {"id": str(d.get("id") or ""), "name": str(d.get("name") or ""), "loi": ""}
 
 
-def cac_page_cua_token(token: str, *, get: Callable = _get) -> tuple:
+def cac_page_cua_token(token: str, *, cookie: str = "", get: Optional[Callable] = None) -> tuple:
     """Danh sach page token nay quan ly: [{id, name, access_token}] (theo trang). Token PAGE -> chi 1 page (me).
     Tra (ds, loi)."""
+    get = get or _get
     ds, url, params = [], f"{GRAPH}/me/accounts", {"fields": "id,name,access_token", "limit": 100,
                                                      "access_token": token}
     for _ in range(50):
-        st, d, _h = get(url, params)
+        st, d, _h = get(url, params, cookie)
         code, msg = ma_loi(d)
         if code == 190:
             return [], f"token hết hạn/không hợp lệ (190): {msg}"
@@ -246,52 +401,288 @@ def cac_page_cua_token(token: str, *, get: Callable = _get) -> tuple:
         params = {}
     if ds:
         return ds, ""
-    me = thong_tin_token(token, get=get)
+    me = thong_tin_token(token, cookie=cookie, get=get)
     if me["loi"]:
         return [], me["loi"]
     # Token PAGE: /me chinh la page -> dung token nay cho page do.
     return [{"id": me["id"], "name": me["name"], "access_token": token}], ""
 
 
-# ------------------------------------------------------------------ liet ke / xoa
-def liet_ke_bai(page_id: str, token: str, since: int = 0, until: int = 0, *,
-                get: Callable = _get, log: Optional[Callable[[str], None]] = None,
-                nen_dung: Optional[Callable[[], bool]] = None, toi_da_trang: int = 200) -> list:
-    """Cac bai da dang cua page trong [since, until) (API loc + may loc lai). Nem TokenChet / XoaBaiError."""
+#: Trang Meta lộ page/app access token trong HTML phiên đã đăng nhập (cách người dùng chỉ 07/10:
+#: vào trang này đã nhập 2FA rồi view-source, dòng EAAG… là token).
+TOKEN_URL = "https://business.facebook.com/business_locations/"
+#: Token kiểu EAAG (app token của Business Suite). Bắt cả bản escape trong JSON (EAAGà… hiếm,
+#: nhưng token chuẩn chỉ gồm [A-Za-z0-9]). Ưu tiên EAAG; vẫn nhận EAA khác phòng Facebook đổi app.
+_TOKEN_RE = re.compile(r"EAAG[A-Za-z0-9]{20,}")
+_TOKEN_RE_RONG = re.compile(r"EAA[A-Za-z0-9]{20,}")
+
+
+def token_trong_html(html: str) -> str:
+    """Moi token EAAG dau tien trong HTML trang business_locations. Thuan, test duoc.
+
+    Tra "" neu khong thay. Uu tien EAAG (token Business Suite); khong co thi lay EAA bat ky
+    dai nhat (token dai hon thuong la token that, khong phai manh id ngan trung dau).
+    """
+    s = html or ""
+    m = _TOKEN_RE.search(s)
+    if m:
+        return m.group(0)
+    hits = _TOKEN_RE_RONG.findall(s)
+    return max(hits, key=len) if hits else ""
+
+
+def token_tu_business(account=None, *, cookie: str = "", proxy=None,
+                      get: Optional[Callable] = None) -> tuple:
+    """Lay token bang HTTP: GET business_locations kem cookie acc roi do dong EAAG. (acc, cookie).
+
+    Theo cach nguoi dung chi (07/10): KHONG mo trinh duyet -> nhanh. ``get(url, cookie, proxy)``
+    tiem cho thuoc, tra ``(final_url, html, status)``; mac dinh goi HTTP that. Tra ``(token, loi)``.
+    Cookie chet / chua nhap 2FA -> FB tra trang khong co token -> ("", ly do).
+    """
+    ck = (cookie or "").strip()
+    if not ck and account is not None:
+        ck = (getattr(account, "cookie", "") or "").strip()
+    if not ck:
+        return "", "acc chưa có cookie"
+    lay = get or (lambda url, c, px: _lay_trang(url, c, px))
+    try:
+        final_url, html, status = lay(TOKEN_URL, ck, proxy)
+    except Exception as exc:  # noqa: BLE001
+        return "", f"lỗi mạng: {str(exc)[:60]}"
+    fin = (final_url or "").lower()
+    if "login" in fin or "/checkpoint" in fin:
+        return "", "phiên chưa đăng nhập / cần nhập 2FA trong trình duyệt trước"
+    tok = token_trong_html(html)
+    if not tok:
+        return "", f"không thấy token trong trang (HTTP {status})"
+    return tok, ""
+
+
+def _lay_trang(url: str, cookie: str, proxy=None):
+    """GET that (requests) kem cookie + header trinh duyet. Tra (final_url, html, status)."""
+    from core import fbthongtin
+    return fbthongtin._get_that(url, cookie, proxy)
+
+
+#: File lệnh/kết quả dùng chung với agent đăng nhập (action "gettoken" nằm trong fblogin_agent.js).
+_TOK_CMD = "qlfp-weblogin.json"
+_TOK_RESULT = "qlfp-weblogin-result.json"
+
+
+def _tok_put_cmd(profile_dir: str, account, code: str) -> None:
+    import os
+    cmd = {"action": "gettoken", "email": account.id,
+           "code": code or "", "code_at": time.time(), "formTimeout": 90000, "delay": 2500}
+    os.makedirs(profile_dir, exist_ok=True)
+    with open(os.path.join(profile_dir, _TOK_CMD), "w", encoding="utf-8") as fh:
+        json.dump(cmd, fh, ensure_ascii=False)
+
+
+def token_qua_browser(manager, account, *, timeout: float = 150.0,
+                      log: Optional[Callable[[str], None]] = None) -> tuple:
+    """Mở Firefox THƯỜNG vào business_locations, điền 2FA nếu bị hỏi, đọc dòng EAAG. (token, loi).
+
+    Dùng process-script agent (fblogin_agent.js action "gettoken") -> Firefox mở BÌNH THƯỜNG, không
+    debug port -> KHÔNG dính reCAPTCHA (BiDi thì dính — xem NHO). Acc có 2FA secret thì tự điền mã
+    (core.totp, làm mới mỗi 5s). Token KHÔNG ghi log full (chỉ bản che).
+    """
+    import os
+
+    from core import totp
+
     noi = log or (lambda _m: None)
+    profile = manager.profile_dir(account)
+    twofa = (getattr(account, "twofa", "") or "").strip()
+    for n in (_TOK_CMD, _TOK_RESULT):
+        try:
+            os.remove(os.path.join(profile, n))
+        except OSError:
+            pass
+    _tok_put_cmd(profile, account, totp.generate(twofa) if twofa else "")
+    manager.close(account, wait=6.0)
+    manager.launch(account, url=TOKEN_URL)
+    # TRÌNH DUYỆT ĐÃ MỞ -- mọi thứ dưới đây nằm trong try/finally để luôn đóng được.
+    tok, loi = "", "hết giờ chưa lấy được token"
+    try:
+        deadline = time.time() + timeout
+        last_code = time.time()
+        while time.time() < deadline:
+            r = _read_result(profile)
+            if r:
+                st = r.get("state") or ""
+                det = str(r.get("detail") or "")
+                if st == "token-found" and det.startswith("EAA"):
+                    tok, loi = det, ""
+                    noi(f"[{account.id}] token: {che_token(tok)} ✓")
+                    break
+                if st == "checkpoint":
+                    loi = "acc bị checkpoint"
+                    break
+                if st == "token-timeout":
+                    loi = "mở được trang nhưng không thấy EAAG (2FA/đăng xuất?)"
+                    break
+            # Làm mới mã TOTP mỗi 5s (mã đổi theo thời gian; agent đọc lại command mỗi tick).
+            if twofa and time.time() - last_code >= 5:
+                _tok_put_cmd(profile, account, totp.generate(twofa))
+                last_code = time.time()
+            time.sleep(1)
+    finally:
+        try:
+            manager.close(account, wait=8.0)
+        except Exception:  # noqa: BLE001
+            pass
+        for n in (_TOK_CMD, _TOK_RESULT):
+            try:
+                os.remove(os.path.join(profile, n))
+            except OSError:
+                pass
+    return tok, loi
+
+
+def _read_result(profile_dir: str) -> Optional[dict]:
+    import os
+    try:
+        with open(os.path.join(profile_dir, _TOK_RESULT), encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+
+def token_tu_cookie(manager, account, *, log: Optional[Callable[[str], None]] = None,
+                    get: Optional[Callable] = None) -> tuple:
+    """Lấy access token TỪ COOKIE/phiên của acc. Trả ``(token, loi)``; không được -> ("", lý do).
+
+    Thử HAI đường, theo thứ tự:
+      1) HTTP: GET business_locations kèm cookie rồi đọc dòng EAAG (cách người dùng chỉ 07/10) —
+         NHANH, không mở trình duyệt.
+      2) Nếu không ra: mở trình duyệt acc quét token trong phiên (core.checklive.derive_token).
+
+    Facebook mới có thể vẫn không lộ token -> khi đó dán token tay vào ô Token.
+    """
+    noi = log or (lambda _m: None)
+    tok, loi = token_tu_business(account, get=get)
+    if tok:
+        noi(f"[{account.id}] lấy token qua business_locations (HTTP): {che_token(tok)}")
+        return tok, ""
+    noi(f"[{account.id}] HTTP không ra ({loi}); mở trình duyệt vào business_locations...")
+    try:
+        return token_qua_browser(manager, account, log=log)
+    except Exception as exc:  # noqa: BLE001
+        return "", str(exc)
+
+
+def ten_page(page_id: str, token: str, *, cookie: str = "", get: Optional[Callable] = None) -> tuple:
+    """GET /{page_id}?fields=name -> (ten, loi). Dung khi nguoi dung GO ID TAY (dong khoi tro tro ID)."""
+    get = get or _get
+    if not (page_id or "").strip() or not (token or "").strip():
+        return "", "thiếu ID page hoặc token"
+    st, d, _h = get(f"{GRAPH}/{page_id}", {"fields": "name", "access_token": token}, cookie)
+    code, msg = ma_loi(d)
+    if code or st >= 400:
+        return "", f"không đọc được tên page ({code or st}): {msg}"
+    return str(d.get("name") or ""), ""
+
+
+# ------------------------------------------------------------------ liet ke / xoa
+def _ep_limit(url: str, n: int = 100) -> str:
+    """Ep limit=n vao URL phan trang. Tool tham khao vap dung day: paging.next co the mang limit nho
+    (hoac khong co) -> doc thieu bai, bo sot bai cu."""
+    from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+    try:
+        u = urlparse(url)
+        q = parse_qs(u.query)
+        try:
+            cu = int((q.get("limit") or ["0"])[0])
+        except (TypeError, ValueError):
+            cu = 0
+        if cu < n:
+            q["limit"] = [str(n)]
+        return urlunparse((u.scheme, u.netloc, u.path, u.params, urlencode(q, doseq=True), u.fragment))
+    except ValueError:
+        return url
+
+
+def _mot_canh(page_id: str, canh: str, token: str, since: int, until: int, *,
+              get: Callable, log: Callable, sleep: Callable, cookie: str = "",
+              nen_dung: Optional[Callable[[], bool]], toi_da_trang: int) -> list:
+    """Doc het mot canh (published_posts / posts / feed). Nem TokenChet / XoaBaiError."""
     params = {"fields": FIELDS, "limit": 100, "access_token": token}
     if since:
         params["since"] = since
     if until:
         params["until"] = until
-    url, ra = f"{GRAPH}/{page_id}/published_posts", []
+    url, ra, lan_nghi = f"{GRAPH}/{page_id}/{canh}", [], 0
     for trang in range(toi_da_trang):
         if nen_dung and nen_dung():
             break
-        st, d, h = get(url, params)
+        st, d, h = get(url, params, cookie)
         code, msg = ma_loi(d)
         if code == 190:
             raise TokenChet(f"token hết hạn/không hợp lệ (190): {msg}")
         if code in MA_HAN_MUC:
-            raise XoaBaiError(f"đụng hạn mức khi liệt kê ({code}): {msg}")
+            # Facebook chan vi goi qua nhanh: NGHI roi doc lai dung trang nay (ban cu bo ca dong).
+            if lan_nghi >= len(NGHI_HAN_MUC):
+                raise XoaBaiError(f"đụng hạn mức khi liệt kê ({code}): {msg} — đã nghỉ {lan_nghi} lần")
+            giay = NGHI_HAN_MUC[lan_nghi]
+            lan_nghi += 1
+            log(f"[{page_id}] Facebook chặn khi liệt kê ({code}) — nghỉ {giay // 60} phút rồi đọc lại")
+            sleep(giay)
+            continue
         if code or st >= 400:
             raise XoaBaiError(f"không liệt kê được bài ({code or st}): {msg}")
         ds = d.get("data") or []
         ra.extend(p for p in ds if isinstance(p, dict) and p.get("id"))
-        noi(f"[{page_id}] trang {trang + 1}: +{len(ds)} bài (tổng {len(ra)})")
+        log(f"[{page_id}] {canh} trang {trang + 1}: +{len(ds)} bài (tổng {len(ra)})")
         url = ((d.get("paging") or {}).get("next")) or ""
         if not url or not ds:
             break
+        url = _ep_limit(url)
         params = {}
         pct = han_muc_pct(h)
         if pct >= NGUONG_CHAM:
-            noi(f"[{page_id}] hạn mức {pct:.0f}% — chậm lại")
-    return loc_bai(ra, "tat_ca", since, until)
+            log(f"[{page_id}] hạn mức {pct:.0f}% — chậm lại")
+            sleep(10.0)
+    return ra
 
 
-def xoa_mot_bai(post_id: str, token: str, *, delete: Callable = _delete) -> tuple:
+def liet_ke_bai(page_id: str, token: str, since: int = 0, until: int = 0, *,
+                cookie: str = "", get: Optional[Callable] = None,
+                log: Optional[Callable[[str], None]] = None,
+                nen_dung: Optional[Callable[[], bool]] = None, toi_da_trang: int = 200,
+                sleep: Callable = time.sleep) -> list:
+    """Cac bai da dang cua page trong [since, until) (API loc + may loc lai). Nem TokenChet / XoaBaiError.
+
+    Thu lan luot cac canh trong ``CANH_BAI``: ``published_posts`` truoc (dung cho page minh quan ly),
+    canh nao bao "khong co quyen / khong co canh nay" thi thu canh ke (``posts``, ``feed``) — page chi co
+    user token van doc duoc, giong tool tham khao.
+    """
+    get = get or _get
+    noi = log or (lambda _m: None)
+    loi_cuoi = None
+    for i, canh in enumerate(CANH_BAI):
+        try:
+            ra = _mot_canh(page_id, canh, token, since, until, get=get, log=noi, sleep=sleep,
+                           cookie=cookie, nen_dung=nen_dung, toi_da_trang=toi_da_trang)
+        except TokenChet:
+            raise
+        except XoaBaiError as exc:
+            code = 0
+            m = re.search(r"\((\d+)\)", str(exc))
+            if m:
+                code = int(m.group(1))
+            loi_cuoi = exc
+            if code in MA_DOI_CANH and i + 1 < len(CANH_BAI):
+                noi(f"[{page_id}] {canh} không dùng được ({code}) — thử /{CANH_BAI[i + 1]}")
+                continue
+            raise
+        return loc_bai(ra, "tat_ca", since, until)
+    raise loi_cuoi or XoaBaiError("không liệt kê được bài")
+
+
+def xoa_mot_bai(post_id: str, token: str, *, cookie: str = "", delete: Optional[Callable] = None) -> tuple:
     """DELETE /{post_id} -> (ok, loi, headers). Ma 190 -> nem TokenChet; ma han muc -> nem XoaBaiError."""
-    st, d, h = delete(f"{GRAPH}/{post_id}", {"access_token": token})
+    delete = delete or _delete
+    st, d, h = delete(f"{GRAPH}/{post_id}", {"access_token": token}, cookie)
     code, msg = ma_loi(d)
     if code == 190:
         raise TokenChet(f"token hết hạn/không hợp lệ (190): {msg}")
@@ -305,8 +696,9 @@ def xoa_mot_bai(post_id: str, token: str, *, delete: Callable = _delete) -> tupl
 
 
 def chay_xoa(page_id: str, token: str, tu: str, den: str, loai: str = "tat_ca", *,
-             dry: bool = True, gioi_han: int = 0, cach_giay: float = 2.0,
-             get: Callable = _get, delete: Callable = _delete, sleep: Callable = time.sleep,
+             dry: bool = True, gioi_han: int = 0, cach_giay: float = 2.0, cookie: str = "",
+             get: Optional[Callable] = None, delete: Optional[Callable] = None,
+             sleep: Callable = time.sleep,
              nen_dung: Optional[Callable[[], bool]] = None,
              on_tien_do: Optional[Callable[[dict], None]] = None,
              log: Optional[Callable[[str], None]] = None) -> dict:
@@ -316,6 +708,7 @@ def chay_xoa(page_id: str, token: str, tu: str, den: str, loai: str = "tat_ca", 
          "bo_qua": n (qua gioi han), "loi": "" | ly do dung, "ds": [bai khop {id, created_time, loai, message}]}.
     Xoa TUNG bai, nghi ``cach_giay`` giua 2 bai; dinh han muc -> nghi theo NGHI_HAN_MUC roi thu lai bai do.
     """
+    get, delete = get or _get, delete or _delete
     noi = log or (lambda _m: None)
     kq = {"ok": False, "quet": 0, "khop": 0, "xoa": 0, "loi_bai": [], "bo_qua": 0, "loi": "", "ds": []}
     since, until, loi = khoang_ngay(tu, den)
@@ -329,7 +722,7 @@ def chay_xoa(page_id: str, token: str, tu: str, den: str, loai: str = "tat_ca", 
         kq["loi"] = "Chưa có token."
         return kq
     try:
-        bai = liet_ke_bai(page_id, token, since, until, get=get, log=noi, nen_dung=nen_dung)
+        bai = liet_ke_bai(page_id, token, since, until, cookie=cookie, get=get, log=noi, nen_dung=nen_dung, sleep=sleep)
     except XoaBaiError as exc:
         kq["loi"] = str(exc)
         return kq
@@ -358,7 +751,7 @@ def chay_xoa(page_id: str, token: str, tu: str, den: str, loai: str = "tat_ca", 
         pid = str(p["id"])
         while True:
             try:
-                ok, ly_do, h = xoa_mot_bai(pid, token, delete=delete)
+                ok, ly_do, h = xoa_mot_bai(pid, token, cookie=cookie, delete=delete)
             except TokenChet as exc:
                 kq["loi"] = str(exc)
                 return kq
@@ -390,6 +783,23 @@ def chay_xoa(page_id: str, token: str, tu: str, den: str, loai: str = "tat_ca", 
             sleep(cach_giay)
     kq["ok"] = not kq["loi"]
     return kq
+
+
+def thong_ke_nam(page_id: str, token: str, *, cookie: str = "", get: Optional[Callable] = None,
+                 log: Optional[Callable[[str], None]] = None,
+                 nen_dung: Optional[Callable[[], bool]] = None,
+                 sleep: Callable = time.sleep) -> tuple:
+    """Doc HET bai cua page roi dem theo nam -> ({nam: {...}}, loi). Dung de nguoi dung chon nam ma xoa."""
+    get = get or _get
+    if not (page_id or "").strip():
+        return {}, "Chưa có ID fanpage."
+    if not (token or "").strip():
+        return {}, "Chưa có token."
+    try:
+        bai = liet_ke_bai(page_id, token, 0, 0, cookie=cookie, get=get, log=log, nen_dung=nen_dung, sleep=sleep)
+    except XoaBaiError as exc:
+        return {}, str(exc)
+    return dem_theo_nam(bai), ""
 
 
 def dong_txt(acc_id: str, page_id: str, bai: dict) -> str:

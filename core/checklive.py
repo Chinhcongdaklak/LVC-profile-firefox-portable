@@ -163,25 +163,30 @@ def derive_token(manager, account, *, port: int = 9357,
     """
     from core import bidi
     noi = log or (lambda _m: None)
+    # Cach nguoi dung chi (07/10): mo business.facebook.com/business_locations/ (phien da nhap 2FA)
+    # roi tim dong EAAG trong HTML. Uu tien EAAG (token Business Suite), xep token DAI len truoc.
     grab = r"""
     (async () => {
       const found = new Set();
-      const scan = s => { const m = (s||'').match(/EAA[A-Za-z0-9]{30,}/g); if (m) m.forEach(x => found.add(x)); };
+      const scan = s => { const m = (s||'').match(/EAA[A-Za-z0-9]{20,}/g); if (m) m.forEach(x => found.add(x)); };
       scan(document.documentElement.innerHTML);
-      try { if (window.require) { const d = require("DTSGInitialData"); } } catch (e) {}
-      for (const u of ["/adsmanager/manage/campaigns", "/business_locations", "/content_management", "/settings"]) {
+      for (const u of ["https://business.facebook.com/business_locations/",
+                       "https://business.facebook.com/content_management",
+                       "https://business.facebook.com/settings"]) {
         try { const r = await fetch(u, {credentials:'include'}); scan(await r.text()); } catch (e) {}
       }
-      return JSON.stringify([...found].slice(0, 3));
+      const arr = [...found].sort((a, b) =>
+        (b.startsWith('EAAG') - a.startsWith('EAAG')) || (b.length - a.length));
+      return JSON.stringify(arr.slice(0, 5));
     })()
     """
     try:
         manager.close(account, wait=6.0)
-        manager.launch_debug(account, "https://www.facebook.com/", port)
+        manager.launch_debug(account, "https://business.facebook.com/business_locations/", port)
         if not bidi.wait_ready(port, timeout=30):
             raise CheckLiveError("Trình duyệt chưa sẵn sàng để lấy token.")
         import time
-        time.sleep(5)
+        time.sleep(6)
         raw = bidi.run_js(port, grab, timeout=60)
         toks = json.loads(raw) if raw.strip().startswith("[") else []
         for t in toks:

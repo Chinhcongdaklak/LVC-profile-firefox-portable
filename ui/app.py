@@ -111,6 +111,7 @@ COLUMNS = (
     ("group", "Nhóm", 110, "w"),
     ("profile", "Profile", 90, "center"),
     ("cookie", "Cookie", 80, "center"),
+    ("token", "Token", 120, "center"),
     ("running", "Đang chạy", 85, "center"),
     ("status", "Trạng thái", 95, "center"),
     ("pro", "Chuyên nghiệp", 105, "center"),
@@ -1110,6 +1111,8 @@ class App(ctk.CTk):
                                command=self.save_cookie_from_profile)
         self._menu.add_command(label="🪪 Lấy tên + ngày sinh",
                                command=self.lay_thong_tin_selected)
+        self._menu.add_command(label="🔑 Lấy token (business_locations)",
+                               command=self.lay_token_selected)
         self._menu.add_command(label="Xuất cookie từ profile", command=self.export_cookie)
         self._menu.add_separator()
         self._menu.add_command(label="Xoá acc", command=self.delete_accounts)
@@ -1720,6 +1723,7 @@ class App(ctk.CTk):
             "mail": account.recovery_mail or "—",
             "twofa": "có" if account.twofa else "—",
             "cookie": f"{cookie_count}" if cookie_count else "—",
+            "token": self._o_token(account),
             "proxy": proxy.display(mask=not show) or "—",
             "identity": self._identity_cell(account),
             "group": account.group or "—",
@@ -1748,6 +1752,17 @@ class App(ctk.CTk):
         if account.proxy_status:
             return account.proxy_status
         return account.status or "—"
+
+    @staticmethod
+    def _o_token(account: Account) -> str:
+        """Cot "Token": token Graph cua acc, CHE bot (khong bao gio hien het token).
+
+        Luu o extra["token"] (data/ gitignore). Rong = chua lay. Bam chuot phai acc >
+        "Lay token" de tool tu lay, hoac sua tay.
+        """
+        from core import fbxoabai as _xb
+        tok = str((getattr(account, "extra", None) or {}).get("token") or "").strip()
+        return _xb.che_token(tok) if tok else "—"
 
     @staticmethod
     def _identity_cell(account: Account) -> str:
@@ -3007,6 +3022,31 @@ class App(ctk.CTk):
         """Ghi cookie da luu vao profile — nghiep vu o core.modun.tao_profile.nap_cookie_da_luu."""
         from core.modun.tao_profile import nap_cookie_da_luu
         return nap_cookie_da_luu(self.manager, account, replace=replace, domain=domain)
+    def lay_token_selected(self) -> None:
+        """Chuot phai: lay token Graph cho acc dang chon (mo-dun "lay_token").
+
+        Thu HTTP business_locations truoc (nhanh), cookie yeu thi mo trinh duyet acc.
+        Ghi vao cot "Token" (extra["token"], che bot khi hien).
+        """
+        selected = self._require_selection()
+        if not selected:
+            return
+        co_tok = [a for a in selected
+                  if str((a.extra or {}).get("token") or "").strip()]
+        lam_moi = False
+        if co_tok:
+            tra = messagebox.askyesnocancel(
+                "Lấy token",
+                f"{len(co_tok)}/{len(selected)} acc đã có token." + chr(10) * 2
+                + "• Có — lấy lại HẾT (ghi đè token cũ)" + chr(10)
+                + "• Không — chỉ lấy acc chưa có token",
+                parent=self)
+            if tra is None:
+                return
+            lam_moi = bool(tra)
+        self.goi_modun("lay_token", selected, done_message="Đã lấy token.",
+                       tieu_de="Lấy token", tu_tao_profile=True, lam_moi=lam_moi)
+
     def lay_thong_tin_selected(self) -> None:
         """Chuot phai: lay TEN + NGAY SINH cho acc dang chon (mo-dun "lay_thong_tin").
 

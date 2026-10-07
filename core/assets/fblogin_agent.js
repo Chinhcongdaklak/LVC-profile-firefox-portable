@@ -257,8 +257,49 @@ if (typeof sendAsyncMessage === "function") {
     })();
   }
 
+  // ---- LAY TOKEN (business_locations) -----------------------------------------------------
+  // Nguoi dung chi 07/10: vao business.facebook.com/business_locations/ (nhap 2FA neu bi hoi) roi
+  // doc dong EAAG. Dung LAI bo may 2FA cua agent login (codeInput/contBtn/twofaTick), them quet EAAG.
+  var tokenDaBao = false;
+  function quetToken(doc) {
+    var H = "";
+    try { H = doc.documentElement.innerHTML || ""; } catch (e) { return ""; }
+    var g = H.match(/EAAG[A-Za-z0-9]{20,}/g);
+    if (g && g.length) { return g.sort(function (a, b) { return b.length - a.length; })[0]; }
+    var e2 = H.match(/EAA[A-Za-z0-9]{20,}/g);
+    return e2 && e2.length ? e2.sort(function (a, b) { return b.length - a.length; })[0] : "";
+  }
+  function layTokenPage(win, cmd) {
+    var doc = win.document, step = cmd.delay || 2500, waited = 0, cap = cmd.formTimeout || 90000;
+    report("seen", "[token] " + win.location.href.slice(0, 80) + " | " + dump(doc));
+    win.setTimeout(function tick() {
+      if (tokenDaBao) { return; }
+      var href = low(win.location.href);
+      // 1) Trang 2FA reauth / two_step -> dien ma (cha lam moi cmd.code moi 5s).
+      if (href.indexOf("twofactor/reauth") !== -1 || href.indexOf("two_step") !== -1
+          || codeInput(doc)) {
+        twofaTick(win, doc, cmd);
+      }
+      // 2) Quet EAAG (tren business_locations hoac trang business bat ky).
+      var tok = quetToken(doc);
+      if (tok) {
+        tokenDaBao = true;
+        report("token-found", tok);         // cha doc, che bot khi hien/log
+        return;
+      }
+      // 3) Chua ra token + chua o trang 2FA + dang o login -> bao de cha biet.
+      if (href.indexOf("/login") !== -1 && !codeInput(doc)) {
+        report("token-login", win.location.href.slice(0, 80));
+      }
+      waited += step;
+      if (waited < cap) { win.setTimeout(tick, step); }
+      else { report("token-timeout", "hết giờ chưa thấy EAAG — " + win.location.href.slice(0, 70)); }
+    }, 1500);
+  }
+
   function onPage(win) {
     var cmd = getCommand();
+    if (cmd && cmd.action === "gettoken") { return layTokenPage(win, cmd); }
     if (!cmd || cmd.action !== "weblogin") { return; }
     var doc = win.document, href = low(win.location.href);
 
