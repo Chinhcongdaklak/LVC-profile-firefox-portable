@@ -1,8 +1,11 @@
 """Tab "🗑 Xoá bài viết" — xoá bài đã đăng của fanpage theo KHOẢNG NGÀY + THỂ LOẠI bằng Graph API (token page).
 
 Bảng: STT · acc FB · fanpage · từ ngày · đến ngày · thể loại · trạng thái. Mỗi DÒNG = một fanpage của một acc.
-Token dán theo ACC (nút 🔑 Token, che khi hiện); "🔎 Quét fanpage" gọi /me/accounts lấy page + page token;
-bấm đúp ô fanpage để gõ ID tay; bấm đúp ô ngày/thể loại để sửa. "🔍 Quét trước" CHỈ ĐẾM; "🗑 Xoá thật" hỏi xác
+XOÁ BẰNG COOKIE: tool TỰ LẤY token từ cookie/phiên của acc (mở trình duyệt acc 1 lần, derive_token) rồi xoá
+qua Graph API đúng như source tham khảo — người dùng KHÔNG dán token. "🔎 Quét fanpage" cũng tự lấy token.
+bấm đúp ô fanpage để gõ ID tay; bấm đúp ô ngày/thể loại để sửa. Hàng "Đề xuất" đặt nhanh khoảng ngày:
+CẢ NĂM (chọn năm), TRƯỚC NGÀY (xoá sạch bài cũ hơn một ngày mốc), CŨ HƠN N ngày/tháng/năm, và "📊 Đếm theo năm"
+đọc hết bài của page rồi báo mỗi năm còn bao nhiêu bài để người dùng biết mà chọn. "🔍 Quét trước" CHỈ ĐẾM; "🗑 Xoá thật" hỏi xác
 nhận kèm số bài đã đếm rồi mới xoá. Nghiệp vụ ở core/fbxoabai + mô-đun xoa_bai (ADR-029); tab chỉ vẽ/dịch.
 Token là bí mật: lưu data/xoa_bai.json (gitignore), nhật ký chỉ in dạng che.
 """
@@ -25,7 +28,9 @@ from .dialogs import AccountPickerDialog, SimplePromptDialog
 
 PAD = 8
 TOOL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-COLS = (("stt", "STT", 44, "center"), ("acc", "Acc FB", 130, "w"), ("page", "Fanpage", 200, "w"),
+COLS = (("stt", "STT", 44, "center"), ("acc", "Acc FB", 130, "w"),
+        ("cookie", "Cookie", 70, "center"), ("ck_tt", "TT cookie", 104, "center"),
+        ("token", "Token", 150, "w"), ("page", "Fanpage", 200, "w"),
         ("tu", "Từ ngày", 96, "center"), ("den", "Đến ngày", 96, "center"),
         ("loai", "Thể loại", 84, "center"), ("tt", "Trạng thái", 220, "w"))
 NHAN_LOAI = [n for _, n in xb.LOAI]
@@ -41,7 +46,8 @@ class XoaBaiTab(ctk.CTkFrame):
         self.app = app
         #: Dòng bảng: {khoa: {acc_id, page_id, page_ten, token, tu, den, loai, tt}} — giữ thứ tự.
         self._dong: dict = {}
-        self._acc_token: dict = {}          # id acc -> user/page token (BÍ MẬT)
+        self._acc_token: dict = {}          # id acc -> token LẤY TỪ COOKIE (cache phiên, bí mật)
+        self._ck_tt: dict = {}              # id acc -> trạng thái cookie lần kiểm gần nhất
         self._running = False
         self._stopped = False
         self._restoring = False
@@ -59,13 +65,17 @@ class XoaBaiTab(ctk.CTkFrame):
         r1 = ctk.CTkFrame(self)
         r1.pack(fill="x", padx=PAD, pady=(PAD, 4))
         ctk.CTkButton(r1, text="👤 Chọn acc", width=110, command=self._pick_accounts).pack(side="left", padx=(8, 4), pady=6)
-        ctk.CTkButton(r1, text="🔑 Token", width=90, fg_color="#6a4fa5",
-                      command=self._nhap_token).pack(side="left", padx=4, pady=6)
         ctk.CTkButton(r1, text="🔎 Quét fanpage", width=120, fg_color="#2f6f9f",
                       command=self._quet_page).pack(side="left", padx=4, pady=6)
         ctk.CTkButton(r1, text="➕ Nhập ID page", width=120, command=self._them_page_tay).pack(side="left", padx=4, pady=6)
         ctk.CTkButton(r1, text="🗑 Xoá dòng", width=100, fg_color="gray40",
                       command=self._xoa_dong).pack(side="left", padx=4, pady=6)
+        self.ck_btn = ctk.CTkButton(r1, text="🔍 Kiểm cookie", width=120, fg_color="#2f7f5f",
+                                    command=self._kiem_cookie)
+        self.ck_btn.pack(side="left", padx=4, pady=6)
+        self.token_btn = ctk.CTkButton(r1, text="🔑 Lấy token", width=112, fg_color="#2f7f5f",
+                                       command=self._lay_token_chon)
+        self.token_btn.pack(side="left", padx=4, pady=6)
         self.lbl_token = ctk.CTkLabel(r1, text="", text_color="gray60")
         self.lbl_token.pack(side="right", padx=8)
 
@@ -80,12 +90,43 @@ class XoaBaiTab(ctk.CTkFrame):
         self.den_entry.pack(side="left", pady=6)
         ctk.CTkLabel(r2, text="Thể loại", font=dam).pack(side="left", padx=(10, 4))
         self.loai_menu = ctk.CTkOptionMenu(r2, width=100, values=NHAN_LOAI)
-        self.loai_menu.set(NHAN_LOAI[0])
+        self.loai_menu.set(xb.NHAN_LOAI["video"])   # mặc định xoá VIDEO fanpage
         self.loai_menu.pack(side="left", pady=6)
         ctk.CTkButton(r2, text="✓ Áp cho dòng đã chọn", width=160, command=self._ap_dong).pack(side="left", padx=(10, 4), pady=6)
         for nhan, ngay in (("7 ngày", 7), ("30 ngày", 30), ("90 ngày", 90)):
             ctk.CTkButton(r2, text=nhan, width=64, fg_color="gray40",
                           command=lambda n=ngay: self._dat_nhanh(n)).pack(side="left", padx=2, pady=6)
+
+        # Hàng 2b: ĐỀ XUẤT — đặt khoảng ngày theo năm / trước ngày / cũ hơn N; mỗi nút áp luôn cho dòng.
+        r2b = ctk.CTkFrame(self)
+        r2b.pack(fill="x", padx=PAD, pady=4)
+        ctk.CTkLabel(r2b, text="Đề xuất", font=dam).pack(side="left", padx=(8, 6))
+        self.nam_menu = ctk.CTkOptionMenu(r2b, width=86, values=[str(n) for n in xb.cac_nam()])
+        self.nam_menu.set(str(xb.nam_hien_tai()))
+        self.nam_menu.pack(side="left", pady=6)
+        ctk.CTkButton(r2b, text="📅 Cả năm", width=96, fg_color="#2f6f9f",
+                      command=self._dat_nam).pack(side="left", padx=(4, 12), pady=6)
+
+        ctk.CTkLabel(r2b, text="Trước ngày").pack(side="left", padx=(0, 4))
+        self.truoc_entry = ctk.CTkEntry(r2b, width=100, placeholder_text="dd/mm/yyyy")
+        self.truoc_entry.pack(side="left", pady=6)
+        ctk.CTkButton(r2b, text="⏮ Bài cũ hơn ngày này", width=160, fg_color="#2f6f9f",
+                      command=self._dat_truoc_ngay).pack(side="left", padx=(4, 12), pady=6)
+
+        ctk.CTkLabel(r2b, text="Cũ hơn").pack(side="left", padx=(0, 4))
+        self.cu_hon_entry = ctk.CTkEntry(r2b, width=46)
+        self.cu_hon_entry.insert(0, "6")
+        self.cu_hon_entry.pack(side="left", pady=6)
+        self.don_vi_menu = ctk.CTkOptionMenu(r2b, width=84, values=[n for _, n in xb.DON_VI])
+        self.don_vi_menu.set(xb.NHAN_DON_VI["thang"])
+        self.don_vi_menu.pack(side="left", padx=(4, 0), pady=6)
+        ctk.CTkButton(r2b, text="✓ Áp", width=56, fg_color="#2f6f9f",
+                      command=self._dat_cu_hon).pack(side="left", padx=(4, 12), pady=6)
+
+        self.dem_nam_btn = ctk.CTkButton(r2b, text="📊 Đếm theo năm", width=130, fg_color="#6a4fa5",
+                                         command=self._dem_nam)
+        self.dem_nam_btn.pack(side="left", padx=4, pady=6)
+
 
         # Hàng 3: bảng
         box = ctk.CTkFrame(self)
@@ -156,6 +197,69 @@ class XoaBaiTab(ctk.CTkFrame):
     def _chon(self) -> list:
         return [k for k in self.tree.selection() if k in self._dong]
 
+    def _cookie_acc(self, acc_id: str) -> str:
+        """Cookie TEXT của acc — kèm mỗi request Graph.
+
+        Lấy THẲNG cookie trong bảng Quản lý acc (người dùng chốt 07/10: "cookie lấy từ bảng
+        quản lý acc có sẵn") — đó cũng là cookie hiện ở cột "Cookie" của tab này, nhìn sao
+        thì chạy vậy. Ô cookie trong bảng rỗng thì mới đọc tạm cookie tươi trong profile;
+        muốn cập nhật ô đó thì bấm chuột phải acc > "🍪 Lấy lại cookie mới (từ profile)".
+        """
+        acc = self.app.store.get(acc_id) if hasattr(self.app, "store") else None
+        if acc is None:
+            return ""
+        ck = (getattr(acc, "cookie", "") or "").strip()
+        if ck:
+            return ck
+        try:
+            from core.modun.check_tuong import cookie_cua_acc
+            return cookie_cua_acc(self.app.manager, acc)
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def _co_cookie(self, acc_id: str) -> bool:
+        """Acc có cookie để gửi kèm request không (cookie đã lưu, hoặc có profile Firefox để lấy tươi).
+        Kiểm nhẹ (không đọc sqlite mỗi lần vẽ)."""
+        acc = self.app.store.get(acc_id) if hasattr(self.app, "store") else None
+        if acc is None:
+            return False
+        if (getattr(acc, "cookie", "") or "").strip():
+            return True
+        try:
+            return bool(self.app.manager.is_installed(acc))
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _o_cookie(self, acc_id: str) -> str:
+        """Cot "Cookie": so cookie facebook acc dang co. Dem NHE (khong doc sqlite moi lan ve)."""
+        acc = self.app.store.get(acc_id) if hasattr(self.app, "store") else None
+        if acc is None:
+            return "—"
+        so = 0
+        try:
+            from core import cookies as _ck
+            so = len([c for c in _ck.parse(getattr(acc, "cookie", "") or "",
+                                           default_domain=".facebook.com")])
+        except Exception:  # noqa: BLE001
+            so = 0
+        if so:
+            return str(so)
+        return "profile" if self._co_cookie(acc_id) else "—"
+
+    def _o_ck_tt(self, acc_id: str) -> str:
+        """Cot "TT cookie": ket qua kiem cookie gan nhat (nut 🔍 Kiểm cookie / truoc khi xoa)."""
+        return self._ck_tt.get(acc_id, "chưa kiểm")
+
+    def _o_token(self, d: dict) -> str:
+        """Cot "Token": token cua dong, da CHE bot + noi ro tu dau ra."""
+        tok = (d.get("token") or "").strip()
+        if tok:
+            return f"{xb.che_token(tok)} (nhập tay)"
+        tok = (self._acc_token.get(d["acc_id"]) or "").strip()
+        if tok:
+            return f"{xb.che_token(tok)} (tự lấy)"
+        return "— bấm đúp để nhập"
+
     def _ve(self) -> None:
         tree = getattr(self, "tree", None)
         if tree is None:
@@ -165,11 +269,18 @@ class XoaBaiTab(ctk.CTkFrame):
             page = d.get("page_ten") or d["page_id"]
             if d.get("page_ten") and d["page_ten"] != d["page_id"]:
                 page = f"{d['page_ten']} ({d['page_id']})"
-            tree.insert("", "end", iid=k, values=(i, d["acc_id"], page, d.get("tu", ""), d.get("den", ""),
-                                                  xb.NHAN_LOAI.get(d.get("loai", "tat_ca"), "Tất cả"),
-                                                  d.get("tt", "") or "chờ"))
-        acc_co = sum(1 for a in self._acc_token if self._acc_token[a])
-        self.lbl_token.configure(text=f"{acc_co} acc có token" if acc_co else "chưa dán token acc nào")
+            o = {"stt": i, "acc": d["acc_id"], "page": page,
+                 "cookie": self._o_cookie(d["acc_id"]), "ck_tt": self._o_ck_tt(d["acc_id"]),
+                 "token": self._o_token(d),
+                 "tu": d.get("tu", ""), "den": d.get("den", ""),
+                 "loai": xb.NHAN_LOAI.get(d.get("loai", "tat_ca"), "Tất cả"),
+                 "tt": d.get("tt", "") or "chờ"}
+            tree.insert("", "end", iid=k, values=tuple(o[c[0]] for c in COLS))
+        accs = {d["acc_id"] for d in self._dong.values()}
+        ck_co = sum(1 for a in accs if self._co_cookie(a))
+        self.lbl_token.configure(
+            text=(f"{ck_co}/{len(accs)} acc có cookie — tự lấy token khi xoá" if accs
+                  else "xoá bằng cookie (tự lấy token)"))
 
     def _them_dong(self, acc_id: str, page_id: str, page_ten: str = "", token: str = "") -> str:
         k = _khoa(acc_id, page_id)
@@ -204,39 +315,40 @@ class XoaBaiTab(ctk.CTkFrame):
                 self._them_dong(a, "", "")
         self._ve()
         self._persist_cfg()
-        self.app.set_status("Bấm 🔑 Token rồi 🔎 Quét fanpage, hoặc ➕ Nhập ID page cho acc vừa chọn.")
+        self.app.set_status("Bấm 🔎 Quét fanpage, hoặc ➕ Nhập ID page cho acc vừa chọn (token tự lấy từ cookie).")
 
-    def _nhap_token(self) -> None:
-        accs = self._acc_dang_chon() or sorted({d["acc_id"] for d in self._dong.values()})
-        if not accs:
-            messagebox.showinfo("Token", "Chọn acc (dòng trong bảng) trước.", parent=self.app)
-            return
-        nhan = ", ".join(accs[:3]) + ("…" if len(accs) > 3 else "")
-        tk_moi = SimplePromptDialog(self.app, "Token Graph API",
-                                    f"Dán page token hoặc user token (pages_manage_posts) cho acc: {nhan}",
-                                    "").show()
-        if tk_moi is None:
-            return
-        tk_moi = tk_moi.strip()
-        for a in accs:
-            self._acc_token[a] = tk_moi
-            for d in self._dong.values():
-                if d["acc_id"] == a and not d.get("token"):
-                    d["token"] = tk_moi
-        self._ve()
-        self._persist_cfg()
-        self._log(f"đã lưu token {xb.che_token(tk_moi)} cho {len(accs)} acc")
+    def _token_cookie(self, acc_id: str) -> str:
+        """Lấy token TỪ COOKIE của acc (mở trình duyệt acc). Cache theo acc trong phiên. Chạy ở LUỒNG NỀN."""
+        if acc_id in self._acc_token and self._acc_token[acc_id]:
+            return self._acc_token[acc_id]
+        acc = self.app.store.get(acc_id)
+        if acc is None:
+            self._log(f"[{acc_id}] không thấy acc để lấy token")
+            return ""
+        self._log(f"[{acc_id}] lấy token từ cookie (mở trình duyệt acc)...")
+        tok, loi = xb.token_tu_cookie(self.app.manager, acc, log=self._log)
+        self._acc_token[acc_id] = tok
+        if tok:
+            self._log(f"[{acc_id}] đã lấy token từ cookie: {xb.che_token(tok)}")
+        else:
+            self._log(f"[{acc_id}] KHÔNG lấy được token từ cookie: {loi}")
+        return tok
 
     def _quet_page(self) -> None:
         accs = self._acc_dang_chon() or sorted({d["acc_id"] for d in self._dong.values()})
-        accs = [a for a in accs if self._acc_token.get(a)]
         if not accs:
-            messagebox.showinfo("Quét fanpage", "Acc chưa có token — bấm 🔑 Token trước.", parent=self.app)
+            messagebox.showinfo("Quét fanpage", "Chọn acc trước.", parent=self.app)
             return
+        self._log(f"=== QUÉT FANPAGE {len(accs)} acc (tự lấy token từ cookie) ===")
 
         def work():
             for a in accs:
-                ds, loi = xb.cac_page_cua_token(self._acc_token[a])
+                tok = self._token_cookie(a)                       # mở trình duyệt acc, lấy token
+                if not tok:
+                    self._log(f"[{a}] bỏ qua — không lấy được token từ cookie")
+                    continue
+                ck = self._cookie_acc(a)
+                ds, loi = xb.cac_page_cua_token(tok, cookie=ck)
                 if loi:
                     self._log(f"[{a}] quét fanpage lỗi: {loi}")
                     continue
@@ -247,7 +359,7 @@ class XoaBaiTab(ctk.CTkFrame):
                     for k in [k for k, d in self._dong.items() if d["acc_id"] == a and not d["page_id"]]:
                         self._dong.pop(k, None)
                     for p in ds:
-                        self._them_dong(a, p["id"], p["name"], p.get("access_token") or self._acc_token[a])
+                        self._them_dong(a, p["id"], p["name"], p.get("access_token") or "")
                     self._ve()
                     self._persist_cfg()
                 self.app._post(cap_nhat)
@@ -264,9 +376,35 @@ class XoaBaiTab(ctk.CTkFrame):
         pid = pid.strip()
         for k in [k for k, d in self._dong.items() if d["acc_id"] == accs[0] and not d["page_id"]]:
             self._dong.pop(k, None)
-        self._them_dong(accs[0], pid, "", self._acc_token.get(accs[0], ""))
+        acc_id = accs[0]
+        self._them_dong(acc_id, pid, "", "")
         self._ve()
         self._persist_cfg()
+        # Đọc tên page (tự lấy token từ cookie, luồng nền) nếu acc có cookie.
+        if self._co_cookie(acc_id):
+            self._doc_ten_page(acc_id, pid)
+
+    def _doc_ten_page(self, acc_id: str, page_id: str) -> None:
+        """Đọc tên fanpage vừa gõ ID (luồng nền) để dòng không trơ trọi một dãy số.
+        Token lấy từ cookie acc."""
+        def work():
+            tok = self._token_cookie(acc_id)
+            if not tok:
+                return
+            ten, loi = xb.ten_page(page_id, tok, cookie=self._cookie_acc(acc_id))
+            if loi:
+                self._log(f"[{page_id}] {loi}")
+                return
+            self._log(f"[{page_id}] tên fanpage: {ten}")
+
+            def cap_nhat():
+                k = _khoa(acc_id, page_id)
+                if k in self._dong:
+                    self._dong[k]["page_ten"] = ten
+                    self._ve()
+                    self._persist_cfg()
+            self.app._post(cap_nhat)
+        threading.Thread(target=work, daemon=True, name="xoabai-tenpage").start()
 
     def _xoa_dong(self) -> None:
         chon = self._chon()
@@ -296,11 +434,164 @@ class XoaBaiTab(ctk.CTkFrame):
 
     def _dat_nhanh(self, ngay: int) -> None:
         """Đặt nhanh: từ (hôm nay - N ngày) đến hôm nay vào 2 ô."""
-        hom_nay = time.time()
+        tu, den, _loi = xb.khoang_n_ngay(ngay)
+        self._dien_khoang(tu, den)
+
+    def _dien_khoang(self, tu: str, den: str, *, ap: bool = False, nhan: str = "") -> None:
+        """Đổ (tu, den) vào 2 ô Từ/Đến; ``ap`` thì áp luôn cho dòng đang chọn (không chọn = tất cả)."""
         self.tu_entry.delete(0, "end")
-        self.tu_entry.insert(0, time.strftime("%d/%m/%Y", time.localtime(hom_nay - ngay * 86400)))
+        if tu:
+            self.tu_entry.insert(0, tu)
         self.den_entry.delete(0, "end")
-        self.den_entry.insert(0, time.strftime("%d/%m/%Y", time.localtime(hom_nay)))
+        if den:
+            self.den_entry.insert(0, den)
+        if ap:
+            self._ap_dong()
+            if nhan:
+                self._log(nhan)
+
+    def _de_xuat(self, bo: tuple, nhan: str) -> None:
+        """Dùng chung cho 3 nút đề xuất: (tu, den, loi) -> báo lỗi hoặc đổ vào ô + áp cho dòng."""
+        tu, den, loi = bo
+        if loi:
+            messagebox.showwarning("Đề xuất khoảng ngày", loi, parent=self.app)
+            return
+        self._dien_khoang(tu, den, ap=True, nhan=nhan)
+
+    def _dat_nam(self) -> None:
+        """CẢ NĂM đang chọn: 01/01 → 31/12 của năm đó."""
+        nam = self.nam_menu.get().strip()
+        self._de_xuat(xb.khoang_nam(nam), f"đề xuất: cả năm {nam}")
+        self._persist_cfg()
+
+    def _dat_truoc_ngay(self) -> None:
+        """Mọi bài TRƯỚC ngày mốc (không gồm chính ngày đó) — dọn bài cũ một lần."""
+        ngay = self.truoc_entry.get().strip()
+        if not ngay:
+            messagebox.showinfo("Trước ngày", "Gõ ngày mốc (dd/mm/yyyy) đã.", parent=self.app)
+            return
+        self._de_xuat(xb.khoang_truoc_ngay(ngay), f"đề xuất: mọi bài trước ngày {ngay}")
+        self._persist_cfg()
+
+    def _dat_cu_hon(self) -> None:
+        """Bài CŨ HƠN N ngày/tháng/năm tính từ hôm nay."""
+        so = self.cu_hon_entry.get().strip()
+        dv = xb.MA_DON_VI.get(self.don_vi_menu.get(), "thang")
+        self._de_xuat(xb.khoang_cu_hon(so, dv), f"đề xuất: bài cũ hơn {so} {xb.NHAN_DON_VI.get(dv, dv)}")
+        self._persist_cfg()
+
+    def _dem_nam(self) -> None:
+        """Đọc HẾT bài của các fanpage đang chọn rồi báo mỗi năm còn bao nhiêu bài (chỉ đọc, không xoá)."""
+        dong = self._dong_chay()
+        if not dong:
+            messagebox.showinfo("Đếm theo năm", "Chưa có dòng nào có fanpage.", parent=self.app)
+            return
+        self.dem_nam_btn.configure(state="disabled")
+        self._stopped = False
+        self._log(f"=== ĐẾM THEO NĂM {len(dong)} fanpage (chỉ đọc) ===")
+
+        def work():
+            try:
+                for d in dong:
+                    if self._stopped:
+                        break
+                    nhan = d.get("page_ten") or d["page_id"]
+                    self._on_row(d["acc_id"], d["page_id"], {"tt": "đang lấy token / đếm…"})
+                    tok = self._token_cookie(d["acc_id"])
+                    if not tok:
+                        self._on_row(d["acc_id"], d["page_id"], {"tt": "✖ không lấy được token từ cookie"})
+                        continue
+                    d_nam, loi = xb.thong_ke_nam(d["page_id"], tok, cookie=self._cookie_acc(d["acc_id"]),
+                                                 log=self._log, nen_dung=lambda: self._stopped)
+                    if loi:
+                        self._log(f"[{nhan}] lỗi: {loi}")
+                        self._on_row(d["acc_id"], d["page_id"], {"tt": "✖ " + loi[:60]})
+                        continue
+                    tong = sum(o["tong"] for o in d_nam.values())
+                    self._log(f"[{nhan}] tổng {tong} bài:")
+                    for dong_chu in xb.dong_dem_nam(d_nam):
+                        self._log("   " + dong_chu)
+                    nam_ds = [str(n) for n in d_nam if n]
+                    self._on_row(d["acc_id"], d["page_id"],
+                                 {"tt": f"📊 {tong} bài · năm: " + ", ".join(nam_ds[:6])})
+            except Exception as exc:  # noqa: BLE001
+                self._log(f"LỖI: {exc}")
+            finally:
+                self.app._post(lambda: self.dem_nam_btn.configure(state="normal"))
+        threading.Thread(target=work, daemon=True, name="xoabai-demnam").start()
+
+    def _acc_cua_dong_chon(self) -> list:
+        """Acc cua cac DONG dang chon trong bang; khong chon dong nao -> het acc trong bang."""
+        chon = [k for k in self.tree.selection() if k in self._dong]
+        ds = [self._dong[k]["acc_id"] for k in chon] or [d["acc_id"] for d in self._dong.values()]
+        thay, ra = set(), []
+        for a in ds:
+            if a not in thay:
+                thay.add(a)
+                ra.append(a)
+        return ra
+
+    def _kiem_cookie(self) -> None:
+        """Cot "TT cookie": goi HTTP bang cookie tung acc (core.checkwall) — KHONG mo trinh duyet.
+
+        Cookie chet thi lay token tu cookie cung chet -> biet truoc de khoi mo browser vo ich.
+        """
+        accs = self._acc_cua_dong_chon()
+        if not accs:
+            messagebox.showinfo("Kiểm cookie", "Chưa có dòng nào trong bảng.", parent=self.app)
+            return
+        self._log(f"Kiểm cookie {len(accs)} acc (HTTP, không mở trình duyệt)...")
+        for a in accs:
+            self._ck_tt[a] = "đang kiểm…"
+        self._ve()
+        # CHOT o nhap + cookie ngay o LUONG CHINH: doc widget tk tu luong nen -> RuntimeError
+        # "main thread is not in main loop" (da do that 07/10).
+        luong = max(1, self._int(self.luong_entry, 2))
+        items = [(a, self._cookie_acc(a)) for a in accs]
+
+        def work():
+            from core import checkwall
+
+            def on_row(r):
+                nhan = {checkwall.LIVE: "✅ Live", checkwall.DIE: "❌ Die",
+                        checkwall.CHECKPOINT: "⛔ Checkpoint",
+                        checkwall.COOKIE_CHET: "✖ chưa đăng nhập"}.get(r["trang_thai"],
+                                                                        r["trang_thai"])
+                self._ck_tt[r["id"]] = nhan
+                self._log(f"[{r['id']}] cookie: {nhan} — {r.get('chi_tiet', '')}")
+                self.app._post(self._ve)
+
+            checkwall.check_nhieu(items, workers=luong, on_row=on_row)
+            self.app._post(lambda: self._log("Kiểm cookie xong."))
+
+        threading.Thread(target=work, daemon=True, name="xoabai-kiemcookie").start()
+
+    def _lay_token_chon(self) -> None:
+        """Nut "Lay token": tu lay token TU COOKIE cho acc cua cac dong dang chon.
+
+        Mo trinh duyet tung acc nen hoi truoc va chay TUAN TU (derive_token dung mot cong BiDi).
+        """
+        accs = [a for a in self._acc_cua_dong_chon() if not self._acc_token.get(a)]
+        if not accs:
+            messagebox.showinfo("Lấy token",
+                                "Các acc trong bảng đều đã có token rồi.", parent=self.app)
+            return
+        if not messagebox.askyesno(
+                "Lấy token",
+                f"Tool sẽ MỞ TRÌNH DUYỆT lần lượt {len(accs)} acc để lấy token từ cookie."
+                + chr(10) * 2
+                + "Facebook mới hay không lộ token nữa — acc nào không lấy được thì bạn dán "
+                  "token tay vào cột Token (bấm đúp)."
+                + chr(10) * 2 + "Tiếp tục?", parent=self.app):
+            return
+
+        def work():
+            for a in accs:
+                self._token_cookie(a)
+                self.app._post(self._ve)
+            self.app._post(lambda: self._log("Lấy token xong."))
+
+        threading.Thread(target=work, daemon=True, name="xoabai-laytoken").start()
 
     def _sua_o(self, event) -> None:
         """Bấm đúp ô fanpage / từ ngày / đến ngày / thể loại -> sửa tay ngay trong bảng."""
@@ -318,6 +609,19 @@ class XoaBaiTab(ctk.CTkFrame):
             self._ve()
             self._persist_cfg()
             return
+        if key == "token":
+            cu = (d.get("token") or "").strip()
+            moi_tok = SimplePromptDialog(
+                self.app, "Token",
+                f"Token cho acc {d['acc_id']} (để TRỐNG = tool tự lấy từ cookie):", cu).show()
+            if moi_tok is None:
+                return
+            d["token"] = moi_tok.strip()
+            self._ve()
+            self._persist_cfg()
+            return
+        if key in ("cookie", "ck_tt"):
+            return
         if key not in ("page", "tu", "den"):
             return
         tieu_de = {"page": "ID fanpage", "tu": "Từ ngày (dd/mm/yyyy)", "den": "Đến ngày (dd/mm/yyyy)"}[key]
@@ -330,7 +634,7 @@ class XoaBaiTab(ctk.CTkFrame):
             if not moi:
                 return
             self._dong.pop(k, None)
-            self._them_dong(d["acc_id"], moi, "", d.get("token") or self._acc_token.get(d["acc_id"], ""))
+            self._them_dong(d["acc_id"], moi, "", d.get("token") or "")
         else:
             if moi and xb.ngay_tu_chuoi(moi) is None:
                 messagebox.showwarning("Ngày", "Sai định dạng dd/mm/yyyy.", parent=self.app)
@@ -359,13 +663,6 @@ class XoaBaiTab(ctk.CTkFrame):
         dong = self._dong_chay()
         if not dong:
             messagebox.showinfo("Xoá bài", "Chưa có dòng nào có fanpage. Quét fanpage hoặc nhập ID page.", parent=self.app)
-            return
-        for d in dong:
-            d["token"] = d.get("token") or self._acc_token.get(d["acc_id"], "")
-        thieu = [d for d in dong if not d["token"]]
-        if thieu:
-            messagebox.showwarning("Xoá bài", f"{len(thieu)} dòng chưa có token (acc {thieu[0]['acc_id']}…). "
-                                   "Bấm 🔑 Token trước.", parent=self.app)
             return
         for d in dong:
             _s, _u, loi = xb.khoang_ngay(d.get("tu", ""), d.get("den", ""))
@@ -436,11 +733,13 @@ class XoaBaiTab(ctk.CTkFrame):
             return
         data = {"dong": [{k2: v for k2, v in d.items() if k2 in ("acc_id", "page_id", "page_ten", "token", "tu", "den", "loai")}
                          for d in self._dong.values()],
-                "acc_token": dict(self._acc_token),
                 "tu": self.tu_entry.get().strip(), "den": self.den_entry.get().strip(),
                 "loai": xb.MA_THEO_NHAN.get(self.loai_menu.get(), "tat_ca"),
                 "luong": self._int(self.luong_entry, 2), "gioi_han": self._int(self.gioi_han_entry, 0),
-                "cach_giay": self._int(self.cach_entry, 2), "txt": self.txt_entry.get().strip()}
+                "cach_giay": self._int(self.cach_entry, 2), "txt": self.txt_entry.get().strip(),
+                "nam": self.nam_menu.get().strip(), "truoc_ngay": self.truoc_entry.get().strip(),
+                "cu_hon": self.cu_hon_entry.get().strip(),
+                "don_vi": xb.MA_DON_VI.get(self.don_vi_menu.get(), "thang")}
         try:
             os.makedirs(os.path.dirname(self._cfg_path()), exist_ok=True)
             with open(self._cfg_path(), "w", encoding="utf-8") as fh:
@@ -457,8 +756,16 @@ class XoaBaiTab(ctk.CTkFrame):
             return
         self._restoring = True
         try:
-            self._acc_token = {str(k): str(v) for k, v in (c.get("acc_token") or {}).items() if v}
-            for e, key in ((self.tu_entry, "tu"), (self.den_entry, "den"), (self.txt_entry, "txt")):
+            self._acc_token = {}   # token lấy lại từ cookie mỗi phiên, không lưu
+            if c.get("nam") and str(c["nam"]) in self.nam_menu.cget("values"):
+                self.nam_menu.set(str(c["nam"]))
+            if c.get("don_vi") in xb.NHAN_DON_VI:
+                self.don_vi_menu.set(xb.NHAN_DON_VI[c["don_vi"]])
+            if c.get("cu_hon"):
+                self.cu_hon_entry.delete(0, "end")
+                self.cu_hon_entry.insert(0, str(c["cu_hon"]))
+            for e, key in ((self.tu_entry, "tu"), (self.den_entry, "den"), (self.txt_entry, "txt"),
+                           (self.truoc_entry, "truoc_ngay")):
                 if c.get(key):
                     e.delete(0, "end")
                     e.insert(0, str(c[key]))

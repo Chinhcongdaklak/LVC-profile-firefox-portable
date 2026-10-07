@@ -1,7 +1,8 @@
 """Mo-dun XOA BAI VIET FANPAGE — nhom fanpage (ADR-029). Graph API chinh thuc bang token page, KHONG mo trinh duyet.
 
 tham_so:
-  dong: [{"acc_id", "page_id", "token", "tu", "den", "loai"}] — moi dong = 1 fanpage (bang cua tab);
+  dong: [{"acc_id", "page_id", "token", "cookie", "tu", "den", "loai"}] — moi dong = 1 fanpage (bang cua tab);
+        "cookie" rong -> tu lay cookie tuoi cua acc trong profile (nhu check_tuong). Cookie nhet vao header
         thieu "dong" -> moi acc trong ``accs`` lay page tu token acc (tham_so["token"][acc_id]).
   dry (True = chi quet/dem), gioi_han (bai/lan/dong, 0 = khong), cach_giay (giua 2 lan xoa), so_luong (dong song song),
   on_row(acc_id, page_id, dict), nen_dung() -> bool, txt (duong dan TXT ghi bai da xoa).
@@ -23,6 +24,56 @@ def _khoa(d: dict) -> str:
     return f"{d.get('acc_id', '')}|{d.get('page_id', '')}"
 
 
+def _token_cua_acc(nc: NguCanh, acc_id: str, cache: dict, loi_token: dict,
+                   san_co: str = "") -> str:
+    """Token để gọi Graph: ưu tiên token có sẵn; không thì TỰ LẤY từ cookie acc (derive_token), cache
+    lại theo acc. Lấy không được -> ghi lý do vào ``loi_token`` và trả ""."""
+    if san_co:
+        return san_co
+    if acc_id in cache:
+        return cache[acc_id]
+    store = getattr(nc, "store", None)
+    mgr = getattr(nc, "manager", None)
+    acc = store.get(acc_id) if store is not None and hasattr(store, "get") else None
+    if acc is None or mgr is None:
+        loi_token[acc_id] = "thiếu acc/profile để lấy token từ cookie"
+        cache[acc_id] = ""
+        return ""
+    nc.log(f"[{acc_id}] lấy token từ cookie (mở trình duyệt acc)...")
+    from core import fbxoabai
+    tok, loi = fbxoabai.token_tu_cookie(mgr, acc, log=nc.log)
+    cache[acc_id] = tok
+    if not tok:
+        loi_token[acc_id] = loi or "không lấy được token từ cookie"
+        nc.log(f"[{acc_id}] KHÔNG lấy được token từ cookie: {loi_token[acc_id]}")
+    else:
+        nc.log(f"[{acc_id}] đã lấy token từ cookie: {fbxoabai.che_token(tok)}")
+    return tok
+
+
+def _cookie_acc(nc: NguCanh, acc) -> str:
+    """Cookie cua acc: LAY THANG o bang Quan ly acc (account.cookie).
+
+    Nguoi dung chot 07/10: "cookie lay tu bang quan ly acc co san" -- cot "Cookie" cua tab
+    Xoa bai viet hien chinh cookie nay, nhin sao thi chay vay. O do RONG thi moi doc tam
+    cookie tuoi trong profile; muon cap nhat o do thi chuot phai acc > "Lay lai cookie moi".
+    """
+    mgr = getattr(nc, "manager", None)
+    store = getattr(nc, "store", None)
+    if isinstance(acc, str):
+        acc = store.get(acc) if store is not None and hasattr(store, "get") else None
+    if acc is None:
+        return ""
+    ck = (getattr(acc, "cookie", "") or "").strip()
+    if ck or mgr is None:
+        return ck
+    try:
+        from core.modun.check_tuong import cookie_cua_acc
+        return cookie_cua_acc(mgr, acc)
+    except Exception:
+        return ""
+
+
 def chay(nc: NguCanh, accs: list, tham_so: dict) -> KetQua:
     kq = KetQua()
     dry = bool(tham_so.get("dry", True))
@@ -36,18 +87,30 @@ def chay(nc: NguCanh, accs: list, tham_so: dict) -> KetQua:
     delete = tham_so.get("delete") or fbxoabai._delete
     sleep = tham_so.get("sleep")
     dong = list(tham_so.get("dong") or [])
+    #: Token lấy từ cookie acc (derive_token mở trình duyệt — PHẢI tuần tự vì dùng chung cổng BiDi).
+    token_cache: dict = {}
+    loi_token: dict = {}
     if not dong:
         tokens = tham_so.get("token") or {}
         for a in accs:
-            tk = tokens.get(a.id, "")
-            pages, loi = fbxoabai.cac_page_cua_token(tk, get=get) if tk else ([], "chưa có token")
+            ck = _cookie_acc(nc, a)
+            tk = _token_cua_acc(nc, a.id, token_cache, loi_token, san_co=tokens.get(a.id, ""))
+            if not tk:
+                kq.them_loi(a.id, loi_token.get(a.id, "không có token (chưa lấy được từ cookie)"))
+                continue
+            pages, loi = fbxoabai.cac_page_cua_token(tk, cookie=ck, get=get)
             if loi:
                 kq.them_loi(a.id, loi)
                 continue
             for p in pages:
                 dong.append({"acc_id": a.id, "page_id": p["id"], "token": p["access_token"] or tk,
-                             "tu": tham_so.get("tu", ""), "den": tham_so.get("den", ""),
+                             "cookie": ck, "tu": tham_so.get("tu", ""), "den": tham_so.get("den", ""),
                              "loai": tham_so.get("loai", "tat_ca")})
+    else:
+        # Có sẵn danh sách page: lấy token từ cookie cho từng acc (tuần tự) TRƯỚC khi xoá song song.
+        for acc_id in dict.fromkeys(d.get("acc_id", "") for d in dong):
+            san = next((d.get("token", "") for d in dong if d.get("acc_id") == acc_id and d.get("token")), "")
+            _token_cua_acc(nc, acc_id, token_cache, loi_token, san_co=san)
     khoa_ghi = threading.Lock()
     rows: dict = {}
 
@@ -62,9 +125,17 @@ def chay(nc: NguCanh, accs: list, tham_so: dict) -> KetQua:
                        {"tt": f"đã xoá {t['xoa']}/{t['khop']}" + (f" · lỗi {t['loi']}" if t.get("loi") else "")})
 
         extra = {"sleep": sleep} if sleep else {}
-        r = fbxoabai.chay_xoa(d.get("page_id", ""), d.get("token", ""), d.get("tu", ""), d.get("den", ""),
-                              d.get("loai", "tat_ca"), dry=dry, gioi_han=gioi_han, cach_giay=cach_giay,
-                              get=get, delete=delete, nen_dung=nen_dung, on_tien_do=tien_do, log=nc.log, **extra)
+        ck = d.get("cookie") or _cookie_acc(nc, d.get("acc_id", ""))
+        tok = _token_cua_acc(nc, d.get("acc_id", ""), token_cache, loi_token, san_co=d.get("token", ""))
+        if not tok:
+            ly = loi_token.get(d.get("acc_id", ""), "không lấy được token từ cookie")
+            r = {"ok": False, "quet": 0, "khop": 0, "xoa": 0, "loi_bai": [], "bo_qua": 0,
+                 "loi": f"token từ cookie: {ly}", "ds": []}
+        else:
+            r = fbxoabai.chay_xoa(d.get("page_id", ""), tok, d.get("tu", ""), d.get("den", ""),
+                                  d.get("loai", "tat_ca"), dry=dry, gioi_han=gioi_han, cach_giay=cach_giay,
+                                  cookie=ck, get=get, delete=delete, nen_dung=nen_dung, on_tien_do=tien_do,
+                                  log=nc.log, **extra)
         with khoa_ghi:
             rows[k] = r
             if r["ok"]:
