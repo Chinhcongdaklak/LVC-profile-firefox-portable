@@ -481,17 +481,68 @@ class App(ctk.CTk):
                     self._post(tab.refresh)
         return ghi
 
-    def _mui_gio_acc(self, cfg, acc_id: str) -> str:
+    def _nhac_mui_gio_vpn(self, job, account, tab) -> None:
+        """Acc X co NordVPN (spoof mui gio) ma tool chua biet acc dang o mui gio nao.
+
+        Khong doan bua mui gio theo nuoc VPN (nguoi dung chon thanh pho ngau nhien trong
+        bang, doan sai la hen sai gio) -> noi ro mot lan de nguoi dung chon o
+        "Mui gio cua acc dang bai" trong tab Dat lich.
+        """
+        try:
+            from core import nordvpn
+            if not nordvpn.da_cai(tab.manager, account):
+                return
+        except Exception:  # noqa: BLE001
+            return
+        if getattr(job, "_da_nhac_tz_vpn", False):
+            return
+        job._da_nhac_tz_vpn = True
+        job.note("Acc này chạy NordVPN (có bật Timezone spoofing) nên đồng hồ trong trang "
+                 "là giờ nước VPN, không phải giờ máy. Tool đang điền theo GIỜ MÁY. Hãy chọn "
+                 "ô \"Múi giờ của acc đăng bài\" trong tab Đặt lịch cho khớp nước VPN.", ok=False)
+
+    def _mui_gio_acc(self, cfg, acc_id: str, store=None) -> str:
         """Mui gio DONG HO TRINH DUYET cua acc ``acc_id`` (trang dat lich).
 
-        Uu tien o "Mui gio acc dang bai" nguoi dung chon; rong thi TU DONG theo proxy
-        cua acc (Account.identity do bang geoip); khong co thi "" = dong ho may.
+        Uu tien o "Mui gio acc dang bai" nguoi dung chon; rong thi TU DONG theo cot
+        "Mui gio / Ngon ngu" da khop san cua acc (Account.identity), roi do bang geoip
+        theo proxy; khong co gi thi "" = dong ho may.
+
+        ``store``: kho acc de tra cuu (acc X / YouTube nam o kho RIENG, khong phai
+        self.store cua Facebook).
         """
         from core import lich_dang as ld
-        acc = self.store.get(acc_id) if acc_id else None
+        kho = store if store is not None else self.store
+        acc = kho.get(acc_id) if acc_id else None
         r = ld.mui_gio_acc(acc, getattr(cfg, "mui_gio_acc", ""),
-                           co_shim=bool(getattr(self.settings, "use_tz_shim", True)))
+                           co_shim=bool(getattr(self.settings, "use_tz_shim", True)),
+                           do_proxy=self._tz_tu_proxy)
+        self.set_status(f"Múi giờ acc {acc_id}: {r['nhan']}")
         return r["iana"]
+
+    def _tz_tu_proxy(self, account) -> str:
+        """Mui gio theo PROXY cua acc, do bang geoip. Cache trong phien (goi mang 1 lan/acc).
+
+        Dung khi acc CHUA chay "Khop mui gio + ngon ngu theo proxy" nhung van muon tool
+        tu biet acc dang o mui gio nao (nguoi dung chot 07/10: uu tien lay theo proxy).
+        """
+        if account is None:
+            return ""
+        kho = getattr(self, "_tz_proxy_cache", None)
+        if kho is None:
+            kho = self._tz_proxy_cache = {}
+        if account.id in kho:
+            return kho[account.id]
+        tz = ""
+        try:
+            px = account.get_proxy()
+            if px.enabled:
+                from core import geoip
+                tz = (geoip.lookup(px).timezone or "").strip()
+        except Exception as exc:  # noqa: BLE001
+            self.set_status(f"Không dò được múi giờ theo proxy của {account.id}: {exc}"[:150])
+        kho[account.id] = tz
+        return tz
 
     def _wire_uploader_x(self) -> None:
         """Cach dang cho job X: mo Firefox profile X cua acc, agent xpost dien
@@ -515,11 +566,16 @@ class App(ctk.CTk):
                 from core import xpost
                 lich = None
                 if job.config.is_lich:
-                    # X CÓ đặt lịch (nút lịch trong composer): hẹn bài vào giờ của khung (giờ máy).
-                    lich = job.lich_gio_hen()
+                    # X CO dat lich (nut lich trong composer). Gio dien vao hop lich la gio
+                    # cua DONG HO TRINH DUYET acc do -- acc X chay NordVPN co BAT "Timezone
+                    # spoofing" nen dong ho trong trang la gio NUOC VPN, khong phai gio may.
+                    tz_acc = self._mui_gio_acc(job.config, acc_id, store=tab.store)
+                    lich = job.lich_gio_hen(mui_gio_trinh_duyet=tz_acc)
                     if not lich:
                         raise fbupload.UploadError(
                             "Trang đặt lịch X nhưng không đọc được giờ hẹn của khung.")
+                    if not tz_acc:
+                        self._nhac_mui_gio_vpn(job, acc, tab)
                 # Mau TUONG TAC gan cho trang -> luot x.com/home (tha tim, xem video,
                 # comment) TRUOC khi dang. Truoc day chi tab Facebook lam viec nay nen
                 # trang X bat "Tuong tac" ma khong thay chay gi (nguoi dung bao 06/10).
