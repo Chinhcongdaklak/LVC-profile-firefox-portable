@@ -137,6 +137,8 @@ class XoaBaiTab(ctk.CTkFrame):
             self.tree.heading(k, text=t)
             self.tree.column(k, width=w, anchor=a, stretch=(k in ("page", "tt")))
         self.tree.bind("<Double-1>", self._sua_o)
+        self.tree.bind("<Button-3>", self._menu_chuot_phai)
+        self._menu = tk.Menu(self.tree, tearoff=0)
         sb = ttk.Scrollbar(box, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=sb.set)
         self.tree.pack(side="left", fill="both", expand=True)
@@ -593,6 +595,91 @@ class XoaBaiTab(ctk.CTkFrame):
 
         threading.Thread(target=work, daemon=True, name="xoabai-laytoken").start()
 
+    def _menu_chuot_phai(self, event) -> None:
+        """Chuot phai tren bang: mo profile / copy UID / lay lai cookie cho acc cua dong do."""
+        k = self.tree.identify_row(event.y)
+        if k and k in self._dong and k not in self.tree.selection():
+            self.tree.selection_set(k)          # chuot phai vao dong chua chon -> chon dong do
+        accs = self._acc_cua_dong_chon()
+        if not accs:
+            return
+        m = self._menu
+        m.delete(0, "end")
+        duoi = f" ({len(accs)} acc)" if len(accs) > 1 else f" ({accs[0]})"
+        m.add_command(label="▶ Mở profile" + duoi, command=lambda: self._mo_profile(accs))
+        m.add_separator()
+        m.add_command(label="📋 Copy UID" + duoi, command=lambda: self._copy_uid(accs))
+        m.add_command(label="🍪 Lấy lại cookie (từ profile)" + duoi,
+                      command=lambda: self._lay_cookie(accs))
+        m.add_separator()
+        m.add_command(label="🔍 Kiểm cookie" + duoi, command=self._kiem_cookie)
+        m.add_command(label="🔑 Lấy token" + duoi, command=self._lay_token_chon)
+        try:
+            m.tk_popup(event.x_root, event.y_root)
+        finally:
+            m.grab_release()
+
+    def _acc_doi_tuong(self, accs: list) -> list:
+        """id acc -> doi tuong Account (bo id khong con trong bang Quan ly acc)."""
+        kho = getattr(self.app, "store", None)
+        if kho is None:
+            return []
+        ra = []
+        for ma in accs:
+            a = kho.get(ma)
+            if a is not None:
+                ra.append(a)
+        return ra
+
+    def _mo_profile(self, accs: list) -> None:
+        """Mo trinh duyet cua acc (mo-dun "mo_profile": CHI mo, tool khong thao tac gi)."""
+        doi = self._acc_doi_tuong(accs)
+        if not doi:
+            messagebox.showinfo("Mở profile", "Không thấy acc trong bảng Quản lý acc.",
+                                parent=self.app)
+            return
+        self._log(f"Mở profile: {', '.join(a.id for a in doi)}")
+        self.app.goi_modun("mo_profile", doi, done_message="Đã mở profile.",
+                           tieu_de="Mở profile", tu_tao_profile=True)
+
+    def _copy_uid(self, accs: list) -> None:
+        """Copy UID cac acc dang chon vao clipboard (moi dong mot UID)."""
+        chu = chr(10).join(accs)
+        try:
+            self.app.clipboard_clear()
+            self.app.clipboard_append(chu)
+        except tk.TclError:
+            return
+        self._log(f"Đã copy {len(accs)} UID.")
+        self.app.set_status(f"Đã copy {len(accs)} UID vào clipboard.")
+
+    def _lay_cookie(self, accs: list) -> None:
+        """Lay lai cookie MOI tu profile roi ghi vao acc (mo-dun "lay_cookie").
+
+        Cot "Cookie" cua tab nay doc thang account.cookie nen lay xong la cot do tuoi ngay.
+        """
+        doi = self._acc_doi_tuong(accs)
+        if not doi:
+            return
+        dang_mo = [a.id for a in doi if self._dang_chay(a)]
+        if dang_mo and not messagebox.askyesno(
+                "Lấy lại cookie",
+                f"{len(dang_mo)} acc đang mở trình duyệt. Tool sẽ ĐÓNG trình duyệt của các acc "
+                "đó để lấy cookie đầy đủ." + chr(10) * 2 + "Tiếp tục?", parent=self.app):
+            return
+        self.app.goi_modun("lay_cookie", doi, done_message="Đã lấy lại cookie mới.",
+                           tieu_de="Lấy lại cookie", tu_tao_profile=False)
+        # Cookie moi -> ve lai cot Cookie; trang thai cu khong con dung nua.
+        for a in doi:
+            self._ck_tt.pop(a.id, None)
+        self.app._post(self._ve)
+
+    def _dang_chay(self, account) -> bool:
+        try:
+            return bool(self.app.manager.is_running(account))
+        except Exception:  # noqa: BLE001
+            return False
+
     def _sua_o(self, event) -> None:
         """Bấm đúp ô fanpage / từ ngày / đến ngày / thể loại -> sửa tay ngay trong bảng."""
         k = self.tree.identify_row(event.y)
@@ -620,7 +707,9 @@ class XoaBaiTab(ctk.CTkFrame):
             self._ve()
             self._persist_cfg()
             return
-        if key in ("cookie", "ck_tt"):
+        if key in ("acc", "cookie", "ck_tt"):
+            # Ba cot nay khong sua tay -> bam dup = MO PROFILE cua acc cho nhanh.
+            self._mo_profile([d["acc_id"]])
             return
         if key not in ("page", "tu", "den"):
             return
