@@ -114,6 +114,11 @@ class Settings:
     #: EST5EDT, CST6CDT, MST7MDT, PST8PDT -- da do bang cach thu 40 gia tri).
     #: Khong bat thi proxy ngoai My se de lo mui gio that cua may.
     use_tz_shim: bool = True
+    #: Mo tool len co TU lay ngay sinh acc Facebook khong. MAC DINH TAT vi ngay sinh
+    #: chi doc duoc trong Trung tam tai khoan -> phai MO TRINH DUYET tung acc, bat len
+    #: la thay Firefox tu nhay ra (nguoi dung bao 07/10). Ten acc van tu lay (HTTP, khong
+    #: mo trinh duyet). Bat o Cai dat, hoac chuot phai acc > "Lay ten + ngay sinh".
+    tu_lay_ngay_sinh: bool = False
     #: Tai khoan NordVPN dung chung khi cai addon NordVPN cho acc X (luu de dien san).
     nordvpn_user: str = ""
     nordvpn_pass: str = ""
@@ -122,13 +127,11 @@ class Settings:
     nordvpn_state: str = "New York"
     #: O "Luong" RIENG cua tab X.com (so acc X chay cung luc). Nguoi dung chot mac dinh 2.
     x_threads: int = 2
-    #: GOM CUA SO: dua cac Firefox dang mo vao MOT khung (thu nghiem, mac dinh TAT).
-    gom_cua_so: bool = False
-    #: "luoi" = chi xep cac cua so theo luoi (an toan) | "nhot" = SetParent vao khung.
-    gom_che_do: str = "luoi"
-    #: Moi hang bao nhieu trinh duyet, va nhin thay may hang (cuon chuot de xem tiep).
-    gom_cot: int = 2
-    gom_hang_nhin: int = 2
+    #: O "Luong" RIENG cua tab YouTube (so acc Gmail chay cung luc).
+    yt_threads: int = 2
+    #: KIEU CUA SO trinh duyet: "binh_thuong" (MAC DINH, tool khong sap xep) | "ba_cot"
+    #: (3 cot co dinh, browser thu 4 tro di xep lop chong len; van keo di duoc).
+    kieu_cua_so: str = "binh_thuong"
 
     @classmethod
     def load(cls) -> "Settings":

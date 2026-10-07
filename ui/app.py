@@ -3053,8 +3053,13 @@ class App(ctk.CTk):
         # Ngay sinh phai MO TRINH DUYET -> chi lam tren acc DANG RANH. Acc dang mo browser
         # (nguoi dung tu mo, hoac job dang dang bai) thi bo qua: dong browser cua ho giua
         # chung la pha viec dang chay. Acc do de lan mo tool sau / bam chuot phai.
+        # MAC DINH TAT: ngay sinh phai mo trinh duyet tung acc nen bat tool len la thay Firefox
+        # tu nhay ra (nguoi dung bao 07/10). Muon tu lay thi tich o trong Cai dat, hoac bam
+        # chuot phai acc > "Lay ten + ngay sinh". Ten acc VAN tu lay (HTTP, khong mo gi).
         ranh = []
-        for a in tt_module.thieu_ngay_sinh(accs):
+        can_ns = (tt_module.thieu_ngay_sinh(accs)
+                  if bool(getattr(self.settings, "tu_lay_ngay_sinh", False)) else [])
+        for a in can_ns:
             try:
                 if self.manager.is_running(a) or str(a.id) in self._busy_accs:
                     continue
