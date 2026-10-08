@@ -734,6 +734,36 @@ def xoa_mot_bai(post_id: str, token: str, *, cookie: str = "", delete: Optional[
     return True, "", h
 
 
+def token_cua_page(page_id: str, token: str, *, cookie: str = "",
+                   get: Optional[Callable] = None) -> tuple:
+    """Đổi token (user/business) -> PAGE TOKEN của ``page_id``. (page_token, loi).
+
+    Xoá bài trên page BẮT BUỘC page token (user token -> lỗi #200 "Page token is required").
+    Thử ``GET /{page_id}?fields=access_token`` trước (user token quản lý page thì ra ngay); không
+    được thì tìm trong ``/me/accounts``. Token đã LÀ page token của chính page này -> trả lại nó.
+    """
+    get = get or _get
+    if not (page_id or "").strip() or not (token or "").strip():
+        return "", "thiếu ID page hoặc token"
+    st, d, _h = get(f"{GRAPH}/{page_id}", {"fields": "access_token", "access_token": token}, cookie)
+    code, msg = ma_loi(d)
+    if code == 190:
+        raise TokenChet(f"token hết hạn/không hợp lệ (190): {msg}")
+    pt = str((d or {}).get("access_token") or "")
+    if pt:
+        return pt, ""
+    # Fallback: liệt kê page của token rồi khớp id.
+    ds, loi = cac_page_cua_token(token, cookie=cookie, get=get)
+    for p in ds:
+        if str(p.get("id")) == str(page_id) and p.get("access_token"):
+            return str(p["access_token"]), ""
+    # Token đã là page token của chính page này? (me.id == page_id)
+    me = thong_tin_token(token, cookie=cookie, get=get)
+    if not me["loi"] and str(me["id"]) == str(page_id):
+        return token, ""
+    return "", (loi or f"token không quản lý page {page_id} (cần token của acc nắm page này)")
+
+
 def chay_xoa(page_id: str, token: str, tu: str, den: str, loai: str = "tat_ca", *,
              dry: bool = True, gioi_han: int = 0, cach_giay: float = 2.0, cookie: str = "",
              get: Optional[Callable] = None, delete: Optional[Callable] = None,
@@ -760,6 +790,18 @@ def chay_xoa(page_id: str, token: str, tu: str, den: str, loai: str = "tat_ca", 
     if not (token or "").strip():
         kq["loi"] = "Chưa có token."
         return kq
+    # Xoá bài page BẮT BUỘC page token (user token -> #200). Đổi token sang page token của page này.
+    try:
+        pt, loi_pt = token_cua_page(page_id, token, cookie=cookie, get=get)
+    except TokenChet as exc:
+        kq["loi"] = str(exc)
+        return kq
+    if pt:
+        if pt != token:
+            noi(f"[{page_id}] đã đổi sang page token để xoá được bài")
+        token = pt
+    else:
+        noi(f"[{page_id}] {loi_pt} — thử dùng token hiện tại")
     try:
         # Xoa HET (tat_ca) thi khong can phan loai -> khoi lay attachments, nhanh hon.
         bai = liet_ke_bai(page_id, token, since, until, cookie=cookie, get=get, log=noi,
