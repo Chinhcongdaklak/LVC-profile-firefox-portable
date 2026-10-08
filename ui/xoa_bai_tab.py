@@ -325,15 +325,18 @@ class XoaBaiTab(ctk.CTkFrame):
         self._persist_cfg()
         self.app.set_status("Bấm 🔎 Quét fanpage, hoặc ➕ Nhập ID page cho acc vừa chọn (token tự lấy từ cookie).")
 
-    def _token_cookie(self, acc_id: str) -> str:
+    def _token_cookie(self, acc_id: str, lam_moi: bool = False) -> str:
         """Lấy token của acc (HTTP business_locations trước, cookie yếu thì mở trình duyệt).
 
+        ``lam_moi=True`` (bấm "Lấy token"): LUÔN lấy lại token mới, kể cả khi đã có — token cũ hay
+        chết (người dùng chốt 08/10). ``lam_moi=False`` (quét/xoá tự dùng): có token sẵn thì dùng luôn.
         GHI vào cột "Token" của bảng Quản lý acc (extra["token"]) để hai tab đồng bộ. Chạy ở LUỒNG NỀN.
         """
-        san = self._token_acc(acc_id)
-        if san:
-            self._acc_token[acc_id] = san
-            return san
+        if not lam_moi:
+            san = self._token_acc(acc_id)
+            if san:
+                self._acc_token[acc_id] = san
+                return san
         acc = self.app.store.get(acc_id)
         if acc is None:
             self._log(f"[{acc_id}] không thấy acc để lấy token")
@@ -592,23 +595,23 @@ class XoaBaiTab(ctk.CTkFrame):
 
         Mo trinh duyet tung acc nen hoi truoc va chay TUAN TU (derive_token dung mot cong BiDi).
         """
-        accs = [a for a in self._acc_cua_dong_chon() if not self._acc_token.get(a)]
+        # LUÔN lấy lại cho MỌI acc đang chọn, kể cả acc đã có token (token cũ hay chết).
+        accs = self._acc_cua_dong_chon()
         if not accs:
-            messagebox.showinfo("Lấy token",
-                                "Các acc trong bảng đều đã có token rồi.", parent=self.app)
+            messagebox.showinfo("Lấy token", "Chưa có dòng nào trong bảng.", parent=self.app)
             return
         if not messagebox.askyesno(
                 "Lấy token",
-                f"Tool sẽ MỞ TRÌNH DUYỆT lần lượt {len(accs)} acc để lấy token từ cookie."
+                f"Lấy lại token MỚI cho {len(accs)} acc (kể cả acc đã có — token cũ có thể chết)."
                 + chr(10) * 2
-                + "Facebook mới hay không lộ token nữa — acc nào không lấy được thì bạn dán "
-                  "token tay vào cột Token (bấm đúp)."
+                + "Tool có thể phải MỞ TRÌNH DUYỆT nếu cookie yếu. Acc nào không lấy được thì "
+                  "dán token tay vào cột Token (bấm đúp)."
                 + chr(10) * 2 + "Tiếp tục?", parent=self.app):
             return
 
         def work():
             for a in accs:
-                self._token_cookie(a)
+                self._token_cookie(a, lam_moi=True)
                 self.app._post(self._ve)
             self.app._post(lambda: self._log("Lấy token xong."))
 

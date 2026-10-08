@@ -424,7 +424,8 @@ class App(ctk.CTk):
                     # Trang ĐẶT LỊCH: không đăng ngay — hẹn bài vào giờ của khung.
                     # Business Suite đọc giờ theo ĐỒNG HỒ TRÌNH DUYỆT: acc chạy proxy Mỹ +
                     # đã khớp múi giờ theo proxy thì trang ĐANG Ở GIỜ MỸ -> phải điền giờ đó.
-                    hen = job.lich_gio_hen(mui_gio_trinh_duyet=self._mui_gio_acc(cfg, acc_id))
+                    hen = job.lich_gio_hen(
+                        mui_gio_trinh_duyet=self._mui_gio_acc(cfg, acc_id, job=job))
                     if not hen:
                         raise fbupload.UploadError(
                             "Trang đặt lịch nhưng không đọc được giờ hẹn của khung.")
@@ -502,7 +503,7 @@ class App(ctk.CTk):
                  "là giờ nước VPN, không phải giờ máy. Tool đang điền theo GIỜ MÁY. Hãy chọn "
                  "ô \"Múi giờ của acc đăng bài\" trong tab Đặt lịch cho khớp nước VPN.", ok=False)
 
-    def _mui_gio_acc(self, cfg, acc_id: str, store=None) -> str:
+    def _mui_gio_acc(self, cfg, acc_id: str, store=None, job=None) -> str:
         """Mui gio DONG HO TRINH DUYET cua acc ``acc_id`` (trang dat lich).
 
         Uu tien o "Mui gio acc dang bai" nguoi dung chon; rong thi TU DONG theo cot
@@ -519,6 +520,13 @@ class App(ctk.CTk):
                            co_shim=bool(getattr(self.settings, "use_tz_shim", True)),
                            do_proxy=self._tz_tu_proxy)
         self.set_status(f"Múi giờ acc {acc_id}: {r['nhan']}")
+        # NHO lai de hang "Múi giờ của acc đăng bài" hien ra tool DA LAY DUOC mui gio nao
+        # (truoc day ket qua do chi chay qua thanh trang thai roi mat -- yeu cau 08/10).
+        if job is not None:
+            try:
+                job.ghi_mui_gio_acc(acc_id, r["iana"], r["nhan"], r["nguon"])
+            except Exception:  # noqa: BLE001
+                pass
         return r["iana"]
 
     def _tz_tu_proxy(self, account) -> str:
@@ -570,7 +578,7 @@ class App(ctk.CTk):
                     # X CO dat lich (nut lich trong composer). Gio dien vao hop lich la gio
                     # cua DONG HO TRINH DUYET acc do -- acc X chay NordVPN co BAT "Timezone
                     # spoofing" nen dong ho trong trang la gio NUOC VPN, khong phai gio may.
-                    tz_acc = self._mui_gio_acc(job.config, acc_id, store=tab.store)
+                    tz_acc = self._mui_gio_acc(job.config, acc_id, store=tab.store, job=job)
                     lich = job.lich_gio_hen(mui_gio_trinh_duyet=tz_acc)
                     if not lich:
                         raise fbupload.UploadError(
@@ -3031,21 +3039,9 @@ class App(ctk.CTk):
         selected = self._require_selection()
         if not selected:
             return
-        co_tok = [a for a in selected
-                  if str((a.extra or {}).get("token") or "").strip()]
-        lam_moi = False
-        if co_tok:
-            tra = messagebox.askyesnocancel(
-                "Lấy token",
-                f"{len(co_tok)}/{len(selected)} acc đã có token." + chr(10) * 2
-                + "• Có — lấy lại HẾT (ghi đè token cũ)" + chr(10)
-                + "• Không — chỉ lấy acc chưa có token",
-                parent=self)
-            if tra is None:
-                return
-            lam_moi = bool(tra)
+        # LUON lay lai token moi cho moi acc dang chon (token cu hay chet — nguoi dung chot 08/10).
         self.goi_modun("lay_token", selected, done_message="Đã lấy token.",
-                       tieu_de="Lấy token", tu_tao_profile=True, lam_moi=lam_moi)
+                       tieu_de="Lấy token", tu_tao_profile=True, lam_moi=True)
 
     def lay_thong_tin_selected(self) -> None:
         """Chuot phai: lay TEN + NGAY SINH cho acc dang chon (mo-dun "lay_thong_tin").
