@@ -41,6 +41,13 @@ NGUONG_CHAM = 80.0
 NGUONG_DUNG = 95.0
 
 FIELDS = "id,created_time,message,permalink_url,attachments{media_type,type,subattachments{media_type,type}}"
+#: Field NHE de LIET KE nhanh. attachments{...} la field NANG: Facebook tra ~1 bai/trang khi co no
+#: (nguoi dung bao quet cham 07/10). Liet ke bang field nhe -> ~100 bai/trang, roi lay attachments
+#: theo LO 50 (bo_sung_media) de phan loai video/anh. Nhanh gap hang chuc lan.
+FIELDS_NHE = "id,created_time,message,permalink_url"
+FIELDS_MEDIA = "attachments{media_type,type,subattachments{media_type,type}}"
+#: So id moi lo khi lay attachments bang endpoint ?ids=... (Graph cho toi 50).
+LO_MEDIA = 50
 
 #: Canh bai cua page: thu LAN LUOT. ``published_posts`` can token page + quyen day du; page khong quan ly
 #: (chi co user token) thi Facebook chi cho ``posts`` / ``feed`` (tool tham khao dung ``posts``).
@@ -584,34 +591,18 @@ def ten_page(page_id: str, token: str, *, cookie: str = "", get: Optional[Callab
 
 
 # ------------------------------------------------------------------ liet ke / xoa
-def _ep_limit(url: str, n: int = 100) -> str:
-    """Ep limit=n vao URL phan trang. Tool tham khao vap dung day: paging.next co the mang limit nho
-    (hoac khong co) -> doc thieu bai, bo sot bai cu."""
-    from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
-    try:
-        u = urlparse(url)
-        q = parse_qs(u.query)
-        try:
-            cu = int((q.get("limit") or ["0"])[0])
-        except (TypeError, ValueError):
-            cu = 0
-        if cu < n:
-            q["limit"] = [str(n)]
-        return urlunparse((u.scheme, u.netloc, u.path, u.params, urlencode(q, doseq=True), u.fragment))
-    except ValueError:
-        return url
-
-
 def _mot_canh(page_id: str, canh: str, token: str, since: int, until: int, *,
               get: Callable, log: Callable, sleep: Callable, cookie: str = "",
               nen_dung: Optional[Callable[[], bool]], toi_da_trang: int) -> list:
     """Doc het mot canh (published_posts / posts / feed). Nem TokenChet / XoaBaiError."""
-    params = {"fields": FIELDS, "limit": 100, "access_token": token}
+    # Liet ke bang FIELD NHE (khong co attachments) -> Facebook tra ~100 bai/trang thay vi ~1.
+    params = {"fields": FIELDS_NHE, "limit": 100, "access_token": token}
     if since:
         params["since"] = since
     if until:
         params["until"] = until
     url, ra, lan_nghi = f"{GRAPH}/{page_id}/{canh}", [], 0
+    seen: set = set()                 # khu TRUNG theo id (cursor co the tra trang chong nhau)
     for trang in range(toi_da_trang):
         if nen_dung and nen_dung():
             break
@@ -631,12 +622,18 @@ def _mot_canh(page_id: str, canh: str, token: str, since: int, until: int, *,
         if code or st >= 400:
             raise XoaBaiError(f"không liệt kê được bài ({code or st}): {msg}")
         ds = d.get("data") or []
-        ra.extend(p for p in ds if isinstance(p, dict) and p.get("id"))
-        log(f"[{page_id}] {canh} trang {trang + 1}: +{len(ds)} bài (tổng {len(ra)})")
+        moi = 0
+        for p in ds:
+            if isinstance(p, dict) and p.get("id") and str(p["id"]) not in seen:
+                seen.add(str(p["id"]))
+                ra.append(p)
+                moi += 1
+        log(f"[{page_id}] {canh} trang {trang + 1}: +{moi} bài mới (tổng {len(ra)})")
         url = ((d.get("paging") or {}).get("next")) or ""
-        if not url or not ds:
+        # DUNG khi het trang, trang rong, HOAC trang nay toan bai da thay (cursor lap -> tranh vai tram
+        # bai ao tu mot page it bai). KHONG bop limit vao paging.next: ep limit lam cursor chong trang.
+        if not url or not ds or moi == 0:
             break
-        url = _ep_limit(url)
         params = {}
         pct = han_muc_pct(h)
         if pct >= NGUONG_CHAM:
@@ -645,11 +642,48 @@ def _mot_canh(page_id: str, canh: str, token: str, since: int, until: int, *,
     return ra
 
 
+def bo_sung_media(posts: list, token: str, *, cookie: str = "", get: Optional[Callable] = None,
+                  log: Optional[Callable[[str], None]] = None, sleep: Callable = time.sleep,
+                  nen_dung: Optional[Callable[[], bool]] = None) -> list:
+    """Lay ``attachments`` cho cac bai theo LO ``LO_MEDIA`` (endpoint ?ids=...). Gan vao tung bai.
+
+    Liet ke dung field nhe (khong attachments) cho nhanh; bai nao can phan loai video/anh thi goi day
+    de bo sung. GET {GRAPH}?ids=id1,...&fields=attachments{...} -> {id: {attachments:..}}. Thuan khi
+    truyen ``get``. Tra chinh list posts (da gan attachments tai cho).
+    """
+    get = get or _get
+    noi = log or (lambda _m: None)
+    can = [p for p in (posts or []) if isinstance(p, dict) and p.get("id") and "attachments" not in p]
+    for i in range(0, len(can), LO_MEDIA):
+        if nen_dung and nen_dung():
+            break
+        lo = can[i:i + LO_MEDIA]
+        ids = ",".join(str(p["id"]) for p in lo)
+        st, d, h = get(GRAPH, {"ids": ids, "fields": FIELDS_MEDIA, "access_token": token}, cookie)
+        code, msg = ma_loi(d)
+        if code == 190:
+            raise TokenChet(f"token hết hạn/không hợp lệ (190): {msg}")
+        if code in MA_HAN_MUC:
+            noi(f"hạn mức khi lấy media ({code}) — bỏ phân loại lô này")
+            continue
+        if code or st >= 400:
+            noi(f"không lấy được media ({code or st}): {msg}")
+            continue
+        for p in lo:
+            m = (d or {}).get(str(p["id"])) or {}
+            p["attachments"] = m.get("attachments") or {"data": []}
+        noi(f"lấy media: {min(i + LO_MEDIA, len(can))}/{len(can)} bài")
+        pct = han_muc_pct(h)
+        if pct >= NGUONG_CHAM:
+            sleep(10.0)
+    return posts
+
+
 def liet_ke_bai(page_id: str, token: str, since: int = 0, until: int = 0, *,
                 cookie: str = "", get: Optional[Callable] = None,
                 log: Optional[Callable[[str], None]] = None,
                 nen_dung: Optional[Callable[[], bool]] = None, toi_da_trang: int = 200,
-                sleep: Callable = time.sleep) -> list:
+                sleep: Callable = time.sleep, can_media: bool = True) -> list:
     """Cac bai da dang cua page trong [since, until) (API loc + may loc lai). Nem TokenChet / XoaBaiError.
 
     Thu lan luot cac canh trong ``CANH_BAI``: ``published_posts`` truoc (dung cho page minh quan ly),
@@ -675,7 +709,12 @@ def liet_ke_bai(page_id: str, token: str, since: int = 0, until: int = 0, *,
                 noi(f"[{page_id}] {canh} không dùng được ({code}) — thử /{CANH_BAI[i + 1]}")
                 continue
             raise
-        return loc_bai(ra, "tat_ca", since, until)
+        trong_khoang = loc_bai(ra, "tat_ca", since, until)
+        # Liet ke bang field nhe cho nhanh -> bo sung attachments (theo lo) de phan loai video/anh.
+        if can_media and trong_khoang:
+            bo_sung_media(trong_khoang, token, cookie=cookie, get=get, log=noi, sleep=sleep,
+                          nen_dung=nen_dung)
+        return trong_khoang
     raise loi_cuoi or XoaBaiError("không liệt kê được bài")
 
 
@@ -722,7 +761,9 @@ def chay_xoa(page_id: str, token: str, tu: str, den: str, loai: str = "tat_ca", 
         kq["loi"] = "Chưa có token."
         return kq
     try:
-        bai = liet_ke_bai(page_id, token, since, until, cookie=cookie, get=get, log=noi, nen_dung=nen_dung, sleep=sleep)
+        # Xoa HET (tat_ca) thi khong can phan loai -> khoi lay attachments, nhanh hon.
+        bai = liet_ke_bai(page_id, token, since, until, cookie=cookie, get=get, log=noi,
+                          nen_dung=nen_dung, sleep=sleep, can_media=(loai != "tat_ca"))
     except XoaBaiError as exc:
         kq["loi"] = str(exc)
         return kq

@@ -628,6 +628,9 @@ class XoaBaiTab(ctk.CTkFrame):
         m.add_command(label="▶ Mở profile" + duoi, command=lambda: self._mo_profile(accs))
         m.add_separator()
         m.add_command(label="📋 Copy UID" + duoi, command=lambda: self._copy_uid(accs))
+        m.add_command(label="🍪 Copy cookie" + duoi, command=lambda: self._copy_cookie(accs))
+        m.add_command(label="🔑 Copy token" + duoi, command=lambda: self._copy_token(accs))
+        m.add_separator()
         m.add_command(label="🍪 Lấy lại cookie (từ profile)" + duoi,
                       command=lambda: self._lay_cookie(accs))
         m.add_separator()
@@ -671,6 +674,45 @@ class XoaBaiTab(ctk.CTkFrame):
             return
         self._log(f"Đã copy {len(accs)} UID.")
         self.app.set_status(f"Đã copy {len(accs)} UID vào clipboard.")
+
+    def _dat_clipboard(self, chu: str) -> bool:
+        try:
+            self.app.clipboard_clear()
+            self.app.clipboard_append(chu)
+            return True
+        except tk.TclError:
+            return False
+
+    def _copy_cookie(self, accs: list) -> None:
+        """Copy cookie THẬT (đầy đủ) của acc vào clipboard — mỗi acc một dòng.
+
+        Khác cột "Cookie" (chỉ đếm số) — cái này copy chuỗi cookie để dán sang nơi khác.
+        """
+        dong = [self._cookie_acc(a) for a in accs]
+        co = [c for c in dong if c]
+        if not co:
+            messagebox.showinfo("Copy cookie", "Các acc này chưa có cookie.", parent=self.app)
+            return
+        if self._dat_clipboard(chr(10).join(dong)):
+            self._log(f"Đã copy cookie {len(co)}/{len(accs)} acc.")
+            self.app.set_status(f"Đã copy cookie {len(co)} acc vào clipboard.")
+
+    def _copy_token(self, accs: list) -> None:
+        """Copy token THẬT (đầy đủ) của acc vào clipboard — mỗi acc một dòng.
+
+        Lấy token đã lưu (cột Token = extra["token"]); acc chưa có token thì để trống dòng đó.
+        """
+        dong = [self._token_acc(a) for a in accs]
+        co = [t for t in dong if t]
+        if not co:
+            messagebox.showinfo(
+                "Copy token",
+                "Các acc này chưa có token. Bấm '🔑 Lấy token' hoặc nhập tay trước.",
+                parent=self.app)
+            return
+        if self._dat_clipboard(chr(10).join(dong)):
+            self._log(f"Đã copy token {len(co)}/{len(accs)} acc.")
+            self.app.set_status(f"Đã copy token {len(co)} acc vào clipboard.")
 
     def _lay_cookie(self, accs: list) -> None:
         """Lay lai cookie MOI tu profile roi ghi vao acc (mo-dun "lay_cookie").
