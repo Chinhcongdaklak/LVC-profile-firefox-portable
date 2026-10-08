@@ -734,6 +734,35 @@ def xoa_mot_bai(post_id: str, token: str, *, cookie: str = "", delete: Optional[
     return True, "", h
 
 
+def ban_do_page_token(token: str, *, cookie: str = "",
+                      get: Optional[Callable] = None) -> dict:
+    """{page_id: page_token} tất cả page mà token quản lý (từ /me/accounts). Rỗng nếu không có.
+
+    Dùng để xoá đúng token: post id dạng ``<page_id>_<post_id>`` -> page token cần là của ``<page_id>``
+    (tiền tố). Id "new Page experience" (dạng 61594…) người dùng nhập KHÁC id Graph cổ điển (1332…)
+    mà /me/accounts trả về — nên khớp theo TIỀN TỐ post id mới chắc (đã gặp thật 08/10).
+    """
+    get = get or _get
+    bando: dict = {}
+    url = f"{GRAPH}/me/accounts"
+    params = {"fields": "id,name,access_token", "limit": 100, "access_token": token}
+    for _ in range(50):
+        st, d, _h = get(url, params, cookie)
+        code, msg = ma_loi(d)
+        if code == 190:
+            raise TokenChet(f"token hết hạn/không hợp lệ (190): {msg}")
+        if code or st >= 400:
+            break
+        for p in d.get("data") or []:
+            if p.get("id") and p.get("access_token"):
+                bando[str(p["id"])] = str(p["access_token"])
+        url = ((d.get("paging") or {}).get("next")) or ""
+        if not url:
+            break
+        params = {}
+    return bando
+
+
 def token_cua_page(page_id: str, token: str, *, cookie: str = "",
                    get: Optional[Callable] = None) -> tuple:
     """Đổi token (user/business) -> PAGE TOKEN của ``page_id``. (page_token, loi).
@@ -790,18 +819,18 @@ def chay_xoa(page_id: str, token: str, tu: str, den: str, loai: str = "tat_ca", 
     if not (token or "").strip():
         kq["loi"] = "Chưa có token."
         return kq
-    # Xoá bài page BẮT BUỘC page token (user token -> #200). Đổi token sang page token của page này.
+    # Xoá bài page BẮT BUỘC page token (user token -> #200). Lấy BẢN ĐỒ {page_id: page_token} để
+    # xoá mỗi bài bằng ĐÚNG token: post id dạng <page_id>_<post_id>, page token khớp theo TIỀN TỐ
+    # (id người dùng nhập có thể là "new Page experience" 61594…, khác id Graph 1332… của page token).
     try:
-        pt, loi_pt = token_cua_page(page_id, token, cookie=cookie, get=get)
+        bando = ban_do_page_token(token, cookie=cookie, get=get)
     except TokenChet as exc:
         kq["loi"] = str(exc)
         return kq
-    if pt:
-        if pt != token:
-            noi(f"[{page_id}] đã đổi sang page token để xoá được bài")
-        token = pt
+    if bando:
+        noi(f"[{page_id}] token quản lý {len(bando)} page — xoá bằng page token khớp từng bài")
     else:
-        noi(f"[{page_id}] {loi_pt} — thử dùng token hiện tại")
+        noi(f"[{page_id}] không thấy page token (token có quyền pages_manage_posts không?) — thử token hiện tại")
     try:
         # Xoa HET (tat_ca) thi khong can phan loai -> khoi lay attachments, nhanh hon.
         bai = liet_ke_bai(page_id, token, since, until, cookie=cookie, get=get, log=noi,
@@ -832,9 +861,13 @@ def chay_xoa(page_id: str, token: str, tu: str, den: str, loai: str = "tat_ca", 
             noi(f"[{page_id}] đã tới giới hạn {gioi_han} bài/lần — còn {kq['bo_qua']} bài để lần sau")
             break
         pid = str(p["id"])
+        # Page token khớp TIỀN TỐ post id (<page_id>_<post_id>); không có thì page token DUY NHẤT
+        # (token 1 page) rồi mới tới token gốc. Dùng user token xoá page post -> #200.
+        tien_to = pid.split("_")[0]
+        tok_xoa = bando.get(tien_to) or (next(iter(bando.values())) if len(bando) == 1 else token)
         while True:
             try:
-                ok, ly_do, h = xoa_mot_bai(pid, token, cookie=cookie, delete=delete)
+                ok, ly_do, h = xoa_mot_bai(pid, tok_xoa, cookie=cookie, delete=delete)
             except TokenChet as exc:
                 kq["loi"] = str(exc)
                 return kq
