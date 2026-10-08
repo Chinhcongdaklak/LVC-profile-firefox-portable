@@ -156,17 +156,21 @@ class XoaBaiTab(ctk.CTkFrame):
         self.stop_btn = ctk.CTkButton(r4, text="⏹ Dừng", width=80, fg_color="gray40",
                                       command=self._stop, state="disabled")
         self.stop_btn.pack(side="left", padx=4, pady=6)
-        ctk.CTkLabel(r4, text="Luồng").pack(side="left", padx=(12, 2))
-        self.luong_entry = ctk.CTkEntry(r4, width=44)
-        self.luong_entry.insert(0, "2")
-        self.luong_entry.pack(side="left")
-        ctk.CTkLabel(r4, text="Tối đa bài/lần (0=hết)").pack(side="left", padx=(12, 2))
+        ctk.CTkLabel(r4, text="Số bài muốn xoá (0=hết)").pack(side="left", padx=(12, 2))
         self.gioi_han_entry = ctk.CTkEntry(r4, width=56)
         self.gioi_han_entry.insert(0, "0")
         self.gioi_han_entry.pack(side="left")
+        ctk.CTkLabel(r4, text="Luồng xoá").pack(side="left", padx=(12, 2))
+        self.luong_xoa_entry = ctk.CTkEntry(r4, width=44)
+        self.luong_xoa_entry.insert(0, "10")           # mac dinh 10 luong xoa bai
+        self.luong_xoa_entry.pack(side="left")
+        ctk.CTkLabel(r4, text="Luồng page").pack(side="left", padx=(12, 2))
+        self.luong_entry = ctk.CTkEntry(r4, width=44)
+        self.luong_entry.insert(0, "2")
+        self.luong_entry.pack(side="left")
         ctk.CTkLabel(r4, text="Cách nhau (giây)").pack(side="left", padx=(12, 2))
         self.cach_entry = ctk.CTkEntry(r4, width=50)
-        self.cach_entry.insert(0, "2")
+        self.cach_entry.insert(0, "0")                 # song song thi khoi cach nhau
         self.cach_entry.pack(side="left")
         ctk.CTkLabel(r4, text="TXT").pack(side="left", padx=(12, 2))
         self.txt_entry = ctk.CTkEntry(r4, width=180, placeholder_text="ghi bài đã xoá")
@@ -836,7 +840,9 @@ class XoaBaiTab(ctk.CTkFrame):
         self.stop_btn.configure(state="normal")
         self._persist_cfg()
         tham = {"dong": dong, "dry": dry, "gioi_han": self._int(self.gioi_han_entry, 0),
-                "cach_giay": float(self._int(self.cach_entry, 2)), "so_luong": max(1, self._int(self.luong_entry, 2)),
+                "cach_giay": float(self._int(self.cach_entry, 0)),
+                "luong_xoa": max(1, self._int(self.luong_xoa_entry, 10)),
+                "so_luong": max(1, self._int(self.luong_entry, 2)),
                 "txt": self.txt_entry.get().strip(), "nen_dung": lambda: self._stopped,
                 "on_row": self._on_row}
         self._log(f"=== {'QUÉT TRƯỚC' if dry else 'XOÁ THẬT'} {len(dong)} fanpage, luồng {tham['so_luong']} ===")
@@ -888,7 +894,8 @@ class XoaBaiTab(ctk.CTkFrame):
                          for d in self._dong.values()],
                 "tu": self.tu_entry.get().strip(), "den": self.den_entry.get().strip(),
                 "loai": xb.MA_THEO_NHAN.get(self.loai_menu.get(), "tat_ca"),
-                "luong": self._int(self.luong_entry, 2), "gioi_han": self._int(self.gioi_han_entry, 0),
+                "luong": self._int(self.luong_entry, 2), "luong_xoa": self._int(self.luong_xoa_entry, 10),
+                "gioi_han": self._int(self.gioi_han_entry, 0),
                 "cach_giay": self._int(self.cach_entry, 2), "txt": self.txt_entry.get().strip(),
                 "nam": self.nam_menu.get().strip(), "truoc_ngay": self.truoc_entry.get().strip(),
                 "cu_hon": self.cu_hon_entry.get().strip(),
@@ -924,8 +931,10 @@ class XoaBaiTab(ctk.CTkFrame):
                     e.insert(0, str(c[key]))
             if c.get("loai") in xb.NHAN_LOAI:
                 self.loai_menu.set(xb.NHAN_LOAI[c["loai"]])
-            for e, key, mac in ((self.luong_entry, "luong", 2), (self.gioi_han_entry, "gioi_han", 0),
-                                (self.cach_entry, "cach_giay", 2)):
+            for e, key, mac in ((self.luong_entry, "luong", 2),
+                                (self.luong_xoa_entry, "luong_xoa", 10),
+                                (self.gioi_han_entry, "gioi_han", 0),
+                                (self.cach_entry, "cach_giay", 0)):
                 e.delete(0, "end")
                 e.insert(0, str(c.get(key, mac)))
             for d in c.get("dong") or []:

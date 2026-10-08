@@ -116,14 +116,45 @@ def _requests():
     return requests
 
 
+#: Số lần thử lại khi LỖI MẠNG (connection reset / timeout) — Facebook hay ngắt đột ngột khi gọi
+#: nhiều/nhanh (ConnectionResetError 10054). Thử lại rồi mới chịu thua, đừng để sập cả lượt.
+_THU_LAI_MANG = 3
+
+
+def _goi_lai(ham) -> tuple:
+    """Gọi ``ham()`` (một request), thử lại tối đa _THU_LAI_MANG lần nếu LỖI MẠNG (không phải lỗi Graph).
+
+    Lỗi mạng: ConnectionError/Timeout/ChunkedEncoding... -> nghỉ ngắn rồi thử lại. Hết lượt vẫn lỗi
+    thì ném lại để caller xử lý (ghi lỗi dòng đó, không sập toàn bộ).
+    """
+    req = _requests()
+    ex = getattr(req, "exceptions", None)
+    if ex is not None:
+        loi = (ex.ConnectionError, ex.Timeout, ex.ChunkedEncodingError)
+    else:
+        loi = (ConnectionError, TimeoutError, OSError)      # mock requests (thước) không có .exceptions
+    last = None
+    for i in range(_THU_LAI_MANG):
+        try:
+            return ham()
+        except loi as exc:
+            last = exc
+            time.sleep(1.5 * (i + 1))
+    raise last
+
+
 def _get(url: str, params: dict, cookie: str = "") -> tuple:
-    r = _requests().get(url, params=params, headers=_headers(cookie), timeout=TIMEOUT)
-    return r.status_code, _json(r), dict(r.headers)
+    def go():
+        r = _requests().get(url, params=params, headers=_headers(cookie), timeout=TIMEOUT)
+        return r.status_code, _json(r), dict(r.headers)
+    return _goi_lai(go)
 
 
 def _delete(url: str, params: dict, cookie: str = "") -> tuple:
-    r = _requests().delete(url, params=params, headers=_headers(cookie), timeout=TIMEOUT)
-    return r.status_code, _json(r), dict(r.headers)
+    def go():
+        r = _requests().delete(url, params=params, headers=_headers(cookie), timeout=TIMEOUT)
+        return r.status_code, _json(r), dict(r.headers)
+    return _goi_lai(go)
 
 
 def _json(r) -> dict:
@@ -794,7 +825,8 @@ def token_cua_page(page_id: str, token: str, *, cookie: str = "",
 
 
 def chay_xoa(page_id: str, token: str, tu: str, den: str, loai: str = "tat_ca", *,
-             dry: bool = True, gioi_han: int = 0, cach_giay: float = 2.0, cookie: str = "",
+             dry: bool = True, gioi_han: int = 0, cach_giay: float = 2.0, luong_xoa: int = 10,
+             cookie: str = "",
              get: Optional[Callable] = None, delete: Optional[Callable] = None,
              sleep: Callable = time.sleep,
              nen_dung: Optional[Callable[[], bool]] = None,
@@ -851,36 +883,36 @@ def chay_xoa(page_id: str, token: str, tu: str, den: str, loai: str = "tat_ca", 
     if dry:
         kq["ok"] = True
         return kq
-    lan_nghi = 0
-    for i, p in enumerate(khop):
-        if nen_dung and nen_dung():
-            kq["loi"] = "dừng theo yêu cầu"
-            break
-        if gioi_han and kq["xoa"] >= gioi_han:
-            kq["bo_qua"] = len(khop) - i
-            noi(f"[{page_id}] đã tới giới hạn {gioi_han} bài/lần — còn {kq['bo_qua']} bài để lần sau")
-            break
-        pid = str(p["id"])
-        # Page token khớp TIỀN TỐ post id (<page_id>_<post_id>); không có thì page token DUY NHẤT
-        # (token 1 page) rồi mới tới token gốc. Dùng user token xoá page post -> #200.
+    # Giới hạn SỐ BÀI xoá lần này (0 = hết); phần dư để lượt sau.
+    can_xoa = khop
+    if gioi_han and gioi_han > 0 and len(khop) > gioi_han:
+        can_xoa = khop[:gioi_han]
+        kq["bo_qua"] = len(khop) - gioi_han
+
+    def _tok_cua(pid: str) -> str:
         tien_to = pid.split("_")[0]
-        tok_xoa = bando.get(tien_to) or (next(iter(bando.values())) if len(bando) == 1 else token)
+        return bando.get(tien_to) or (next(iter(bando.values())) if len(bando) == 1 else token)
+
+    def _xoa_mot(p: dict) -> tuple:
+        """Xoá MỘT bài (có thử lại khi đụng hạn mức). Trả (pid, ok, ly_do, token_chet)."""
+        pid = str(p["id"])
+        tok_xoa = _tok_cua(pid)
+        nghi = 0
         while True:
             try:
-                ok, ly_do, h = xoa_mot_bai(pid, tok_xoa, cookie=cookie, delete=delete)
+                ok, ly_do, _h = xoa_mot_bai(pid, tok_xoa, cookie=cookie, delete=delete)
+                return pid, ok, ly_do, False
             except TokenChet as exc:
-                kq["loi"] = str(exc)
-                return kq
+                return pid, False, str(exc), True
             except XoaBaiError as exc:
-                if lan_nghi >= len(NGHI_HAN_MUC):
-                    kq["loi"] = f"{exc} — đã nghỉ {lan_nghi} lần, dừng dòng này"
-                    return kq
-                giay = NGHI_HAN_MUC[lan_nghi]
-                lan_nghi += 1
-                noi(f"[{page_id}] {exc} — nghỉ {giay // 60} phút rồi thử lại")
-                sleep(giay)
-                continue
-            break
+                if nghi >= len(NGHI_HAN_MUC):
+                    return pid, False, f"{exc} (đã nghỉ {nghi} lần)", False
+                sleep(NGHI_HAN_MUC[nghi])
+                nghi += 1
+            except Exception as exc:  # noqa: BLE001  (lỗi mạng sau khi đã thử lại trong _delete)
+                return pid, False, f"lỗi mạng: {str(exc)[:60]}", False
+
+    def _ghi(pid: str, ok: bool, ly_do: str, p: dict) -> None:
         if ok:
             kq["xoa"] += 1
             noi(f"[{page_id}] ✓ đã xoá {pid} ({p.get('created_time', '')[:10]}, {phan_loai(p)})")
@@ -888,15 +920,37 @@ def chay_xoa(page_id: str, token: str, tu: str, den: str, loai: str = "tat_ca", 
             kq["loi_bai"].append((pid, ly_do))
             noi(f"[{page_id}] ✖ không xoá được {pid}: {ly_do}")
         if on_tien_do:
-            on_tien_do({"page_id": page_id, "xoa": kq["xoa"], "khop": len(khop), "loi": len(kq["loi_bai"])})
-        pct = han_muc_pct(h)
-        if pct >= NGUONG_DUNG:
-            noi(f"[{page_id}] hạn mức {pct:.0f}% — nghỉ 5 phút")
-            sleep(NGHI_HAN_MUC[0])
-        elif pct >= NGUONG_CHAM:
-            sleep(max(cach_giay, 10.0))
-        elif cach_giay > 0 and i + 1 < len(khop):
-            sleep(cach_giay)
+            on_tien_do({"page_id": page_id, "xoa": kq["xoa"], "khop": len(khop),
+                        "loi": len(kq["loi_bai"])})
+
+    luong = max(1, int(luong_xoa or 1))
+    if luong <= 1:
+        # Tuần tự: giữ cách nhau cach_giay giữa 2 bài (như cũ).
+        for i, p in enumerate(can_xoa):
+            if nen_dung and nen_dung():
+                kq["loi"] = "dừng theo yêu cầu"
+                break
+            pid, ok, ly_do, chet = _xoa_mot(p)
+            if chet:
+                kq["loi"] = ly_do
+                break
+            _ghi(pid, ok, ly_do, p)
+            if cach_giay > 0 and i + 1 < len(can_xoa):
+                sleep(cach_giay)
+    else:
+        # SONG SONG: xoá nhiều bài cùng lúc (mặc định 10 luồng). Mỗi bài tự lo hạn mức.
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        noi(f"[{page_id}] xoá {len(can_xoa)} bài · {luong} luồng")
+        with ThreadPoolExecutor(max_workers=luong) as ex:
+            futs = {ex.submit(_xoa_mot, p): p for p in can_xoa}
+            for f in as_completed(futs):
+                if nen_dung and nen_dung():
+                    kq["loi"] = "dừng theo yêu cầu"
+                    break
+                pid, ok, ly_do, chet = f.result()
+                if chet and not kq["loi"]:
+                    kq["loi"] = ly_do          # token chết -> dừng (các future còn lại bỏ qua)
+                _ghi(pid, ok, ly_do, futs[f])
     kq["ok"] = not kq["loi"]
     return kq
 

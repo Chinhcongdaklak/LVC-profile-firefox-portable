@@ -79,6 +79,7 @@ def chay(nc: NguCanh, accs: list, tham_so: dict) -> KetQua:
     dry = bool(tham_so.get("dry", True))
     gioi_han = int(tham_so.get("gioi_han", 0) or 0)
     cach_giay = float(tham_so.get("cach_giay", 2) or 0)
+    luong_xoa = max(1, int(tham_so.get("luong_xoa", 10) or 10))
     so_luong = max(1, int(tham_so.get("so_luong", 0) or nc.so_luong or 1))
     on_row = tham_so.get("on_row")
     nen_dung = tham_so.get("nen_dung")
@@ -134,6 +135,7 @@ def chay(nc: NguCanh, accs: list, tham_so: dict) -> KetQua:
         else:
             r = fbxoabai.chay_xoa(d.get("page_id", ""), tok, d.get("tu", ""), d.get("den", ""),
                                   d.get("loai", "tat_ca"), dry=dry, gioi_han=gioi_han, cach_giay=cach_giay,
+                                  luong_xoa=luong_xoa,
                                   cookie=ck, get=get, delete=delete, nen_dung=nen_dung, on_tien_do=tien_do,
                                   log=nc.log, **extra)
         with khoa_ghi:
