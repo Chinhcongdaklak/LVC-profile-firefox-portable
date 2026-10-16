@@ -23,6 +23,8 @@ from core.modun import dang_fanpage_tu_dong, dang_nhom_tu_dong, quet_bai, nhan_t
 # nhom khac
 from core.modun import xoa_acc, extension, xoa_cache, doi_ten_file, mo_cung_windows, tuong_tac
 from core.modun import tuong_tac_x
+from core.modun import dang_lai_x
+from core.modun import kich_ban_x
 from core.modun import lay_cookie
 from core.modun import lay_thong_tin
 from core.modun import lay_token
@@ -35,6 +37,8 @@ _MODULES = (
     tao_fanpage_acc, tao_fanpage_bm, add_page_bm, tao_bm, xoa_bai,
     dang_fanpage_tu_dong, dang_nhom_tu_dong, quet_bai, nhan_tin_ai,
     xoa_acc, extension, xoa_cache, doi_ten_file, mo_cung_windows, tuong_tac, tuong_tac_x,
+    dang_lai_x,
+    kich_ban_x,
     lay_cookie,
     lay_thong_tin,
     lay_token,

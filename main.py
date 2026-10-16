@@ -26,6 +26,14 @@ def _claim_taskbar_identity() -> None:
 if __name__ == "__main__":
     _claim_taskbar_identity()
 
+    # CHI MOT BAN tool tren may: da co ban dang chay -> dua no len truoc roi thoat.
+    from core import mot_ban
+
+    if not mot_ban.chiem():
+        if not mot_ban.cua_so_dang_chay():
+            mot_ban.bao_dang_chay()
+        sys.exit(0)
+
     from ui.app import run
 
     run()

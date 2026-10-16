@@ -1,73 +1,60 @@
-"""GOM CỬA SỔ Firefox vào một khung — phần lõi (tính lưới THUẦN + thao tác cửa sổ Windows).
+"""Cửa sổ Firefox: xếp theo kiểu "Xếp lớp 3 cột" (Cài đặt > Kiểu cửa sổ trình duyệt).
 
-Hai chế độ (người dùng chọn ở Cài đặt):
-  * ``luoi``: cửa sổ Firefox vẫn độc lập, tool chỉ DỜI/CO chúng theo lưới của khung
-    (an toàn tuyệt đối — kéo ra lúc nào cũng được).
-  * ``nhot``: SetParent cửa sổ Firefox thành CON của khung (một cửa sổ thật sự).
-    Đã probe 2026-10-02: chạy được, nhưng NẾU tiến trình chủ chết khi đang nhốt thì cửa sổ
-    Firefox bị huỷ theo mà tiến trình firefox.exe vẫn sống (ma). Vì vậy luôn phải
-    ``tha()`` khi đóng/thoát, và lúc khởi động gọi ``don_tien_trinh_ma()``.
+3 cột CỐ ĐỊNH chia ngang màn hình; trình duyệt thứ 4 trở đi XẾP LỚP chồng lên trong cùng cột
+(lệch dần cho thấy cái bên dưới). Cửa sổ vẫn là cửa sổ TỰ DO -> người dùng kéo đi được; tool chỉ
+đặt vị trí ĐÚNG MỘT LẦN lúc cửa sổ vừa hiện (xem core/sapxep.py).
 
-Phần THUẦN (vi_tri_luoi / trong_vung_nhin / tong_cao) không đụng Windows -> test được mọi nơi.
+Phần THUẦN (``o_ba_cot``) không đụng Windows -> test được mọi nơi.
+
+(Tính năng cũ "Gom trình duyệt vào một khung cửa sổ" đã BỎ theo yêu cầu người dùng 06/10/2026 —
+kèm theo đó là chế độ nhốt SetParent, sổ nhốt data/gom_nhot.json và ui/khung_gom.py.)
 """
-
 from __future__ import annotations
-
 import ctypes
 import os
 from ctypes import wintypes
 from typing import Iterable, Optional
+#: Viền quanh màn hình + khe giữa các ô (px) -> các ô tách rời như hình vẽ.
+VIEN_MAC_DINH = 16
+KHE_MAC_DINH = 12
+# --- KIEU CUA SO TRINH DUYET (Cai dat) -------------------------------------
+#: Khong dong vao cua so Firefox (MAC DINH — tool khong sap xep gi).
+KIEU_BINH_THUONG = "binh_thuong"
+#: Xep cac Firefox thanh 3 COT CO DINH; browser thu 4 tro di XEP LOP chong len trong cung cot.
+KIEU_BA_COT = "ba_cot"
+KIEU_CUA_SO = (
+    (KIEU_BINH_THUONG, "Bình thường (không sắp xếp)"),
+    (KIEU_BA_COT, "Xếp lớp 3 cột"),
+)
+NHAN_KIEU = dict(KIEU_CUA_SO)
+MA_KIEU = {v: k for k, v in KIEU_CUA_SO}
+#: So cot CO DINH cua kieu "xep lop 3 cot".
+COT_CO_DINH = 3
+#: Moi LOP chong len lech bao nhieu px (xuong + sang phai) cho thay cua so duoi.
+LECH_MAC_DINH = 28
+def o_ba_cot(i: int, man_rong: int, man_cao: int, *, cot: int = COT_CO_DINH,
+             vien: int = VIEN_MAC_DINH, khe: int = KHE_MAC_DINH,
+             lech: int = LECH_MAC_DINH) -> tuple:
+    """Vi tri (x, y, rong, cao) cho cua so thu ``i`` theo kieu "xep lop 3 cot". THUAN.
 
-CHE_DO_LUOI = "luoi"
-CHE_DO_NHOT = "nhot"
-
-#: Mặc định người dùng chốt: 2 cột, nhìn thấy 2 hàng, cuộn chuột để xem tiếp.
-COT_MAC_DINH = 2
-HANG_NHIN_MAC_DINH = 2
-
-
-# --- phần THUẦN -------------------------------------------------------------
-
-def vi_tri_luoi(so_o: int, cot: int, o_rong: int, o_cao: int) -> list:
-    """Toạ độ từng ô trong NỘI DUNG lưới (gốc 0,0, chưa trừ cuộn). THUẦN."""
-    cot = max(1, int(cot))
-    return [((i % cot) * int(o_rong), (i // cot) * int(o_cao), int(o_rong), int(o_cao))
-            for i in range(max(0, int(so_o)))]
-
-
-def tong_cao(so_o: int, cot: int, o_cao: int) -> int:
-    """Chiều cao toàn bộ lưới (để đặt tầm cuộn). THUẦN."""
-    cot = max(1, int(cot))
-    hang = (max(0, int(so_o)) + cot - 1) // cot
-    return hang * int(o_cao)
-
-
-def trong_vung_nhin(y: int, o_cao: int, cuon_y: int, vp_cao: int) -> bool:
-    """Ô ở ``y`` có dính vùng nhìn (cuộn tới ``cuon_y``, cao ``vp_cao``) không. THUẦN."""
-    return (y + int(o_cao)) > int(cuon_y) and int(y) < int(cuon_y) + int(vp_cao)
-
-
-def bo_cuc(so_o: int, cot: int, o_rong: int, o_cao: int, cuon_y: int, vp_cao: int) -> list:
-    """[{i, x, y, rong, cao, hien}] — x/y đã TRỪ cuộn (toạ độ trong khung). THUẦN.
-
-    ``hien=False`` = ô nằm ngoài vùng nhìn -> người gọi thu nhỏ cửa sổ đó cho nhẹ máy.
+    3 cot CO DINH chia ngang man hinh. ``i`` vuot qua so cot -> sang LOP tiep theo: VAN NAM
+    trong cot cu (i % cot), CUNG kich thuoc, chi lech xuong + sang phai ``lech`` px moi lop
+    de thay cua so ben duoi. Do lech bi CHAN trong be ngang mot cot -> khong tran sang cot ben.
     """
-    ra = []
-    for i, (x, y, w, h) in enumerate(vi_tri_luoi(so_o, cot, o_rong, o_cao)):
-        ra.append({"i": i, "x": x, "y": y - int(cuon_y), "rong": w, "cao": h,
-                   "hien": trong_vung_nhin(y, h, cuon_y, vp_cao)})
-    return ra
-
-
-def kich_thuoc_o(vp_rong: int, vp_cao: int, cot: int, hang_nhin: int) -> tuple:
-    """Ô to bằng vùng nhìn chia cho (cột × hàng nhìn). THUẦN."""
     cot = max(1, int(cot))
-    hang_nhin = max(1, int(hang_nhin))
-    return (max(200, int(vp_rong) // cot), max(150, int(vp_cao) // hang_nhin))
-
-
-# --- phần Windows -----------------------------------------------------------
-
+    vien, khe, lech = int(vien), int(khe), max(0, int(lech))
+    rong = max(240, (int(man_rong) - 2 * vien - (cot - 1) * khe) // cot)
+    # Chua cho mot nac lech doc de lop duoi con ho ra.
+    cao = max(240, int(man_cao) - 2 * vien - lech)
+    col, lop = i % cot, i // cot
+    dich_x = min(lop * lech, max(0, rong // 3))      # lech TRONG cot, khong lan sang cot ben
+    dich_y = min(lop * lech, max(0, int(man_cao) - cao - vien))
+    x = vien + col * (rong + khe) + dich_x
+    y = vien + dich_y
+    # Kep lai cho NAM TRON trong man hinh (lop cuoi cot phai de tran mep phai).
+    x = max(0, min(x, int(man_rong) - vien - rong))
+    y = max(0, min(y, int(man_cao) - vien - cao))
+    return (x, y, rong, cao)
 _LA_WINDOWS = os.name == "nt"
 if _LA_WINDOWS:
     user32 = ctypes.windll.user32
@@ -83,46 +70,24 @@ if _LA_WINDOWS:
 else:  # pragma: no cover - chỉ để import được trên máy khác khi chạy test thuần
     user32 = None
     _ENUM = None
-
 LOP_FIREFOX = "MozillaWindowClass"
-GWL_STYLE = -16
-WS_CHILD = 0x40000000
-WS_POPUP = 0x80000000
-SWP_NOZORDER = 0x0004
-SWP_NOACTIVATE = 0x0010
-SWP_FRAMECHANGED = 0x0020
-SW_MINIMIZE = 6
-SW_SHOWNOACTIVATE = 4
-SW_RESTORE = 9
-
-#: Style gốc của cửa sổ đã nhốt — để trả lại đúng khi thả ra.
-_STYLE_GOC: dict = {}
-_CHA_GOC: dict = {}
-
-
+SWP_NOZORDER = 0x0004       # SetWindowPos: giu thu tu chong cua so
+SWP_NOACTIVATE = 0x0010     # ... va khong cuop focus
 def _kiem_windows() -> bool:
     return _LA_WINDOWS and user32 is not None
-
-
 def pid_cua(hwnd: int) -> int:
     pid = wintypes.DWORD()
     user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
     return pid.value
-
-
 def _lop(hwnd: int) -> str:
     buf = ctypes.create_unicode_buffer(256)
     user32.GetClassNameW(hwnd, buf, 256)
     return buf.value
-
-
 def tieu_de(hwnd: int) -> str:
     n = user32.GetWindowTextLengthW(hwnd)
     buf = ctypes.create_unicode_buffer(n + 1)
     user32.GetWindowTextW(hwnd, buf, n + 1)
     return buf.value
-
-
 def cua_so_firefox() -> list:
     """[(hwnd, pid)] của mọi cửa sổ CHÍNH Firefox đang hiện (bỏ popup/hộp thoại)."""
     if not _kiem_windows():
@@ -141,8 +106,6 @@ def cua_so_firefox() -> list:
 
     user32.EnumWindows(_ENUM(cb), 0)
     return ra
-
-
 def cua_so_cua_acc(manager, account) -> Optional[int]:
     """hwnd cửa sổ chính Firefox của acc (None nếu acc không mở)."""
     if not _kiem_windows():
@@ -157,166 +120,105 @@ def cua_so_cua_acc(manager, account) -> Optional[int]:
         if pid in pids:
             return hwnd
     return None
-
-
+def kich_thuoc_man_hinh() -> tuple:
+    """(rong, cao) VUNG LAM VIEC cua man hinh chinh (da tru thanh tac vu). Khong phai Windows -> (1920, 1080)."""
+    if not _kiem_windows():
+        return (1920, 1080)
+    try:
+        class _RECT(ctypes.Structure):
+            _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
+                        ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+        r = _RECT()
+        if user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(r), 0):   # SPI_GETWORKAREA
+            return (max(640, r.right - r.left), max(480, r.bottom - r.top))
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        return (user32.GetSystemMetrics(0), user32.GetSystemMetrics(1))
+    except Exception:  # noqa: BLE001
+        return (1920, 1080)
 def con_song(hwnd: int) -> bool:
     return bool(_kiem_windows() and hwnd and user32.IsWindow(hwnd))
-
-
 def dat_vi_tri(hwnd: int, x: int, y: int, rong: int, cao: int) -> bool:
     if not con_song(hwnd):
         return False
     return bool(user32.SetWindowPos(hwnd, 0, int(x), int(y), int(rong), int(cao),
                                     SWP_NOZORDER | SWP_NOACTIVATE))
-
-
-def thu_nho(hwnd: int) -> bool:
-    """Thu nhỏ cửa sổ ngoài vùng nhìn: Firefox ngừng vẽ -> nhẹ máy khi mở nhiều acc."""
+class _RECT(ctypes.Structure):
+    _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
+                ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+def vi_tri(hwnd: int) -> Optional[tuple]:
+    """(x, y, rong, cao) cua cua so; khong doc duoc -> None."""
     if not con_song(hwnd):
-        return False
-    if user32.IsIconic(hwnd):
-        return True
-    return bool(user32.ShowWindow(hwnd, SW_MINIMIZE))
-
-
-def khoi_phuc(hwnd: int) -> bool:
-    if not con_song(hwnd):
-        return False
-    if not user32.IsIconic(hwnd):
-        return True
-    return bool(user32.ShowWindow(hwnd, SW_RESTORE))
-
-
-SW_HIDE = 0
-
-#: Cửa sổ đang bị ẨN (chế độ nhốt, ô ngoài vùng nhìn). Cửa sổ ẩn KHÔNG còn nằm trong
-#: EnumWindows nữa -> phải nhớ ở đây, kẻo rơi khỏi danh sách và không ai hiện lại.
-_DA_AN: set = set()
-
-
-def an(hwnd: int) -> bool:
-    """Ẩn hẳn cửa sổ (ô ngoài vùng nhìn ở chế độ NHỐT — cửa sổ con thu nhỏ vẫn chiếm chỗ).
-    Firefox bị ẩn cũng ngừng vẽ như khi thu nhỏ."""
-    if not con_song(hwnd):
-        return False
-    _DA_AN.add(hwnd)
-    return bool(user32.ShowWindow(hwnd, SW_HIDE))
-
-
-def hien(hwnd: int) -> bool:
-    _DA_AN.discard(hwnd)
-    if not con_song(hwnd):
-        return False
-    return bool(user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE))
-
-
-def dang_an() -> list:
-    return [h for h in _DA_AN if con_song(h)]
-
-
-def hien_het() -> int:
-    """Hiện lại mọi cửa sổ đang bị ẩn (đóng khung / thoát tool PHẢI gọi)."""
-    return sum(1 for h in list(_DA_AN) if hien(h))
-
-
-def gom(hwnd: int, cha: int) -> bool:
-    """Chế độ ``nhot``: biến cửa sổ Firefox thành CON của khung ``cha``."""
-    if not con_song(hwnd) or not cha:
-        return False
-    if hwnd not in _STYLE_GOC:
-        _STYLE_GOC[hwnd] = user32.GetWindowLongW(hwnd, GWL_STYLE)
-        _CHA_GOC[hwnd] = user32.GetParent(hwnd)
-    user32.SetParent(hwnd, cha)
-    style = (_STYLE_GOC[hwnd] & ~WS_POPUP) | WS_CHILD
-    user32.SetWindowLongW(hwnd, GWL_STYLE, style)
-    user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOZORDER | SWP_NOACTIVATE
-                        | 0x0001 | 0x0002)       # SWP_NOSIZE | SWP_NOMOVE
-    return bool(user32.IsChild(cha, hwnd))
-
-
-def tha(hwnd: int) -> bool:
-    """Trả cửa sổ về desktop (PHẢI gọi khi đóng khung/thoát tool, kẻo cửa sổ chết theo)."""
-    if hwnd not in _STYLE_GOC:
-        return False
-    style = _STYLE_GOC.pop(hwnd)
-    _CHA_GOC.pop(hwnd, None)
-    if not con_song(hwnd):
-        return False
-    user32.SetParent(hwnd, 0)
-    user32.SetWindowLongW(hwnd, GWL_STYLE, style)
-    user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOZORDER | SWP_NOACTIVATE
-                        | 0x0001 | 0x0002)
-    user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
-    return True
-
-
-def tha_het() -> int:
-    """Thả mọi cửa sổ đang nhốt VÀ hiện lại cửa sổ đang ẩn. Trả số cửa sổ đã thả."""
-    n = sum(1 for h in list(_STYLE_GOC) if tha(h))
-    hien_het()
-    return n
-
-
-def dang_nhot() -> list:
-    return list(_STYLE_GOC)
-
-
-def pid_co_cua_so() -> set:
-    return {pid for _h, pid in cua_so_firefox()}
-
-
-#: Sổ ghi pid ĐANG BỊ NHỐT — chỉ những pid này mới được coi là "ma" ở lần mở tool sau.
-SO_NHOT = os.path.join("data", "gom_nhot.json")
-
-
-def ghi_so_nhot(pids: Iterable[int], duong_dan: str = "") -> None:
-    """Ghi pid các Firefox đang bị NHỐT. Tool chết giữa chừng thì lần sau biết đường dọn."""
-    import json
-    duong_dan = duong_dan or SO_NHOT
-    try:
-        os.makedirs(os.path.dirname(duong_dan), exist_ok=True)
-        with open(duong_dan, "w", encoding="utf-8") as fh:
-            json.dump({"pids": sorted({int(p) for p in pids})}, fh)
-    except OSError:
-        pass
-
-
-def xoa_so_nhot(duong_dan: str = "") -> None:
-    try:
-        os.remove(duong_dan or SO_NHOT)
-    except OSError:
-        pass
-
-
-def doc_so_nhot(duong_dan: str = "") -> list:
-    import json
-    try:
-        with open(duong_dan or SO_NHOT, encoding="utf-8") as fh:
-            return [int(p) for p in (json.load(fh).get("pids") or [])]
-    except (OSError, ValueError, TypeError):
-        return []
-
-
-def tien_trinh_ma(pids: Iterable[int]) -> list:
-    """Trong ``pids``: pid CÒN SỐNG nhưng KHÔNG còn cửa sổ nào -> cửa sổ đã chết theo khung.
-
-    CHỈ xét pid lấy từ sổ nhốt. KHÔNG được quét chung mọi Firefox: trình duyệt vừa khởi động
-    cũng chưa có cửa sổ, quét chung là giết nhầm (đã mắc đúng lỗi này khi chạy thật 02/10).
-    """
+        return None
+    r = _RECT()
+    if not user32.GetWindowRect(hwnd, ctypes.byref(r)):
+        return None
+    return (r.left, r.top, r.right - r.left, r.bottom - r.top)
+def vung_lam_viec() -> tuple:
+    """(trai, tren, rong, cao) VUNG LAM VIEC man hinh chinh (tru thanh tac vu)."""
+    if _kiem_windows():
+        try:
+            r = _RECT()
+            if user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(r), 0):   # SPI_GETWORKAREA
+                return (r.left, r.top, max(640, r.right - r.left), max(480, r.bottom - r.top))
+        except Exception:  # noqa: BLE001
+            pass
+    rong, cao = kich_thuoc_man_hinh()
+    return (0, 0, rong, cao)
+def dpi_he_thong() -> int:
+    """DPI he thong theo cach tool thay toa do (tool khong DPI-aware -> 96, toa do cung la
+    toa do 'logic' -> 1 cm van dung 1 cm tren man hinh)."""
     if not _kiem_windows():
-        return []
-    from core import procutil
-    co_cua_so = pid_co_cua_so()
-    dang_song = {p.pid for p in procutil.iter_processes("firefox.exe")}
-    return [int(p) for p in pids if int(p) in dang_song and int(p) not in co_cua_so]
-
-
-def don_tien_trinh_ma(duong_dan: str = "") -> int:
-    """Dọn theo SỔ NHỐT (gọi lúc khởi động tool). Trả số tiến trình đã tắt; luôn xoá sổ."""
-    from core import procutil
-    pids = doc_so_nhot(duong_dan)
-    if not pids:
+        return 96
+    try:
+        return int(user32.GetDpiForSystem()) or 96
+    except Exception:  # noqa: BLE001
+        return 96
+def vien_phai_an(hwnd: int) -> int:
+    """Be rong VIEN TRONG SUOT ben phai cua so (Win10 ~7-8px): GetWindowRect tinh ca vien nay,
+    khung NHIN THAY thi khong (DWMWA_EXTENDED_FRAME_BOUNDS). Khong doc duoc -> 0."""
+    if not con_song(hwnd):
         return 0
-    n = sum(1 for pid in tien_trinh_ma(pids) if procutil.terminate(pid))
-    xoa_so_nhot(duong_dan)
-    return n
+    try:
+        r, f = _RECT(), _RECT()
+        if not user32.GetWindowRect(hwnd, ctypes.byref(r)):
+            return 0
+        if ctypes.windll.dwmapi.DwmGetWindowAttribute(hwnd, 9, ctypes.byref(f), ctypes.sizeof(f)) != 0:
+            return 0
+        return max(0, min(40, r.right - f.right))
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+class _POINT(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
+class _WINDOWPLACEMENT(ctypes.Structure):
+    _fields_ = [("length", ctypes.c_uint), ("flags", ctypes.c_uint), ("showCmd", ctypes.c_uint),
+                ("ptMinPosition", _POINT), ("ptMaxPosition", _POINT), ("rcNormalPosition", _RECT)]
+
+
+SW_SHOWNOACTIVATE = 4
+SW_SHOWMINNOACTIVE = 7
+
+
+def dang_thu_nho(hwnd: int) -> bool:
+    return bool(con_song(hwnd) and user32.IsIconic(hwnd))
+
+
+def hien_tai_cho(hwnd: int, x: int, y: int, rong: int, cao: int) -> bool:
+    """Cua so dang THU NHO -> dat vi tri 'binh thuong' = (x, y, rong, cao) roi cho HIEN ra ngay
+    tai do, KHONG kich hoat (khong gianh ban phim). Dung de mo trinh duyet "an" ma khong bao gio
+    hien o giua man hinh (Firefox tu keo vi tri luu trong xulstore vao trong man hinh)."""
+    if not con_song(hwnd):
+        return False
+    wp = _WINDOWPLACEMENT()
+    wp.length = ctypes.sizeof(_WINDOWPLACEMENT)
+    if not user32.GetWindowPlacement(hwnd, ctypes.byref(wp)):
+        return False
+    wp.flags = 0
+    wp.showCmd = SW_SHOWNOACTIVATE
+    wp.rcNormalPosition = _RECT(int(x), int(y), int(x) + int(rong), int(y) + int(cao))
+    return bool(user32.SetWindowPlacement(hwnd, ctypes.byref(wp)))

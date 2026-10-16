@@ -13,6 +13,29 @@
  */
 "use strict";
 
+/* ---- phan THUAN (test bang node) ---------------------------------------------------- */
+/** BM BI HAN CHE: trang Cai dat > Trang hien "Bạn không thể dùng hồ sơ doanh nghiệp này
+ *  để quảng cáo / Bạn không thể sử dụng doanh nghiệp X để tạo quảng cáo" (anh nguoi dung
+ *  05/10) -> KHONG tao page duoc, phai dung lai. Tra CAU FB BAO (rong = binh thuong). THUAN. */
+function bmHanChe(text) {
+  var t = String(text || "").replace(/\s+/g, " ");
+  var re = [
+    /Bạn không thể (dùng|sử dụng)[^.]{0,80}(doanh nghiệp|hồ sơ doanh nghiệp)[^.]{0,80}(quảng cáo)[^.]{0,20}\.?/i,
+    /(Bạn )?[Kk]hông thể (dùng|sử dụng)[^.]{0,60}để (tạo )?quảng cáo[^.]{0,20}\.?/i,
+    /You can'?t use this business (portfolio|account)[^.]{0,60}\.?/i,
+    /You can'?t use[^.]{0,60}to (advertise|create ads)[^.]{0,20}\.?/i,
+    /(doanh nghiệp|business portfolio)[^.]{0,40}(bị hạn chế|bị vô hiệu hoá|is restricted|has been restricted|is disabled)[^.]{0,30}\.?/i,
+  ];
+  for (var i = 0; i < re.length; i++) {
+    var m = re[i].exec(t);
+    if (m) { return m[0].trim().slice(0, 160); }
+  }
+  return "";
+}
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = { hanChe: bmHanChe };
+}
+
 if (typeof sendAsyncMessage === "function") {
 
   var lines = [];
@@ -480,7 +503,8 @@ if (typeof sendAsyncMessage === "function") {
         var tens = cmd.tens || [];
         for (var i = 0; i < tens.length; i++) { (vanBan.indexOf(tens[i]) !== -1 ? co : thieu).push(tens[i]); }
         report({ state: "bmpages", co: co, thieu: thieu, ten_bm: tenBM(win),
-                 mau: vanBan.slice(0, 300), rong: /Chưa thêm Trang nào/i.test(vanBan) });
+                 mau: vanBan.slice(0, 300), rong: /Chưa thêm Trang nào/i.test(vanBan),
+                 han_che: bmHanChe(vanBan), than: vanBan.slice(0, 1200) });
         return;
       }
       if (cmd && cmd.action === "listbm" && !done) {

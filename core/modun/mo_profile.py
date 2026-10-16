@@ -22,20 +22,17 @@ MA = "mo_profile"
 #: MỖI LẦN tải trang (không có cờ "đã chạy") -> lệnh CŨ còn sót = agent tự chạy lại (tạo page/đăng
 #: bài...) khi người dùng chỉ mở profile hoặc chuyển sang trang Page -> phiên bị đảo. Mở profile phải
 #: XOÁ hết lệnh này để KHÔNG agent nào thao tác (yêu cầu người dùng 2026-09-19).
-LENH_AGENT = ("qlfp-upload.json", "qlfp-create.json", "qlfp-weblogin.json",
-              "qlfp-msg.json", "qlfp-bm.json")
+#: MOT NGUON duy nhat: core/autoconfig.LENH_AGENT (12 agent: upload/create/weblogin/msg/bm/watch/
+#: xlogin/xpost/xwatch/nord/gmail/ytpost). Truoc day chi 5 -> lenh X/YouTube/Gmail con sot van
+#: tu chay khi nguoi dung chi mo profile (loi nguoi dung bao 08/10).
+from core import autoconfig as _ac
+
+LENH_AGENT = _ac.LENH_AGENT
 
 
 def xoa_lenh_agent(profile_dir: str) -> int:
-    """Xoá các file LỆNH agent còn sót trong profile. Trả số file đã xoá. Không đụng trình duyệt."""
-    da = 0
-    for ten in LENH_AGENT:
-        try:
-            os.remove(os.path.join(profile_dir, ten))
-            da += 1
-        except OSError:
-            pass
-    return da
+    """Xoá HẾT file LỆNH agent còn sót trong profile. Trả số file đã xoá. Không đụng trình duyệt."""
+    return _ac.xoa_lenh_agent(profile_dir)
 
 
 def chay(nc: NguCanh, accs: list, tham_so: dict) -> KetQua:
@@ -53,8 +50,14 @@ def chay(nc: NguCanh, accs: list, tham_so: dict) -> KetQua:
                     nc.log(f"[{a.id}] dọn {so} lệnh agent cũ còn sót (để không tự chạy gì).")
             except Exception:  # noqa: BLE001
                 pass
-            nc.log(f"Đang mở {a.id} (chỉ mở trình duyệt, không thao tác gì)...")
-            nc.manager.launch(a, url=url)          # MỞ THẲNG, giữ nguyên phiên trong profile
+            nc.log(f"Đang mở {a.id} (chỉ mở trình duyệt, không thao tác gì — tắt mọi agent)...")
+            # manager.mo_tay: xoa lenh + ghi co CHE DO TAY (qlfp-tay.json) -> mozilla.cfg KHONG
+            # nap agent nao cho phien nay, ke ca agent "bo qua checkpoint" luon chay. Nguoi dung
+            # bao 08/10: dang xac minh "khong phai nguoi may" bang tay thi trinh duyet tu BACK.
+            if hasattr(nc.manager, "mo_tay"):
+                nc.manager.mo_tay(a, url=url)
+            else:                                   # manager gia trong thuoc cu
+                nc.manager.launch(a, url=url)
             try:
                 nc.store.mark_opened(a.id)          # chỉ cập nhật cột ▶ (không đụng browser)
             except Exception:  # noqa: BLE001

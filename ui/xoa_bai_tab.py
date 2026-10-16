@@ -34,6 +34,9 @@ COLS = (("stt", "STT", 44, "center"), ("acc", "Acc FB", 130, "w"),
         ("tu", "Từ ngày", 96, "center"), ("den", "Đến ngày", 96, "center"),
         ("loai", "Thể loại", 84, "center"), ("tt", "Trạng thái", 220, "w"))
 NHAN_LOAI = [n for _, n in xb.LOAI]
+CD_KHOANG, CD_GAN_DAY, CD_NAM, CD_TRUOC, CD_CU_HON = (
+    "📆 Khoảng ngày", "🕘 N ngày gần đây", "📅 Cả năm", "⏮ Trước ngày", "⌛ Cũ hơn N")
+CHE_DO = (CD_KHOANG, CD_GAN_DAY, CD_NAM, CD_TRUOC, CD_CU_HON)
 
 
 def _khoa(acc_id: str, page_id: str) -> str:
@@ -79,54 +82,85 @@ class XoaBaiTab(ctk.CTkFrame):
         self.lbl_token = ctk.CTkLabel(r1, text="", text_color="gray60")
         self.lbl_token.pack(side="right", padx=8)
 
-        # Hàng 2: áp khoảng ngày + thể loại cho các dòng đang chọn (không chọn = tất cả)
-        r2 = ctk.CTkFrame(self)
-        r2.pack(fill="x", padx=PAD, pady=4)
-        ctk.CTkLabel(r2, text="Từ ngày", font=dam).pack(side="left", padx=(8, 4))
-        self.tu_entry = ctk.CTkEntry(r2, width=100, placeholder_text="dd/mm/yyyy")
-        self.tu_entry.pack(side="left", pady=6)
-        ctk.CTkLabel(r2, text="Đến ngày", font=dam).pack(side="left", padx=(10, 4))
-        self.den_entry = ctk.CTkEntry(r2, width=100, placeholder_text="dd/mm/yyyy")
-        self.den_entry.pack(side="left", pady=6)
-        ctk.CTkLabel(r2, text="Thể loại", font=dam).pack(side="left", padx=(10, 4))
-        self.loai_menu = ctk.CTkOptionMenu(r2, width=100, values=NHAN_LOAI)
+        # Khối "⏱ Thời điểm xoá": chọn CÁCH tính khoảng ngày -> chỉ hiện ô của cách đó -> xem trước
+        # -> MỘT nút "Áp dụng thời gian xoá vào acc" (dòng đang chọn; không chọn = mọi dòng).
+        khoi = ctk.CTkFrame(self, border_width=2, border_color=("gray60", "gray35"))
+        khoi.pack(fill="x", padx=PAD, pady=4)
+        ra = ctk.CTkFrame(khoi, fg_color="transparent")
+        ra.pack(fill="x", padx=6, pady=(6, 2))
+        ctk.CTkLabel(ra, text="⏱ Thời điểm xoá", font=ctk.CTkFont(size=14, weight="bold")).pack(side="left", padx=(4, 10))
+        self.che_do_seg = ctk.CTkSegmentedButton(ra, values=list(CHE_DO), command=self._doi_che_do)
+        self.che_do_seg.pack(side="left", pady=2)
+        ctk.CTkLabel(ra, text="Thể loại", font=dam).pack(side="left", padx=(16, 4))
+        self.loai_menu = ctk.CTkOptionMenu(ra, width=100, values=NHAN_LOAI, command=lambda _v: self._xem_truoc())
         self.loai_menu.set(xb.NHAN_LOAI["video"])   # mặc định xoá VIDEO fanpage
-        self.loai_menu.pack(side="left", pady=6)
-        ctk.CTkButton(r2, text="✓ Áp cho dòng đã chọn", width=160, command=self._ap_dong).pack(side="left", padx=(10, 4), pady=6)
-        for nhan, ngay in (("7 ngày", 7), ("30 ngày", 30), ("90 ngày", 90)):
-            ctk.CTkButton(r2, text=nhan, width=64, fg_color="gray40",
-                          command=lambda n=ngay: self._dat_nhanh(n)).pack(side="left", padx=2, pady=6)
+        self.loai_menu.pack(side="left", pady=2)
 
-        # Hàng 2b: ĐỀ XUẤT — đặt khoảng ngày theo năm / trước ngày / cũ hơn N; mỗi nút áp luôn cho dòng.
-        r2b = ctk.CTkFrame(self)
-        r2b.pack(fill="x", padx=PAD, pady=4)
-        ctk.CTkLabel(r2b, text="Đề xuất", font=dam).pack(side="left", padx=(8, 6))
-        self.nam_menu = ctk.CTkOptionMenu(r2b, width=86, values=[str(n) for n in xb.cac_nam()])
+        # Hàng ô nhập: mỗi cách một khung con, chỉ khung của cách đang chọn được hiện.
+        self._o_nhap = ctk.CTkFrame(khoi, fg_color="transparent")
+        self._o_nhap.pack(fill="x", padx=6, pady=2)
+        self._khung_cd: dict = {}
+
+        f = self._khung_cd[CD_KHOANG] = ctk.CTkFrame(self._o_nhap, fg_color="transparent")
+        ctk.CTkLabel(f, text="Từ ngày", font=dam).pack(side="left", padx=(4, 4))
+        self.tu_entry = ctk.CTkEntry(f, width=100, placeholder_text="dd/mm/yyyy (trống = từ đầu)")
+        self.tu_entry.pack(side="left", pady=4)
+        ctk.CTkLabel(f, text="Đến ngày", font=dam).pack(side="left", padx=(10, 4))
+        self.den_entry = ctk.CTkEntry(f, width=100, placeholder_text="dd/mm/yyyy")
+        self.den_entry.pack(side="left", pady=4)
+        ctk.CTkLabel(f, text="(để trống Đến = tới hôm nay)", text_color="gray55").pack(side="left", padx=8)
+
+        f = self._khung_cd[CD_GAN_DAY] = ctk.CTkFrame(self._o_nhap, fg_color="transparent")
+        ctk.CTkLabel(f, text="Bài đăng trong", font=dam).pack(side="left", padx=(4, 4))
+        self.so_ngay_entry = ctk.CTkEntry(f, width=56)
+        self.so_ngay_entry.insert(0, "30")
+        self.so_ngay_entry.pack(side="left", pady=4)
+        ctk.CTkLabel(f, text="ngày gần đây").pack(side="left", padx=(4, 10))
+        for nhan, ngay in (("7", 7), ("30", 30), ("90", 90), ("365", 365)):
+            ctk.CTkButton(f, text=nhan, width=44, fg_color="gray40",
+                          command=lambda n=ngay: self._dat_so_ngay(n)).pack(side="left", padx=2, pady=4)
+
+        f = self._khung_cd[CD_NAM] = ctk.CTkFrame(self._o_nhap, fg_color="transparent")
+        ctk.CTkLabel(f, text="Mọi bài trong năm", font=dam).pack(side="left", padx=(4, 4))
+        self.nam_menu = ctk.CTkOptionMenu(f, width=86, values=[str(n) for n in xb.cac_nam()],
+                                          command=lambda _v: self._xem_truoc())
         self.nam_menu.set(str(xb.nam_hien_tai()))
-        self.nam_menu.pack(side="left", pady=6)
-        ctk.CTkButton(r2b, text="📅 Cả năm", width=96, fg_color="#2f6f9f",
-                      command=self._dat_nam).pack(side="left", padx=(4, 12), pady=6)
+        self.nam_menu.pack(side="left", pady=4)
 
-        ctk.CTkLabel(r2b, text="Trước ngày").pack(side="left", padx=(0, 4))
-        self.truoc_entry = ctk.CTkEntry(r2b, width=100, placeholder_text="dd/mm/yyyy")
-        self.truoc_entry.pack(side="left", pady=6)
-        ctk.CTkButton(r2b, text="⏮ Bài cũ hơn ngày này", width=160, fg_color="#2f6f9f",
-                      command=self._dat_truoc_ngay).pack(side="left", padx=(4, 12), pady=6)
+        f = self._khung_cd[CD_TRUOC] = ctk.CTkFrame(self._o_nhap, fg_color="transparent")
+        ctk.CTkLabel(f, text="Mọi bài TRƯỚC ngày", font=dam).pack(side="left", padx=(4, 4))
+        self.truoc_entry = ctk.CTkEntry(f, width=100, placeholder_text="dd/mm/yyyy")
+        self.truoc_entry.pack(side="left", pady=4)
+        ctk.CTkLabel(f, text="(không gồm chính ngày đó)", text_color="gray55").pack(side="left", padx=8)
 
-        ctk.CTkLabel(r2b, text="Cũ hơn").pack(side="left", padx=(0, 4))
-        self.cu_hon_entry = ctk.CTkEntry(r2b, width=46)
+        f = self._khung_cd[CD_CU_HON] = ctk.CTkFrame(self._o_nhap, fg_color="transparent")
+        ctk.CTkLabel(f, text="Bài CŨ HƠN", font=dam).pack(side="left", padx=(4, 4))
+        self.cu_hon_entry = ctk.CTkEntry(f, width=46)
         self.cu_hon_entry.insert(0, "6")
-        self.cu_hon_entry.pack(side="left", pady=6)
-        self.don_vi_menu = ctk.CTkOptionMenu(r2b, width=84, values=[n for _, n in xb.DON_VI])
+        self.cu_hon_entry.pack(side="left", pady=4)
+        self.don_vi_menu = ctk.CTkOptionMenu(f, width=84, values=[n for _, n in xb.DON_VI],
+                                             command=lambda _v: self._xem_truoc())
         self.don_vi_menu.set(xb.NHAN_DON_VI["thang"])
-        self.don_vi_menu.pack(side="left", padx=(4, 0), pady=6)
-        ctk.CTkButton(r2b, text="✓ Áp", width=56, fg_color="#2f6f9f",
-                      command=self._dat_cu_hon).pack(side="left", padx=(4, 12), pady=6)
+        self.don_vi_menu.pack(side="left", padx=(4, 0), pady=4)
+        ctk.CTkLabel(f, text="tính từ hôm nay").pack(side="left", padx=6)
 
-        self.dem_nam_btn = ctk.CTkButton(r2b, text="📊 Đếm theo năm", width=130, fg_color="#6a4fa5",
+        for e in (self.tu_entry, self.den_entry, self.so_ngay_entry, self.truoc_entry, self.cu_hon_entry):
+            e.bind("<KeyRelease>", lambda _e: self._xem_truoc(), add="+")
+
+        # Hàng cuối khối: xem trước + nút áp dụng + đếm theo năm
+        rc = ctk.CTkFrame(khoi, fg_color="transparent")
+        rc.pack(fill="x", padx=6, pady=(2, 6))
+        self.ap_btn = ctk.CTkButton(rc, text="✓ Áp dụng thời gian xoá vào acc", width=230, height=32,
+                                    fg_color="#2f7f3f", hover_color="#286b35",
+                                    font=ctk.CTkFont(size=13, weight="bold"), command=self._ap_dong)
+        self.ap_btn.pack(side="left", padx=(4, 8))
+        self.dem_nam_btn = ctk.CTkButton(rc, text="📊 Đếm theo năm", width=130, fg_color="#6a4fa5",
                                          command=self._dem_nam)
-        self.dem_nam_btn.pack(side="left", padx=4, pady=6)
-
+        self.dem_nam_btn.pack(side="left", padx=4)
+        self.xem_lbl = ctk.CTkLabel(rc, text="", anchor="w")
+        self.xem_lbl.pack(side="left", padx=10, fill="x", expand=True)
+        self.che_do_seg.set(CD_KHOANG)
+        self._doi_che_do(CD_KHOANG)
 
         # Hàng 3: bảng
         box = ctk.CTkFrame(self)
@@ -138,6 +172,12 @@ class XoaBaiTab(ctk.CTkFrame):
             self.tree.column(k, width=w, anchor=a, stretch=(k in ("page", "tt")))
         self.tree.bind("<Double-1>", self._sua_o)
         self.tree.bind("<Button-3>", self._menu_chuot_phai)
+        # Kéo chuột chọn nhiều dòng (Ctrl/Shift vẫn như Treeview thường) + Ctrl+A chọn hết.
+        self._drag_anchor = None
+        self.tree.bind("<Button-1>", self._drag_start, add="+")
+        self.tree.bind("<B1-Motion>", self._drag_select, add="+")
+        self.tree.bind("<Control-a>", self._chon_het)
+        self.tree.bind("<Control-A>", self._chon_het)
         self._menu = tk.Menu(self.tree, tearoff=0)
         sb = ttk.Scrollbar(box, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=sb.set)
@@ -276,6 +316,7 @@ class XoaBaiTab(ctk.CTkFrame):
         tree = getattr(self, "tree", None)
         if tree is None:
             return
+        chon_cu = [k for k in tree.selection() if k in self._dong]   # vẽ lại KHÔNG làm mất dòng đang chọn
         tree.delete(*tree.get_children())
         for i, (k, d) in enumerate(self._dong.items(), start=1):
             page = d.get("page_ten") or d["page_id"]
@@ -288,6 +329,8 @@ class XoaBaiTab(ctk.CTkFrame):
                  "loai": xb.NHAN_LOAI.get(d.get("loai", "tat_ca"), "Tất cả"),
                  "tt": d.get("tt", "") or "chờ"}
             tree.insert("", "end", iid=k, values=tuple(o[c[0]] for c in COLS))
+        if chon_cu:
+            tree.selection_set(chon_cu)
         accs = {d["acc_id"] for d in self._dong.values()}
         ck_co = sum(1 for a in accs if self._co_cookie(a))
         self.lbl_token.configure(
@@ -352,6 +395,10 @@ class XoaBaiTab(ctk.CTkFrame):
             if not isinstance(getattr(acc, "extra", None), dict):
                 acc.extra = {}
             acc.extra["token"] = tok                      # ghi vao cot Token bang Quan ly acc
+            if lam_moi:
+                # Bấm LẤY LẠI token: token cũ GẮN TRÊN DÒNG (quét page / nhập tay) thường đã chết và
+                # được ưu tiên hơn token acc -> phải bỏ đi, không thì vẫn xoá bằng token cũ (lỗi 190).
+                self.app._post(lambda a=acc_id: self._bo_token_dong(a))
             try:
                 self.app.store.save()
                 self.app._post(self.app.refresh)
@@ -361,6 +408,18 @@ class XoaBaiTab(ctk.CTkFrame):
         else:
             self._log(f"[{acc_id}] KHÔNG lấy được token: {loi}")
         return tok
+
+    def _bo_token_dong(self, acc_id: str) -> None:
+        """Xoá token cũ gắn trên các dòng của acc -> dòng dùng token MỚI của acc (luồng chính)."""
+        doi = 0
+        for d in self._dong.values():
+            if d["acc_id"] == acc_id and d.get("token"):
+                d["token"] = ""
+                doi += 1
+        if doi:
+            self._log(f"[{acc_id}] thay token cũ trên {doi} dòng bằng token mới")
+        self._ve()
+        self._persist_cfg()
 
     def _quet_page(self) -> None:
         accs = self._acc_dang_chon() or sorted({d["acc_id"] for d in self._dong.values()})
@@ -445,68 +504,111 @@ class XoaBaiTab(ctk.CTkFrame):
         self._persist_cfg()
 
     # ------------------------------------------------------------------ ngày / thể loại
-    def _ap_dong(self) -> None:
-        """Áp Từ/Đến/Thể loại ở hàng 2 cho các dòng đang chọn (không chọn -> tất cả dòng)."""
+    def _doi_che_do(self, che_do: str) -> None:
+        """Chỉ hiện ô nhập của cách tính đang chọn."""
+        for k, f in self._khung_cd.items():
+            if k == che_do:
+                f.pack(fill="x")
+            else:
+                f.pack_forget()
+        self._xem_truoc()
+
+    def _tinh_khoang(self) -> tuple:
+        """(tu, den, loi, mo_ta) theo cách tính đang chọn — dùng core, KHÔNG đụng dòng nào."""
+        cd = self.che_do_seg.get() or CD_KHOANG
+        if cd == CD_GAN_DAY:
+            so = self.so_ngay_entry.get().strip()
+            if not so.isdigit() or int(so) <= 0:
+                return "", "", "Số ngày phải là số nguyên dương.", ""
+            tu, den, loi = xb.khoang_n_ngay(int(so))
+            return tu, den, loi, f"bài đăng trong {so} ngày gần đây"
+        if cd == CD_NAM:
+            nam = self.nam_menu.get().strip()
+            tu, den, loi = xb.khoang_nam(nam)
+            return tu, den, loi, f"cả năm {nam}"
+        if cd == CD_TRUOC:
+            ngay = self.truoc_entry.get().strip()
+            if not ngay:
+                return "", "", "Gõ ngày mốc (dd/mm/yyyy) đã.", ""
+            tu, den, loi = xb.khoang_truoc_ngay(ngay)
+            return tu, den, loi, f"mọi bài trước ngày {ngay}"
+        if cd == CD_CU_HON:
+            so = self.cu_hon_entry.get().strip()
+            dv = xb.MA_DON_VI.get(self.don_vi_menu.get(), "thang")
+            tu, den, loi = xb.khoang_cu_hon(so, dv)
+            return tu, den, loi, f"bài cũ hơn {so} {xb.NHAN_DON_VI.get(dv, dv)}"
         tu, den = self.tu_entry.get().strip(), self.den_entry.get().strip()
         _s, _u, loi = xb.khoang_ngay(tu, den)
-        if loi:
-            messagebox.showwarning("Khoảng ngày", loi, parent=self.app)
+        return tu, den, loi, "khoảng ngày tự chọn"
+
+    def _xem_truoc(self) -> None:
+        """Dòng xem trước: sẽ xoá bài từ đâu đến đâu, thể loại gì."""
+        lbl = getattr(self, "xem_lbl", None)
+        if lbl is None:
             return
+        tu, den, loi, _mt = self._tinh_khoang()
+        if loi:
+            lbl.configure(text="⚠ " + loi, text_color="#d9822b")
+            return
+        lbl.configure(text=f"→ Sẽ xoá: {tu or 'từ bài đầu tiên'} → {den or 'hôm nay'} · {self.loai_menu.get()}",
+                      text_color=("gray20", "gray80"))
+
+    def _ap_dong(self) -> None:
+        """NÚT "Áp dụng thời gian xoá vào acc": tính khoảng theo cách đang chọn, đổ vào ô Từ/Đến rồi
+        áp (cùng thể loại) cho các dòng đang chọn — không chọn dòng nào thì áp cho mọi dòng."""
+        tu, den, loi, mo_ta = self._tinh_khoang()
+        if loi:
+            canh = messagebox.showinfo if "Gõ ngày mốc" in loi else messagebox.showwarning
+            canh("Thời điểm xoá", loi, parent=self.app)
+            return
+        if self.che_do_seg.get() != CD_KHOANG:
+            for e, v in ((self.tu_entry, tu), (self.den_entry, den)):
+                e.delete(0, "end")
+                if v:
+                    e.insert(0, v)
         loai = xb.MA_THEO_NHAN.get(self.loai_menu.get(), "tat_ca")
-        muc = self._chon() or list(self._dong)
+        chon = self._chon()
+        muc = chon or list(self._dong)
         for k in muc:
             self._dong[k].update({"tu": tu, "den": den, "loai": loai})
         self._ve()
         self._persist_cfg()
-        self.app.set_status(f"Đã áp {tu or '…'} → {den or 'hôm nay'} · {xb.NHAN_LOAI[loai]} cho {len(muc)} dòng.")
+        pham_vi = f"{len(muc)} dòng đã chọn" if chon else f"TẤT CẢ {len(muc)} dòng (chưa chọn dòng nào)"
+        self.app.set_status(f"Đã áp {tu or '…'} → {den or 'hôm nay'} · {xb.NHAN_LOAI[loai]} cho {pham_vi}.")
+        self._log(f"áp thời gian xoá ({mo_ta}): {tu or '…'} → {den or 'hôm nay'} · "
+                  f"{xb.NHAN_LOAI[loai]} cho {pham_vi}")
+        self._xem_truoc()
+
+    def _dat_so_ngay(self, ngay: int) -> None:
+        self.so_ngay_entry.delete(0, "end")
+        self.so_ngay_entry.insert(0, str(ngay))
+        self._xem_truoc()
+
+    def _dat_che_do_va_ap(self, che_do: str) -> None:
+        self.che_do_seg.set(che_do)
+        self._doi_che_do(che_do)
+        self._ap_dong()
+        self._persist_cfg()
 
     def _dat_nhanh(self, ngay: int) -> None:
-        """Đặt nhanh: từ (hôm nay - N ngày) đến hôm nay vào 2 ô."""
+        """N ngày gần đây: đổ khoảng vào ô Từ/Đến (chưa áp)."""
+        self.che_do_seg.set(CD_GAN_DAY)
+        self._doi_che_do(CD_GAN_DAY)
+        self._dat_so_ngay(ngay)
         tu, den, _loi = xb.khoang_n_ngay(ngay)
-        self._dien_khoang(tu, den)
-
-    def _dien_khoang(self, tu: str, den: str, *, ap: bool = False, nhan: str = "") -> None:
-        """Đổ (tu, den) vào 2 ô Từ/Đến; ``ap`` thì áp luôn cho dòng đang chọn (không chọn = tất cả)."""
-        self.tu_entry.delete(0, "end")
-        if tu:
-            self.tu_entry.insert(0, tu)
-        self.den_entry.delete(0, "end")
-        if den:
-            self.den_entry.insert(0, den)
-        if ap:
-            self._ap_dong()
-            if nhan:
-                self._log(nhan)
-
-    def _de_xuat(self, bo: tuple, nhan: str) -> None:
-        """Dùng chung cho 3 nút đề xuất: (tu, den, loi) -> báo lỗi hoặc đổ vào ô + áp cho dòng."""
-        tu, den, loi = bo
-        if loi:
-            messagebox.showwarning("Đề xuất khoảng ngày", loi, parent=self.app)
-            return
-        self._dien_khoang(tu, den, ap=True, nhan=nhan)
+        for e, v in ((self.tu_entry, tu), (self.den_entry, den)):
+            e.delete(0, "end")
+            if v:
+                e.insert(0, v)
 
     def _dat_nam(self) -> None:
-        """CẢ NĂM đang chọn: 01/01 → 31/12 của năm đó."""
-        nam = self.nam_menu.get().strip()
-        self._de_xuat(xb.khoang_nam(nam), f"đề xuất: cả năm {nam}")
-        self._persist_cfg()
+        self._dat_che_do_va_ap(CD_NAM)
 
     def _dat_truoc_ngay(self) -> None:
-        """Mọi bài TRƯỚC ngày mốc (không gồm chính ngày đó) — dọn bài cũ một lần."""
-        ngay = self.truoc_entry.get().strip()
-        if not ngay:
-            messagebox.showinfo("Trước ngày", "Gõ ngày mốc (dd/mm/yyyy) đã.", parent=self.app)
-            return
-        self._de_xuat(xb.khoang_truoc_ngay(ngay), f"đề xuất: mọi bài trước ngày {ngay}")
-        self._persist_cfg()
+        self._dat_che_do_va_ap(CD_TRUOC)
 
     def _dat_cu_hon(self) -> None:
-        """Bài CŨ HƠN N ngày/tháng/năm tính từ hôm nay."""
-        so = self.cu_hon_entry.get().strip()
-        dv = xb.MA_DON_VI.get(self.don_vi_menu.get(), "thang")
-        self._de_xuat(xb.khoang_cu_hon(so, dv), f"đề xuất: bài cũ hơn {so} {xb.NHAN_DON_VI.get(dv, dv)}")
-        self._persist_cfg()
+        self._dat_che_do_va_ap(CD_CU_HON)
 
     def _dem_nam(self) -> None:
         """Đọc HẾT bài của các fanpage đang chọn rồi báo mỗi năm còn bao nhiêu bài (chỉ đọc, không xoá)."""
@@ -634,6 +736,11 @@ class XoaBaiTab(ctk.CTkFrame):
         duoi = f" ({len(accs)} acc)" if len(accs) > 1 else f" ({accs[0]})"
         m.add_command(label="▶ Mở profile" + duoi, command=lambda: self._mo_profile(accs))
         m.add_separator()
+        m.add_command(label="🔎 Quét page" + duoi, command=self._quet_page)
+        so_page = len(self._page_da_chon())
+        m.add_command(label=f"🗑 Xoá bài viết thật ({so_page} page)" if so_page else "🗑 Xoá bài viết thật",
+                      command=lambda: self._run(dry=False))
+        m.add_separator()
         m.add_command(label="📋 Copy UID" + duoi, command=lambda: self._copy_uid(accs))
         m.add_command(label="🍪 Copy cookie" + duoi, command=lambda: self._copy_cookie(accs))
         m.add_command(label="🔑 Copy token" + duoi, command=lambda: self._copy_token(accs))
@@ -647,6 +754,33 @@ class XoaBaiTab(ctk.CTkFrame):
             m.tk_popup(event.x_root, event.y_root)
         finally:
             m.grab_release()
+
+    # ---- kéo chuột chọn nhiều dòng (giống tab Quản lý acc) -------------
+    SHIFT_HELD = 0x0001
+    CTRL_HELD = 0x0004
+
+    def _drag_start(self, event) -> None:
+        """Ghi lại dòng bấm xuống làm mốc kéo chọn (giữ Ctrl/Shift thì để Treeview tự xử lý)."""
+        if self.tree.identify_region(event.x, event.y) in ("heading", "separator") or                 event.state & (self.SHIFT_HELD | self.CTRL_HELD):
+            self._drag_anchor = None
+            return
+        self._drag_anchor = self.tree.identify_row(event.y)
+
+    def _drag_select(self, event) -> None:
+        """Kéo chuột: chọn mọi dòng từ mốc tới dòng dưới con trỏ."""
+        if not self._drag_anchor:
+            return
+        cur = self.tree.identify_row(event.y)
+        items = self.tree.get_children("")
+        if not cur or cur not in items or self._drag_anchor not in items:
+            return
+        lo, hi = sorted((items.index(self._drag_anchor), items.index(cur)))
+        self.tree.selection_set(items[lo:hi + 1])
+        self.tree.see(cur)
+
+    def _chon_het(self, _event=None):
+        self.tree.selection_set(self.tree.get_children(""))
+        return "break"
 
     def _acc_doi_tuong(self, accs: list) -> list:
         """id acc -> doi tuong Account (bo id khong con trong bang Quan ly acc)."""
@@ -813,14 +947,35 @@ class XoaBaiTab(ctk.CTkFrame):
         muc = self._chon() or list(self._dong)
         return [dict(self._dong[k]) for k in muc if self._dong[k]["page_id"]]
 
+    def _page_da_chon(self) -> list:
+        """CHỈ các dòng ĐANG CHỌN có fanpage (xoá thật bắt buộc chọn, không ngầm hiểu là tất cả)."""
+        return [dict(self._dong[k]) for k in self._chon() if k in self._dong and self._dong[k]["page_id"]]
+
+    def _gan_token(self, dong: list) -> list:
+        """Dòng không có token riêng -> dùng token ĐÃ LƯU của acc (cột Token / lần Lấy token gần nhất)."""
+        for d in dong:
+            if not (d.get("token") or "").strip():
+                d["token"] = self._token_acc(d["acc_id"])
+        return dong
+
     def _run(self, dry: bool = True, xac_nhan: bool = True) -> None:
         if self._running:
             messagebox.showinfo("Xoá bài", "Đang chạy, chờ xong đã.", parent=self.app)
             return
-        dong = self._dong_chay()
-        if not dong:
-            messagebox.showinfo("Xoá bài", "Chưa có dòng nào có fanpage. Quét fanpage hoặc nhập ID page.", parent=self.app)
-            return
+        if dry:
+            dong = self._dong_chay()
+            if not dong:
+                messagebox.showinfo("Xoá bài", "Chưa có dòng nào có fanpage. Quét fanpage hoặc nhập ID page.",
+                                    parent=self.app)
+                return
+        else:
+            dong = self._page_da_chon()
+            if not dong:
+                messagebox.showwarning("Xoá bài", "Bạn chưa chọn page để xoá.\n\nBấm chọn dòng có fanpage trong "
+                                       "bảng (giữ Ctrl / Shift hoặc kéo chuột để chọn nhiều page) rồi bấm Xoá thật.",
+                                       parent=self.app)
+                return
+        self._gan_token(dong)
         for d in dong:
             _s, _u, loi = xb.khoang_ngay(d.get("tu", ""), d.get("den", ""))
             if loi:
@@ -830,8 +985,13 @@ class XoaBaiTab(ctk.CTkFrame):
             da_dem = sum(int((self._dong[_khoa(d['acc_id'], d['page_id'])].get("kq") or {}).get("khop") or 0)
                          for d in dong)
             goi_y = f"Lần quét trước đếm được {da_dem} bài khớp." if da_dem else "Chưa quét trước — nên bấm Quét trước."
-            if not messagebox.askyesno("XOÁ THẬT", f"XOÁ bài trên {len(dong)} fanpage theo khoảng ngày + thể loại "
-                                       f"từng dòng?\n{goi_y}\n\nXoá là KHÔNG hoàn tác được. Chắc chưa?",
+            ds = "\n".join(f"  • {d.get('page_ten') or d['page_id']} ({d['page_id']}): "
+                           f"{d.get('tu') or '…'} → {d.get('den') or 'hôm nay'} · "
+                           f"{xb.NHAN_LOAI.get(d.get('loai', 'tat_ca'), 'Tất cả')}" for d in dong[:8])
+            if len(dong) > 8:
+                ds += f"\n  … và {len(dong) - 8} page nữa"
+            if not messagebox.askyesno("XOÁ THẬT", f"XOÁ bài trên {len(dong)} fanpage đã chọn:\n{ds}\n\n"
+                                       f"{goi_y}\n\nXoá là KHÔNG hoàn tác được. Chắc chưa?",
                                        parent=self.app):
                 return
         self._running, self._stopped = True, False
@@ -899,7 +1059,8 @@ class XoaBaiTab(ctk.CTkFrame):
                 "cach_giay": self._int(self.cach_entry, 2), "txt": self.txt_entry.get().strip(),
                 "nam": self.nam_menu.get().strip(), "truoc_ngay": self.truoc_entry.get().strip(),
                 "cu_hon": self.cu_hon_entry.get().strip(),
-                "don_vi": xb.MA_DON_VI.get(self.don_vi_menu.get(), "thang")}
+                "don_vi": xb.MA_DON_VI.get(self.don_vi_menu.get(), "thang"),
+                "che_do": self.che_do_seg.get(), "so_ngay": self.so_ngay_entry.get().strip()}
         try:
             os.makedirs(os.path.dirname(self._cfg_path()), exist_ok=True)
             with open(self._cfg_path(), "w", encoding="utf-8") as fh:
@@ -931,6 +1092,12 @@ class XoaBaiTab(ctk.CTkFrame):
                     e.insert(0, str(c[key]))
             if c.get("loai") in xb.NHAN_LOAI:
                 self.loai_menu.set(xb.NHAN_LOAI[c["loai"]])
+            if c.get("so_ngay"):
+                self.so_ngay_entry.delete(0, "end")
+                self.so_ngay_entry.insert(0, str(c["so_ngay"]))
+            if c.get("che_do") in CHE_DO:
+                self.che_do_seg.set(c["che_do"])
+                self._doi_che_do(c["che_do"])
             for e, key, mac in ((self.luong_entry, "luong", 2),
                                 (self.luong_xoa_entry, "luong_xoa", 10),
                                 (self.gioi_han_entry, "gioi_han", 0),

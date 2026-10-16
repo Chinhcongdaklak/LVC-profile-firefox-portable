@@ -15,6 +15,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from core import cookies as cookie_module
+from core import trang_thai as tt_module
 from core import fblogin, phien
 from core.modun import KetQua, Modun, NguCanh, dang_ky
 from core.modun.tao_profile import nap_cookie_da_luu
@@ -96,10 +97,12 @@ def chay(nc: NguCanh, accs: list, tham_so: dict) -> KetQua:
             if vao:
                 luu_cookie_tuoi(account)
                 account.cookie_ok = time.strftime("%Y-%m-%d %H:%M")
+                tt_module.ghi(account, tt_module.LIVE, "vào bằng cookie", "đăng nhập cookie")
                 with lock:
                     ok.append(account.id)
                 return
             account.cookie_ok = ""
+            tt_module.ghi(account, tt_module.COOKIE_CHET, "", "đăng nhập cookie")
             ly_do = phien.ly_do_chet(mgr.read_login_probe_why(account), tt)
             co_pass = bool((account.password or "").strip())
             if phien.nen_dang_nhap_web(ly_do, co_pass):

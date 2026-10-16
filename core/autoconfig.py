@@ -28,6 +28,7 @@ import re
 import shutil
 import socket
 import sys
+import tempfile
 from typing import Optional
 
 from . import autostart
@@ -63,6 +64,10 @@ NORD_AGENT_NAME = "nordlogin_agent.js"
 XPOST_AGENT_NAME = "xpost_agent.js"
 #: Agent TUONG TAC tren X.com (bridge RIENG qlfpxw:*/qlfp-xwatch*).
 XWATCH_AGENT_NAME = "xwatch_agent.js"
+#: Agent DANG NHAP GMAIL cho acc YouTube (bridge RIENG qlfpgm:*/qlfp-gmail*).
+GMAIL_AGENT_NAME = "gmail_agent.js"
+#: Agent DANG VIDEO len YouTube Studio (bridge RIENG qlfpyt:*/qlfp-ytpost*).
+YTPOST_AGENT_NAME = "ytpost_agent.js"
 
 def _asset_path(name: str) -> str:
     """Duong dan toi mot file trong core/assets (chay ca khi da dong goi)."""
@@ -387,7 +392,8 @@ def _pref_lines(proxy: Proxy) -> str:
         ]
     lines += [
         "",
-        "// Chong ro ri IP that ngoai duong proxy",
+        "// Chong ro ri IP that ngoai duong proxy. (Da thu BAT WebRTC proxy_only de qua Arkose,",
+        "// nhung proxy HTTP khong tunnel duoc UDP -> WebRTC chet cam, con TE hon -> giu TAT.)",
         'lockPref("media.peerconnection.enabled", false);',
         'lockPref("network.dns.disablePrefetch", true);',
         'lockPref("network.predictor.enabled", false);',
@@ -445,6 +451,54 @@ defaultPref("extensions.startupScanScopes", 15);
 # Ten file ket qua do trinh duyet tu ghi vao thu muc profile. Tool doc file nay
 # de biet cookie vao duoc Facebook hay khong ma khong phai ngoi doi.
 PROBE_NAME = "qlfp-login.json"
+
+#: File LENH cua tung process-script agent (agent doc lai MOI LAN tai trang, khong co co
+#: "da chay" -> lenh con sot la agent tu chay lai). "Mo profile" phai xoa HET danh sach nay.
+LENH_AGENT = (
+    "qlfp-upload.json", "qlfp-create.json", "qlfp-weblogin.json", "qlfp-msg.json",
+    "qlfp-bm.json", "qlfp-watch.json", "qlfp-xlogin.json", "qlfp-xpost.json",
+    "qlfp-xwatch.json", "qlfp-nord.json", "qlfp-gmail.json", "qlfp-ytpost.json",
+)
+
+#: CHE DO TAY: file nay nam trong profile luc Firefox KHOI DONG -> mozilla.cfg KHONG nap
+#: agent nao (ke ca agent "bo qua checkpoint" luon chay) -> trinh duyet khong tu thao tac gi.
+#: mozilla.cfg doc xong thi XOA (dung MOT lan cho phien do) -> lan chay tac vu sau binh thuong.
+#: Co gia tri "at" (epoch ms): qua CO_TAY_HAN_GIAY thi coi nhu cu, bo qua (phong co sot).
+TEN_CO_TAY = "qlfp-tay.json"
+CO_TAY_HAN_GIAY = 10 * 60
+
+
+def bat_che_do_tay(profile_dir: str) -> str:
+    """Ghi co CHE DO TAY vao profile (goi NGAY TRUOC khi mo profile cho nguoi dung thao tac tay).
+    Tra duong dan file. Khong dung trinh duyet."""
+    import json as _json
+    import time as _time
+    os.makedirs(profile_dir, exist_ok=True)
+    p = os.path.join(profile_dir, TEN_CO_TAY)
+    with open(p, "w", encoding="utf-8") as fh:
+        _json.dump({"at": int(_time.time() * 1000), "ly_do": "mo profile cho nguoi dung thao tac tay"}, fh)
+    return p
+
+
+def tat_che_do_tay(profile_dir: str) -> None:
+    """Xoa co CHE DO TAY (tac vu tu dong goi truoc khi mo trinh duyet, phong co sot)."""
+    try:
+        os.remove(os.path.join(profile_dir, TEN_CO_TAY))
+    except OSError:
+        pass
+
+
+def xoa_lenh_agent(profile_dir: str) -> int:
+    """Xoa HET file lenh agent con sot trong profile. Tra so file da xoa."""
+    da = 0
+    for ten in LENH_AGENT:
+        try:
+            os.remove(os.path.join(profile_dir, ten))
+            da += 1
+        except OSError:
+            pass
+    return da
+
 PROBE_LOG = "qlfp-login.log"   # nhat ky de soi khi khong ra ket qua
 
 # Bao cho tool biet NGAY khi trang Facebook tai xong la vao duoc hay khong.
@@ -668,6 +722,28 @@ defaultPref("browser.startup.homepage_override.mstone", "ignore");
 defaultPref("startup.homepage_welcome_url", "");
 defaultPref("startup.homepage_welcome_url.additional", "");
 defaultPref("browser.aboutwelcome.enabled", false);
+// Hop "Welcome to Firefox - By continuing, you agree to the Terms of Use" (FF >= 135, con o 154)
+// che trang ngay khi mo, nguoi dung phai bam Continue (anh 08/10). KHOA cung = coi nhu da dong y,
+// khong bao gio hien. Ten pref doi chieu thang trong xul.dll/omni.ja cua FF 154.0.1.
+lockPref("browser.preonboarding.enabled", false);
+lockPref("browser.preonboarding.requireAction", false);
+lockPref("termsofuse.bypassNotification", true);
+lockPref("termsofuse.acceptedVersion", 4);
+lockPref("termsofuse.acceptedDate", "1759900000000");
+lockPref("datareporting.policy.dataSubmissionPolicyBypassNotification", true);
+lockPref("datareporting.policy.dataSubmissionPolicyAcceptedVersion", 2);
+// Nguoi dung lam viec o cua so khac DE LEN trinh duyet dang dat lich (14/10): Firefox coi
+// cua so bi che la "an" (window occlusion) -> bop bo dem gio, ngung ve khung hinh -> hop
+// lich cua Business Suite dung cham, o ngay bi xoa ve ''. Khoa de cua so bi che van chay
+// nhu dang hien; tab nen cung khong bi bop gio qua 1 giay.
+lockPref("widget.windows.window_occlusion_tracking.enabled", false);
+lockPref("dom.timeout.enable_budget_timer_throttling", false);
+lockPref("dom.min_background_timeout_value", 4);
+// DO THAT 14/10 (luot that 16:39): o ngay hop lich bi xoa ve '' DUNG KHI trang MAT TIEU DIEM
+// (document.hasFocus()=false, cua so tool nguoi dung dang o tren). O ngay chi doi sang dang go
+// khi duoc chon THAT. testmode: window.focus() cua agent duoc GIA LAP ben trong Firefox (khong
+// keo cua so len truoc, khong gianh ban phim cua nguoi dung) -> trang lay lai tieu diem.
+lockPref("focusmanager.testmode", true);
 """
 
 
@@ -678,6 +754,10 @@ defaultPref("browser.aboutwelcome.enabled", false);
 # trinh do bi he dieu hanh chan ghi dia -- da do: agent chay ma khong file nao
 # duoc tao. Nen moi viec doc ghi file lam o day, trong tien trinh CHA, agent goi
 # sang bang message manager.
+# Khoa CHUNG cho moi Firefox cua tool khi copy-dan mo ta qua clipboard (clipboard la chung
+# ca may; 3-5 trinh duyet dan cung luc se de len nhau).
+KHOA_CLIPBOARD = os.path.join(tempfile.gettempdir(), "lvc-clipboard.lock")
+
 _AGENT_LOADER_JS = """
 (function () {
   var CMD = "qlfp-upload.json";
@@ -732,6 +812,62 @@ _AGENT_LOADER_JS = """
     });
     Services.ppmm.addMessageListener("qlfp:dump", function (msg) {
       writeText(DUMP, JSON.stringify(msg.data || {}, null, 1));
+    });
+
+    // COPY MO TA vao CLIPBOARD (nguoi dung bat buoc 09/10: "copy hết nội dung txt rồi dán
+    // vào 1 lần"). Agent dan bang lenh dan that cua Firefox — lenh nay LUON lay tu clipboard
+    // cua may (do that: khong copy truoc thi no dan ra thu nguoi dung dang chep).
+    // Clipboard la CHUNG ca may: 3-5 trinh duyet cung dan, hoac nguoi dung dang copy, se
+    // DUNG nhau. -> KHOA CHUNG (file trong %%TEMP%%, moi Firefox cua tool cung thay): moi luc
+    // chi MOT trinh duyet copy-dan; xong thi TRA LAI clipboard cu cho nguoi dung.
+    var KHOA_CLIP = %(khoa_clip)s;
+    var clipCu = null, clipCua = "";
+    function docClip() {
+      try {
+        var tr = Cc["@mozilla.org/widget/transferable;1"].createInstance(Ci.nsITransferable);
+        tr.init(null);
+        tr.addDataFlavor("text/plain");
+        Services.clipboard.getData(tr, Ci.nsIClipboard.kGlobalClipboard);
+        var o = {};
+        tr.getTransferData("text/plain", o);
+        return o.value.QueryInterface(Ci.nsISupportsString).data;
+      } catch (e) { return null; }
+    }
+    function chepClip(text) {
+      Cc["@mozilla.org/widget/clipboardhelper;1"]
+        .getService(Ci.nsIClipboardHelper).copyString(text);
+    }
+    function fileKhoa() {
+      var f = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
+      f.initWithPath(KHOA_CLIP);
+      return f;
+    }
+    Services.ppmm.addMessageListener("qlfp:copy", function (msg) {
+      var text = (msg.data || {}).text || "";
+      try {
+        var f = fileKhoa();
+        // Khoa bo lai qua 8 giay = trinh duyet giu khoa da chet giua chung -> gianh lai.
+        try { if (f.exists() && Date.now() - f.lastModifiedTime > 8000) { f.remove(false); } }
+        catch (eS) {}
+        try { f.create(Ci.nsIFile.NORMAL_FILE_TYPE, 384); }
+        catch (eK) { return { ok: false, ban: true }; }      // trinh duyet khac dang dan
+        clipCu = docClip();
+        chepClip(text);
+        clipCua = text;
+        return { ok: true };
+      } catch (e) {
+        try { fileKhoa().remove(false); } catch (eR) {}
+        return { ok: false, error: String(e) };
+      }
+    });
+    Services.ppmm.addMessageListener("qlfp:clipxong", function () {
+      try {
+        // Chi tra lai khi clipboard VAN la mo ta cua tool (nguoi dung chua copy gi moi).
+        if (clipCu !== null && clipCu !== "" && docClip() === clipCua) { chepClip(clipCu); }
+      } catch (e) {}
+      clipCu = null; clipCua = "";
+      try { fileKhoa().remove(false); } catch (eR) {}
+      return { ok: true };
     });
 
     // Doc file video ho tien trinh noi dung. Tien trinh do bi chan doc dia (da
@@ -805,7 +941,7 @@ _AGENT_LOADER_JS = """
     var agentFile = Services.dirsvc.get("GreD", Ci.nsIFile);
     agentFile.append("%(agent)s");
     if (agentFile.exists()) {
-      Services.ppmm.loadProcessScript(Services.io.newFileURI(agentFile).spec, true);
+      if (!QLFP_TAY) { Services.ppmm.loadProcessScript(Services.io.newFileURI(agentFile).spec, true); }
     }
   } catch (e) {
     Services.console.logStringMessage("fbupload agent loi: " + e);
@@ -894,7 +1030,7 @@ _CREATE_LOADER_JS = """
     var agentFile = Services.dirsvc.get("GreD", Ci.nsIFile);
     agentFile.append("%(agent)s");
     if (agentFile.exists()) {
-      Services.ppmm.loadProcessScript(Services.io.newFileURI(agentFile).spec, true);
+      if (!QLFP_TAY) { Services.ppmm.loadProcessScript(Services.io.newFileURI(agentFile).spec, true); }
     }
   } catch (e) {
     Services.console.logStringMessage("fbcreate agent loi: " + e);
@@ -935,7 +1071,7 @@ _LOGIN_LOADER_JS = """
     });
     var agentFile = Services.dirsvc.get("GreD", Ci.nsIFile);
     agentFile.append("%(agent)s");
-    if (agentFile.exists()) { Services.ppmm.loadProcessScript(Services.io.newFileURI(agentFile).spec, true); }
+    if (!QLFP_TAY && agentFile.exists()) { Services.ppmm.loadProcessScript(Services.io.newFileURI(agentFile).spec, true); }
   } catch (e) { Services.console.logStringMessage("fblogin agent loi: " + e); }
 })();
 """
@@ -973,7 +1109,7 @@ _XLOGIN_LOADER_JS = """
     });
     var agentFile = Services.dirsvc.get("GreD", Ci.nsIFile);
     agentFile.append("%(agent)s");
-    if (agentFile.exists()) { Services.ppmm.loadProcessScript(Services.io.newFileURI(agentFile).spec, true); }
+    if (!QLFP_TAY && agentFile.exists()) { Services.ppmm.loadProcessScript(Services.io.newFileURI(agentFile).spec, true); }
   } catch (e) { Services.console.logStringMessage("xlogin agent loi: " + e); }
 })();
 """
@@ -1006,8 +1142,35 @@ _XPOST_LOADER_JS = """
   }
   try {
     Services.ppmm.addMessageListener("qlfpxp:cmd", function () { return readText(CMD); });
+    // GIAY PHEP CHAY (nhu qlfpxw): Firefox mo them tien trinh noi dung cho x.com -> ban agent thu
+    // hai gan video + bam Post lan nua = BAI TRUNG (nguoi dung bao 12/10). Cha giu quyen cho ban
+    // DAU TIEN; ban khac bi tu choi khi chu quyen con bao cao (< 90s; cho video tai len co the
+    // im lau nen rong hon xwatch). Lenh moi (noi dung CMD khac) -> cap lai.
+    var QUYEN = { tok: "", seen: 0, cmd: "", dabam: false };
+    Services.ppmm.addMessageListener("qlfpxp:claim", function (msg) {
+      var tok = (msg.data || {}).tok || "", lenh = readText(CMD), now = Date.now();
+      // Lenh nay DA BAM POST (o bat ky ban nao) -> cam chay lai, ke ca khi chu quyen im lang.
+      if (QUYEN.cmd === lenh && QUYEN.dabam && QUYEN.tok !== tok) { return { ok: false }; }
+      if (!QUYEN.tok || QUYEN.cmd !== lenh || QUYEN.tok === tok || now - QUYEN.seen > 90000) {
+        QUYEN = { tok: tok, seen: now, cmd: lenh, dabam: false };
+        return { ok: true };
+      }
+      return { ok: false };
+    });
+    // Trang cua chu quyen bi thay TRUOC khi bam Post -> nha cho trang moi.
+    Services.ppmm.addMessageListener("qlfpxp:nha", function (msg) {
+      var tok = (msg.data || {}).tok || "";
+      if (tok && tok === QUYEN.tok && !QUYEN.dabam) { QUYEN.tok = ""; }
+    });
+    Services.ppmm.addMessageListener("qlfpxp:dabam", function (msg) {
+      var tok = (msg.data || {}).tok || "";
+      if (tok && tok === QUYEN.tok) { QUYEN.dabam = true; }
+      return { ok: true };
+    });
     Services.ppmm.addMessageListener("qlfpxp:report", function (msg) {
-      var data = msg.data || {}; data.at = Date.now(); writeText(RESULT, JSON.stringify(data));
+      var data = msg.data || {}; data.at = Date.now();
+      if (data.tok && data.tok === QUYEN.tok) { QUYEN.seen = data.at; }
+      writeText(RESULT, JSON.stringify(data));
     });
     // Doc file media ho tien trinh noi dung (bi chan doc dia) -- nhu qlfp:needfile.
     Services.ppmm.addMessageListener("qlfpxp:needfile", function (msg) {
@@ -1033,8 +1196,136 @@ _XPOST_LOADER_JS = """
     });
     var agentFile = Services.dirsvc.get("GreD", Ci.nsIFile);
     agentFile.append("%(agent)s");
-    if (agentFile.exists()) { Services.ppmm.loadProcessScript(Services.io.newFileURI(agentFile).spec, true); }
+    if (!QLFP_TAY && agentFile.exists()) { Services.ppmm.loadProcessScript(Services.io.newFileURI(agentFile).spec, true); }
   } catch (e) { Services.console.logStringMessage("xpost agent loi: " + e); }
+})();
+"""
+
+_YTPOST_LOADER_JS = """
+(function () {
+  var CMD = "qlfp-ytpost.json";
+  var RESULT = "qlfp-ytpost-result.json";
+  function profileFile(name) { var f = Services.dirsvc.get("ProfD", Ci.nsIFile); f.append(name); return f; }
+  function readText(name) {
+    try {
+      var f = profileFile(name); if (!f.exists()) { return ""; }
+      var stream = Cc["@mozilla.org/network/file-input-stream;1"].createInstance(Ci.nsIFileInputStream);
+      stream.init(f, 0x01, 0, 0);
+      var conv = Cc["@mozilla.org/intl/converter-input-stream;1"].createInstance(Ci.nsIConverterInputStream);
+      conv.init(stream, "UTF-8", 0, 0);
+      var out = "", chunk = {}; while (conv.readString(4096, chunk) !== 0) { out += chunk.value; }
+      conv.close(); return out;
+    } catch (e) { return ""; }
+  }
+  function writeText(name, text) {
+    try {
+      var f = profileFile(name);
+      var out = Cc["@mozilla.org/network/file-output-stream;1"].createInstance(Ci.nsIFileOutputStream);
+      out.init(f, 0x02 | 0x08 | 0x20, 420, 0);
+      var conv = Cc["@mozilla.org/intl/converter-output-stream;1"].createInstance(Ci.nsIConverterOutputStream);
+      conv.init(out, "UTF-8"); conv.writeString(text); conv.close();
+    } catch (e) {}
+  }
+  try {
+    Services.ppmm.addMessageListener("qlfpyt:cmd", function () { return readText(CMD); });
+    Services.ppmm.addMessageListener("qlfpyt:report", function (msg) {
+      var data = msg.data || {}; data.at = Date.now(); writeText(RESULT, JSON.stringify(data));
+    });
+    // Doc file media ho tien trinh noi dung (bi chan doc dia) -- nhu qlfp:needfile.
+    Services.ppmm.addMessageListener("qlfpyt:needfile", function (msg) {
+      var path = (msg.data || {}).path || "";
+      var tra = function (data) {
+        try { Services.ppmm.broadcastAsyncMessage("qlfpyt:file", data); } catch (e) {}
+      };
+      try {
+        var f = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
+        f.initWithPath(path);
+        if (!f.exists()) { tra({ ok: false, error: "khong thay file: " + path }); return; }
+        if (f.fileSize > 400 * 1024 * 1024) { tra({ ok: false, error: "file lon hon 400 MB" }); return; }
+        var size = f.fileSize;
+        var stream = Cc["@mozilla.org/network/file-input-stream;1"].createInstance(Ci.nsIFileInputStream);
+        stream.init(f, 0x01, 0, 0);
+        var bin = Cc["@mozilla.org/binaryinputstream;1"].createInstance(Ci.nsIBinaryInputStream);
+        bin.setInputStream(stream);
+        var buf = new ArrayBuffer(size);
+        bin.readArrayBuffer(size, buf);
+        bin.close(); stream.close();
+        tra({ ok: true, name: f.leafName, bytes: new Uint8Array(buf) });
+      } catch (e) { tra({ ok: false, error: String(e) }); }
+    });
+    var agentFile = Services.dirsvc.get("GreD", Ci.nsIFile);
+    agentFile.append("%(agent)s");
+    if (!QLFP_TAY && agentFile.exists()) { Services.ppmm.loadProcessScript(Services.io.newFileURI(agentFile).spec, true); }
+  } catch (e) { Services.console.logStringMessage("ytpost agent loi: " + e); }
+})();
+"""
+
+# CHE DO TAY: doc + XOA file co ngay luc khoi dong. Bien toan cuc QLFP_TAY duoc moi loader
+# agent kiem truoc khi loadProcessScript (shim mui gio KHONG bi anh huong: do la danh tinh
+# profile, khong phai thao tac tu dong).
+_CHE_DO_TAY_JS = """
+var QLFP_TAY = false;
+(function () {
+  try {
+    var f = Services.dirsvc.get("ProfD", Ci.nsIFile);
+    f.append(%(co)s);
+    if (!f.exists()) { return; }
+    var at = 0;
+    try {
+      var st = Cc["@mozilla.org/network/file-input-stream;1"].createInstance(Ci.nsIFileInputStream);
+      st.init(f, 0x01, 0, 0);
+      var cv = Cc["@mozilla.org/intl/converter-input-stream;1"].createInstance(Ci.nsIConverterInputStream);
+      cv.init(st, "UTF-8", 0, 0);
+      var out = "", ch = {}; while (cv.readString(4096, ch) !== 0) { out += ch.value; }
+      cv.close();
+      at = (JSON.parse(out || "{}").at) || 0;
+    } catch (e1) {}
+    try { f.remove(false); } catch (e2) {}        // MOT LAN cho phien nay
+    if (at && (Date.now() - at) > %(han)d) {
+      Services.console.logStringMessage("qlfp: co che do tay CU (" + Math.round((Date.now() - at) / 1000) + "s) -> bo qua");
+      return;
+    }
+    QLFP_TAY = true;
+    Services.console.logStringMessage("qlfp: CHE DO TAY - khong nap agent nao, nguoi dung toan quyen");
+  } catch (e) {}
+})();
+"""
+
+# Bridge DANG NHAP GMAIL: message qlfpgm:* va file qlfp-gmail* RIENG.
+_GMAIL_LOADER_JS = """
+(function () {
+  var CMD = "qlfp-gmail.json";
+  var RESULT = "qlfp-gmail-result.json";
+  function profileFile(name) { var f = Services.dirsvc.get("ProfD", Ci.nsIFile); f.append(name); return f; }
+  function readText(name) {
+    try {
+      var f = profileFile(name); if (!f.exists()) { return ""; }
+      var stream = Cc["@mozilla.org/network/file-input-stream;1"].createInstance(Ci.nsIFileInputStream);
+      stream.init(f, 0x01, 0, 0);
+      var conv = Cc["@mozilla.org/intl/converter-input-stream;1"].createInstance(Ci.nsIConverterInputStream);
+      conv.init(stream, "UTF-8", 0, 0);
+      var out = "", chunk = {}; while (conv.readString(4096, chunk) !== 0) { out += chunk.value; }
+      conv.close(); return out;
+    } catch (e) { return ""; }
+  }
+  function writeText(name, text) {
+    try {
+      var f = profileFile(name);
+      var out = Cc["@mozilla.org/network/file-output-stream;1"].createInstance(Ci.nsIFileOutputStream);
+      out.init(f, 0x02 | 0x08 | 0x20, 420, 0);
+      var conv = Cc["@mozilla.org/intl/converter-output-stream;1"].createInstance(Ci.nsIConverterOutputStream);
+      conv.init(out, "UTF-8"); conv.writeString(text); conv.close();
+    } catch (e) {}
+  }
+  try {
+    Services.ppmm.addMessageListener("qlfpgm:cmd", function () { return readText(CMD); });
+    Services.ppmm.addMessageListener("qlfpgm:report", function (msg) {
+      var data = msg.data || {}; data.at = Date.now(); writeText(RESULT, JSON.stringify(data));
+    });
+    var agentFile = Services.dirsvc.get("GreD", Ci.nsIFile);
+    agentFile.append("%(agent)s");
+    if (!QLFP_TAY && agentFile.exists()) { Services.ppmm.loadProcessScript(Services.io.newFileURI(agentFile).spec, true); }
+  } catch (e) { Services.console.logStringMessage("gmail agent loi: " + e); }
 })();
 """
 
@@ -1066,12 +1357,27 @@ _XWATCH_LOADER_JS = """
   }
   try {
     Services.ppmm.addMessageListener("qlfpxw:cmd", function () { return readText(CMD); });
+    // GIAY PHEP CHAY: Firefox hay mo THEM tien trinh noi dung cho x.com -> agent (process
+    // script) chay o MOI tien trinh, co DANG_CHAY chi chan trong mot tien trinh -> HAI ban cung
+    // luot/comment (do that 10/10: ban 2 tu chay lai tu bai 1, comment thua). Cha giu quyen cho
+    // ban DAU TIEN; ban khac bi tu choi khi chu quyen con bao cao (< 60s). Lenh moi -> cap lai.
+    var QUYEN = { tok: "", seen: 0, cmd: "" };
+    Services.ppmm.addMessageListener("qlfpxw:claim", function (msg) {
+      var tok = (msg.data || {}).tok || "", lenh = readText(CMD), now = Date.now();
+      if (!QUYEN.tok || QUYEN.cmd !== lenh || QUYEN.tok === tok || now - QUYEN.seen > 60000) {
+        QUYEN = { tok: tok, seen: now, cmd: lenh };
+        return { ok: true };
+      }
+      return { ok: false };
+    });
     Services.ppmm.addMessageListener("qlfpxw:report", function (msg) {
-      var data = msg.data || {}; data.at = Date.now(); writeText(RESULT, JSON.stringify(data));
+      var data = msg.data || {}; data.at = Date.now();
+      if (data.tok && data.tok === QUYEN.tok) { QUYEN.seen = data.at; }
+      writeText(RESULT, JSON.stringify(data));
     });
     var agentFile = Services.dirsvc.get("GreD", Ci.nsIFile);
     agentFile.append("%(agent)s");
-    if (agentFile.exists()) { Services.ppmm.loadProcessScript(Services.io.newFileURI(agentFile).spec, true); }
+    if (!QLFP_TAY && agentFile.exists()) { Services.ppmm.loadProcessScript(Services.io.newFileURI(agentFile).spec, true); }
   } catch (e) { Services.console.logStringMessage("xwatch agent loi: " + e); }
 })();
 """
@@ -1109,7 +1415,7 @@ _NORD_LOADER_JS = """
     });
     var agentFile = Services.dirsvc.get("GreD", Ci.nsIFile);
     agentFile.append("%(agent)s");
-    if (agentFile.exists()) { Services.ppmm.loadProcessScript(Services.io.newFileURI(agentFile).spec, true); }
+    if (!QLFP_TAY && agentFile.exists()) { Services.ppmm.loadProcessScript(Services.io.newFileURI(agentFile).spec, true); }
   } catch (e) { Services.console.logStringMessage("nordlogin agent loi: " + e); }
 })();
 """
@@ -1148,7 +1454,7 @@ _CHAT_LOADER_JS = """
     });
     var agentFile = Services.dirsvc.get("GreD", Ci.nsIFile);
     agentFile.append("%(agent)s");
-    if (agentFile.exists()) { Services.ppmm.loadProcessScript(Services.io.newFileURI(agentFile).spec, true); }
+    if (!QLFP_TAY && agentFile.exists()) { Services.ppmm.loadProcessScript(Services.io.newFileURI(agentFile).spec, true); }
   } catch (e) { Services.console.logStringMessage("fbchat agent loi: " + e); }
 })();
 """
@@ -1186,7 +1492,7 @@ _WATCH_LOADER_JS = """
     });
     var agentFile = Services.dirsvc.get("GreD", Ci.nsIFile);
     agentFile.append("%(agent)s");
-    if (agentFile.exists()) { Services.ppmm.loadProcessScript(Services.io.newFileURI(agentFile).spec, true); }
+    if (!QLFP_TAY && agentFile.exists()) { Services.ppmm.loadProcessScript(Services.io.newFileURI(agentFile).spec, true); }
   } catch (e) { Services.console.logStringMessage("fbwatch agent loi: " + e); }
 })();
 """
@@ -1224,7 +1530,7 @@ _BM_LOADER_JS = """
     });
     var agentFile = Services.dirsvc.get("GreD", Ci.nsIFile);
     agentFile.append("%(agent)s");
-    if (agentFile.exists()) { Services.ppmm.loadProcessScript(Services.io.newFileURI(agentFile).spec, true); }
+    if (!QLFP_TAY && agentFile.exists()) { Services.ppmm.loadProcessScript(Services.io.newFileURI(agentFile).spec, true); }
   } catch (e) { Services.console.logStringMessage("fbbm agent loi: " + e); }
 })();
 """
@@ -1251,7 +1557,7 @@ _SKIP_LOADER_JS = """
     });
     var agentFile = Services.dirsvc.get("GreD", Ci.nsIFile);
     agentFile.append("%(agent)s");
-    if (agentFile.exists()) { Services.ppmm.loadProcessScript(Services.io.newFileURI(agentFile).spec, true); }
+    if (!QLFP_TAY && agentFile.exists()) { Services.ppmm.loadProcessScript(Services.io.newFileURI(agentFile).spec, true); }
   } catch (e) { Services.console.logStringMessage("fbskip agent loi: " + e); }
 })();
 """
@@ -1316,7 +1622,9 @@ def render(
     parts.append(_EXTENSION_PREFS)
     parts.append(_TITLE_JS)
     parts.append(_PROBE_JS)
-    parts.append(_AGENT_LOADER_JS % {"agent": AGENT_NAME})
+    parts.append(_CHE_DO_TAY_JS % {"co": json.dumps(TEN_CO_TAY), "han": CO_TAY_HAN_GIAY * 1000})
+    parts.append(_AGENT_LOADER_JS % {"agent": AGENT_NAME,
+                                     "khoa_clip": json.dumps(KHOA_CLIPBOARD)})
     parts.append(_CREATE_LOADER_JS % {"agent": CREATE_AGENT_NAME})
     parts.append(_LOGIN_LOADER_JS % {"agent": LOGIN_AGENT_NAME})
     parts.append(_CHAT_LOADER_JS % {"agent": CHAT_AGENT_NAME})
@@ -1327,6 +1635,8 @@ def render(
     parts.append(_NORD_LOADER_JS % {"agent": NORD_AGENT_NAME})
     parts.append(_XPOST_LOADER_JS % {"agent": XPOST_AGENT_NAME})
     parts.append(_XWATCH_LOADER_JS % {"agent": XWATCH_AGENT_NAME})
+    parts.append(_GMAIL_LOADER_JS % {"agent": GMAIL_AGENT_NAME})
+    parts.append(_YTPOST_LOADER_JS % {"agent": YTPOST_AGENT_NAME})
     return "\n".join(parts)
 
 
@@ -1400,6 +1710,12 @@ def install(
         # Agent tuong tac X.com: nam im toi khi co qlfp-xwatch.json.
         _write(os.path.join(folder, XWATCH_AGENT_NAME),
                _asset(XWATCH_AGENT_NAME), bom=True)
+        # Agent dang nhap Gmail (acc YouTube): nam im toi khi co qlfp-gmail.json.
+        _write(os.path.join(folder, GMAIL_AGENT_NAME),
+               _asset(GMAIL_AGENT_NAME), bom=True)
+        # Agent dang video YouTube: nam im toi khi co qlfp-ytpost.json.
+        _write(os.path.join(folder, YTPOST_AGENT_NAME),
+               _asset(YTPOST_AGENT_NAME), bom=True)
         # Agent dang nhap NordVPN: nam im toi khi co qlfp-nord.json.
         _write(os.path.join(folder, NORD_AGENT_NAME),
                _asset(NORD_AGENT_NAME), bom=True)

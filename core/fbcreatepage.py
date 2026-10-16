@@ -41,6 +41,13 @@ class CreatePageError(Exception):
     """Loi khi tao page (khong ket noi duoc, khong thay form, FB chan...)."""
 
 
+class BmHanCheError(CreatePageError):
+    """BM bi Facebook HAN CHE (khong dung de quang cao/tao tai san duoc) -> dung tao page.
+
+    Nhan ra bang chu tren trang BM: "Bạn không thể dùng hồ sơ doanh nghiệp này để quảng cáo"
+    (anh nguoi dung 05/10, da doc duoc chu that tren acc 61581758306491)."""
+
+
 class AccountBlockedError(CreatePageError):
     """Acc khong dung duoc nua: bi checkpoint, bi dang xuat, hoac bi CAM tao page.
 
@@ -507,7 +514,9 @@ def read_create_result(profile_dir: str) -> Optional[dict]:
 _OK_SUBMIT = {"create-done"}
 _OK_DRY = {"filled-ready"}
 _BAD = {"create-blocked", "no-create-button", "no-form", "no-name-input",
-        "no-category-option", "error", "checkpoint", "logged-out"}
+        "no-category-option", "error", "checkpoint", "logged-out", "bm-restricted"}
+#: BM bi han che -> dung ngay, KHONG thu acc/ten khac tren BM do.
+_BM_HAN_CHE = {"bm-restricted"}
 
 
 #: Cac buoc bao "da bam Tao" -> phai xac minh bang danh sach page (agent hay bao
@@ -517,7 +526,7 @@ _CLICKED = {"create-clicked", "create-done", "create-blocked"}
 _CREATE_FAILED = {"create-failed"}
 #: Hong TRUOC khi bam Tao -> chac chan khong co page moi.
 _PRECLICK_BAD = {"no-create-button", "no-form", "no-name-input",
-                 "no-category-option", "error", "checkpoint", "logged-out"}
+                 "no-category-option", "error", "checkpoint", "logged-out", "bm-restricted"}
 
 
 def _managed_page_ids(account, cookie: str = ""):
@@ -569,6 +578,9 @@ def _raise_form_error(st, result) -> None:
     ro de tab bao dung cho.
     """
     detail = ((result or {}).get("detail") or "").strip()
+    if st in _BM_HAN_CHE:
+        raise BmHanCheError("BM BỊ HẠN CHẾ — Facebook báo: "
+                            + (detail or "không dùng được hồ sơ doanh nghiệp này"))
     if st == "checkpoint":
         raise AccountBlockedError(
             "ACC BỊ CHECKPOINT — Facebook giữ acc lại để xác minh. Gỡ checkpoint "
@@ -640,7 +652,8 @@ def create_one(manager, account, name: str, category: str = "",
 
     # Doi agent bao xong. Voi submit: bam xong (create-clicked/done/blocked) hoac
     # hong TRUOC khi bam. Voi chay thu: filled-ready.
-    stop = (_CLICKED | _PRECLICK_BAD | _CREATE_FAILED) if submit else (_OK_DRY | _BAD | _CREATE_FAILED)
+    stop = ((_CLICKED | _PRECLICK_BAD | _CREATE_FAILED) if submit
+            else (_OK_DRY | _BAD | _CREATE_FAILED)) | _BM_HAN_CHE
     seen: set = set()
     result = None
     made = None

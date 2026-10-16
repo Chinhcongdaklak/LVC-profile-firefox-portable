@@ -444,17 +444,56 @@ def caption_file(path: str) -> str:
     return base + ".txt"
 
 
-def remove_video(path: str, with_caption: bool = True) -> list[str]:
+#: Duoi anh dung lam ANH THUMB cho video (nguoi dung chot 06/10: anh CUNG TEN video).
+THUMB_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
+
+
+def anh_thumb(path: str) -> str:
+    """Anh thumb di kem video: file anh CUNG TEN (khong ke chu hoa/thuong o duoi). "" = khong co.
+
+    Bo cuc thu muc nguoi dung dung (06/10): ``clip.mp4`` + ``clip.png`` (thumb) +
+    ``clip.txt`` (mo ta) + ``clip_tag.txt`` (the tag).
+    """
+    base, _ = os.path.splitext(path or "")
+    if not base:
+        return ""
+    for duoi in THUMB_SUFFIXES:
+        for thu in (duoi, duoi.upper()):
+            p = base + thu
+            if os.path.isfile(p):
+                return p
+    return ""
+
+
+def file_tag(path: str) -> str:
+    """Duong dan file the tag ``<ten>_tag.txt`` di kem video. "" = khong co."""
+    base, _ = os.path.splitext(path or "")
+    if not base:
+        return ""
+    p = base + "_tag.txt"
+    return p if os.path.isfile(p) else ""
+
+
+def file_di_kem(path: str) -> list:
+    """Cac file DI KEM mot video (anh thumb + file tag) — dung de xoa cung video."""
+    return [p for p in (anh_thumb(path), file_tag(path)) if p]
+
+
+def remove_video(path: str, with_caption: bool = True, them: Iterable[str] = ()) -> list[str]:
     """Xoa file da dang xong (va file .txt di kem). Tra ve nhung gi da xoa.
 
     Bai chi co chu thi chinh file .txt la bai -- khong di tim file .txt "di kem"
     nua, khong thi xoa hai lan cung mot file.
+
+    ``them``: cac file di kem KHAC phai xoa cung (YouTube: anh thumb + ``_tag.txt``)
+    -- khong xoa thi thu muc dong rac anh/tag mo coi sau khi video da len.
     """
     removed = []
     if is_text(path):
         targets: Iterable[str] = (path,)
     else:
         targets = (path, caption_file(path)) if with_caption else (path,)
+    targets = list(targets) + [p for p in them if p]
     for target in targets:
         try:
             if os.path.isfile(target):

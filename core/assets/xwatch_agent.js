@@ -114,8 +114,37 @@ function xwSoanComment(text, icon, toiDa) {
   }
   return icon ? t + " " + icon : t;
 }
+/** ID bai (so sau /status/) trong mot link x.com / twitter.com; khong co -> "". THUAN. */
+function xwIdStatus(url) {
+  var m = String(url || "").match(/\/status(?:es)?\/(\d{5,})/);
+  return m ? m[1] : "";
+}
+/** Muc "Trich dan" (Quote) trong menu nut Dang lai: chu Quote/Trich dan hoac link /compose/post.
+ *  THUAN (nhan chu + href) de thuoc chay bang node. */
+function xwLaMucQuote(chu, href) {
+  return /compose\/post/.test(String(href || ""))
+      || /^\s*(quote|trích dẫn|trich dan)\b/i.test(String(chu || ""));
+}
+/** Chu dung de trich dan: comment DAU TIEN neu co, khong thi CAPTION bai. THUAN.
+ *  -> {nguon: "comment"|"caption"|"icon", chu}. */
+/** DAU VAN TAY mot bai: "@kenh|60 ky tu dau cua chu" (thuong, gop khoang trang). Bai khong co
+ *  chu -> "" (khong du de so). Dung so bai UNG VIEN voi bai GOC nhung trong cac bai trich dan
+ *  tren trang ca nhan acc (phan nhung KHONG co link toi bai goc -> khong lay duoc ID). THUAN. */
+function xwKyBai(handle, text) {
+  var h = String(handle || "").replace(/^@/, "").trim().toLowerCase();
+  var t = String(text || "").replace(/\s+/g, " ").trim().toLowerCase().slice(0, 60);
+  return h && t.length >= 8 ? h + "|" + t : "";
+}
+function xwChonChuQuote(cmt, caption) {
+  var c = String(cmt || "").replace(/\s+/g, " ").trim();
+  if (c) { return { nguon: "comment", chu: c }; }
+  var t = String(caption || "").replace(/\s+/g, " ").trim();
+  if (t) { return { nguon: "caption", chu: t }; }
+  return { nguon: "icon", chu: "" };
+}
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { phanLoai: xwPhanLoai, giayDung: xwGiayDung, nenTim: xwNenTim,
+  module.exports = { phanLoai: xwPhanLoai, chonChuQuote: xwChonChuQuote, giayDung: xwGiayDung, nenTim: xwNenTim,
+                     idStatus: xwIdStatus, laMucQuote: xwLaMucQuote, kyBai: xwKyBai,
                      icons: xwIcons, soanComment: xwSoanComment, ICONS: XW_ICONS,
                      nenComment: xwNenComment, cachBai: xwCachBai,
                      CMT: { BAT_DAU_TI_LE: CMT_BAT_DAU_TI_LE, CACH_BAI_MIN: CMT_CACH_BAI_MIN,
@@ -125,12 +154,22 @@ if (typeof module !== "undefined" && module.exports) {
 if (typeof sendAsyncMessage === "function") {
 
   var lines = [];
-  var dem = { xem: 0, like: 0, video: 0, cmt: 0, follow: 0 };
+  var dem = { xem: 0, like: 0, video: 0, cmt: 0, follow: 0, quote: 0 };
+  // Ma rieng cua BAN agent nay (moi tien trinh noi dung mot ban) -> xin giay phep chay o cha.
+  var TOK = "t" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  /** Xin quyen chay lenh: chi MOT ban agent (trong moi tien trinh noi dung) duoc chay. */
+  function xinQuyen() {
+    try {
+      var a = sendSyncMessage("qlfpxw:claim", { tok: TOK });
+      var kq = a && a.length ? a[0] : null;
+      return !kq || kq.ok !== false;       // cha cu (chua co claim) -> cho chay nhu truoc
+    } catch (e) { return true; }
+  }
   function report(state, detail, extra) {
     lines.push(state + (detail ? ": " + detail : ""));
-    var obj = { state: state, detail: detail || "", log: lines.slice(-30),
+    var obj = { state: state, detail: detail || "", log: lines.slice(-30), tok: TOK,
                 xem: dem.xem, like: dem.like, video: dem.video, cmt: dem.cmt,
-                follow: dem.follow };
+                follow: dem.follow, quote: dem.quote };
     if (extra) { for (var k in extra) { obj[k] = extra[k]; } }
     try { sendAsyncMessage("qlfpxw:report", obj); } catch (e) {}
   }
@@ -187,9 +226,10 @@ if (typeof sendAsyncMessage === "function") {
     } catch (e) {}
     win.setTimeout(function () {
       var n2 = lay() || n;                          // lay LAI (co the la node moi sau khi hover)
-      var ok = clickReal(win, n2);
-      try { n2.click(); } catch (e) {}               // du phong: click that cua DOM
-      xong(ok);
+      // MOT click duy nhat (clickReal da ban su kien click). Truoc day them n2.click() "du phong"
+      // = HAI click: nut cong tac (Follow/tim/xem video) bat roi tat lai, nut Tra loi gui HAI lan
+      // (nguoi dung bao 10/10: comment trung cach 1 giay, follow 2 lan thanh mat follow).
+      xong(clickReal(win, n2));
     }, 300);
   }
 
@@ -340,7 +380,10 @@ if (typeof sendAsyncMessage === "function") {
   }
   function nutGuiReply(doc) {
     var dlg = hopThoai(doc);
-    var ten = ['[data-testid="tweetButtonInline"]', '[data-testid="tweetButton"]'];
+    // Trang soan rieng /compose/post: nut Dang la tweetButton (Inline la cua composer khac).
+    var ten = !dlg && laTrangSoan(doc)
+      ? ['[data-testid="tweetButton"]', '[data-testid="tweetButtonInline"]']
+      : ['[data-testid="tweetButtonInline"]', '[data-testid="tweetButton"]'];
     var ngoai = null;
     for (var i = 0; i < ten.length; i++) {
       var ds;
@@ -560,14 +603,27 @@ if (typeof sendAsyncMessage === "function") {
           }, 15000, function (bat) {
             var n = nutGuiReply(doc);
             if (!bat || !n) { xong(false, "nut Tra loi khong bat len (" + chanDoanSoan(doc) + ")"); return; }
-            clickReal(win, n);
-            try { n.click(); } catch (e) {}
-            cho(win, function () {
+            // BAM MOT LAN. Truoc day clickReal + n.click() = HAI click -> comment gui HAI lan
+            // cach nhau 1 giay (anh nguoi dung 10/10).
+            var conChu = function () {
               var ox = oSoanReply(doc);
-              return !ox || txt(ox).replace(/\s+/g, " ").trim().indexOf(noi.slice(0, 14)) < 0;
-            }, 20000, function (sach) {
-              if (sach) { xong(true, "go " + (cach || "?") + ", lan " + lanGo); return; }
-              xong(false, "bam Tra loi roi ma chu van con trong o soan");
+              return !!ox && txt(ox).replace(/\s+/g, " ").trim().indexOf(noi.slice(0, 14)) >= 0;
+            };
+            // Nut Tra loi CHI nhan click GOC cua trinh duyet (do that 10/10: click gia lap
+            // clickReal khong gui, 5/5 lan) -> bam bang n.click() MOT lan.
+            withUserInput(win, function () { try { n.click(); } catch (e) {} });
+            cho(win, function () { return !conChu(); }, 6000, function (sach1) {
+              if (sach1) { xong(true, "go " + (cach || "?") + ", lan " + lanGo); return; }
+              // 6 giay ma o soan VAN NGUYEN CHU = cu bam dau CHAC CHAN khong an (X xoa o soan
+              // ngay khi gui) -> bam bu MOT lan bang cach khac.
+              var n2 = nutGuiReply(doc);
+              report("progress", "comment: cu bam dau khong an (nut " + (n2 ? (n2.getAttribute("aria-disabled") === "true" ? "khoa" : "bat") : "mat")
+                     + ") — bam bu 1 lan");
+              if (n2 && conChu()) { clickReal(win, n2); }
+              cho(win, function () { return !conChu(); }, 14000, function (sach) {
+                if (sach) { xong(true, "go " + (cach || "?") + ", lan " + lanGo + " (bam bu)"); return; }
+                xong(false, "bam Tra loi roi ma chu van con trong o soan");
+              });
             });
           });
         }, 1400);
@@ -648,11 +704,73 @@ if (typeof sendAsyncMessage === "function") {
     } catch (e) { return false; }
   }
 
-  /** Bam nut Follow dau tien thay duoc trong ``goc``; XAC MINH da doi sang "-unfollow". */
-  function bamFollow(win, goc, xong) {
-    var nut = nutFollow(goc);
+  /** Ten tai khoan TAC GIA cua trang bai dang mo: x.com/<handle>/status/<id>. */
+  function tacGiaBai(win) {
+    var m = /^\/([^\/?#]+)\/status\//.exec(String((win.location && win.location.pathname) || ""));
+    return m ? m[1].toLowerCase() : "";
+  }
+
+  /** Trang thai follow cua TAC GIA bai (trong khung "Relevant people"/UserCell co link toi
+   *  /<handle>): {nut: nut Follow neu CHUA follow, da: true neu DA follow (nut "-unfollow" /
+   *  chu Following), thay: co tim ra o cua tac gia khong}. KHONG lay "nut Follow dau tien" tren
+   *  trang nua — co the la nguoi khac o muc goi y. */
+  function followTacGia(doc, handle) {
+    var kq = { nut: null, da: false, thay: false };
+    if (!handle) { return kq; }
+    var o = [];
+    try { o = Array.prototype.slice.call(doc.querySelectorAll('[data-testid="UserCell"]')); } catch (e) {}
+    for (var i = 0; i < o.length; i++) {
+      var links = o[i].querySelectorAll('a[href]'), cua = false;
+      for (var j = 0; j < links.length; j++) {
+        var h = String(links[j].getAttribute("href") || "").toLowerCase();
+        if (h === "/" + handle) { cua = true; break; }
+      }
+      if (!cua) { continue; }
+      kq.thay = true;
+      if (o[i].querySelector('[data-testid$="-unfollow"]')) { kq.da = true; return kq; }
+      var f = o[i].querySelector('[data-testid$="-follow"]');
+      if (f && FOLLOW_CHU.test(txt(f))) { kq.nut = f; return kq; }
+      if (f) { kq.da = true; return kq; }               // nut con nhung chu khac Follow = da follow
+    }
+    return kq;
+  }
+
+  /** Link ten TAC GIA trong bai goc (vung User-Name) -> bam de sang trang ca nhan. */
+  function linkTacGia(doc, handle) {
+    if (!handle) { return null; }
+    var ds = [];
+    try { ds = doc.querySelectorAll('article[data-testid="tweet"] [data-testid="User-Name"] a[href]'); } catch (e) {}
+    for (var i = 0; i < ds.length; i++) {
+      if (String(ds[i].getAttribute("href") || "").toLowerCase() === "/" + handle && vis(ds[i])) { return ds[i]; }
+    }
+    return null;
+  }
+
+  /** Trang thai follow tren TRANG CA NHAN: nut chinh nam trong [data-testid="placementTracking"]
+   *  (KHONG lay nut "-follow" cua muc goi y ben canh). Cung dang {nut, da, thay} nhu followTacGia. */
+  function followTrenProfile(doc) {
+    var kq = { nut: null, da: false, thay: false, goc: null };
+    var goc = null;
+    try { goc = doc.querySelector('[data-testid="placementTracking"]'); } catch (e) {}
+    if (!goc) { return kq; }
+    kq.goc = goc;
+    if (goc.querySelector('[data-testid$="-unfollow"]')) { kq.thay = true; kq.da = true; return kq; }
+    var f = goc.querySelector('[data-testid$="-follow"]');
+    if (f) {
+      kq.thay = true;
+      if (FOLLOW_CHU.test(txt(f))) { kq.nut = f; } else { kq.da = true; }
+    }
+    return kq;
+  }
+
+  /** Bam nut Follow ``nut`` (hoac nut Follow dau tien trong ``goc``) MOT LAN; XAC MINH doi sang
+   *  "-unfollow". Truoc khi bam / bam bu deu KIEM LAI: da follow roi thi KHONG bam (bam nua la
+   *  BO FOLLOW — loi nguoi dung bao 10/10). */
+  function bamFollow(win, goc, xong, nutChon) {
+    var nut = nutChon || nutFollow(goc);
     if (!nut) { xong(false, "khong thay nut Follow"); return; }
     var tid = nut.getAttribute("data-testid") || "";
+    if (daFollowRoi(goc, tid)) { xong(false, "da follow tu truoc — bo qua"); return; }
     // GHIM theo dung testid: hoverRoiBamLay co lay lai phan tu, ma sau cu bam dau "nut Follow
     // dau tien" co the da la nut CUA NGUOI KHAC -> xac minh truot (do that 06/10).
     var lay = function () {
@@ -663,10 +781,24 @@ if (typeof sendAsyncMessage === "function") {
     try { withUserInput(win, function () { nut.scrollIntoView({ block: "center" }); }); } catch (e) {}
     hoverRoiBamLay(win, lay, function (ok) {
       if (!ok) { xong(false, "bam Follow khong an"); return; }
-      cho(win, function () { return daFollowRoi(goc, tid); }, 8000, function (doi) {
-        if (doi) { dem.follow += 1; }
-        xong(!!doi, (doi ? "da follow " : "bam roi nhung chua doi sang Following: ")
-             + tid.replace(/-follow$/, ""));
+      cho(win, function () { return daFollowRoi(goc, tid); }, 6000, function (doi) {
+        if (doi) { dem.follow += 1; xong(true, "da follow " + tid.replace(/-follow$/, "")); return; }
+        // 6 giay chua doi: CHI bam bu khi nut VAN la "Follow" (chua follow that) — kiem lai ngay
+        // truoc khi bam, khong thi bam la thanh bo follow.
+        var n2 = lay();
+        if (!n2 || !FOLLOW_CHU.test(txt(n2)) || daFollowRoi(goc, tid)) {
+          var da = daFollowRoi(goc, tid);
+          if (da) { dem.follow += 1; }
+          xong(da, (da ? "da follow (doi cham) " : "nut Follow bien mat, khong ro: ") + tid.replace(/-follow$/, ""));
+          return;
+        }
+        report("progress", "follow: cu bam dau khong an — bam bu 1 lan");
+        clickReal(win, n2);
+        cho(win, function () { return daFollowRoi(goc, tid); }, 8000, function (doi2) {
+          if (doi2) { dem.follow += 1; }
+          xong(!!doi2, (doi2 ? "da follow (bam bu) " : "bam roi nhung chua doi sang Following: ")
+               + tid.replace(/-follow$/, ""));
+        });
       });
     });
   }
@@ -727,8 +859,9 @@ if (typeof sendAsyncMessage === "function") {
           // Dang o trang KET QUA thi moi chon bai; o trang bai thi quay ve truoc.
           if (!/\/search\b/.test(String(win.location.href || ""))) {
             try { win.history.back(); } catch (e) {}
+            // Tu trang ca nhan phai lui HAI buoc (ca nhan -> bai -> ket qua): cho ngan roi lui tiep.
             cho(win, function () { return /\/search\b/.test(String(win.location.href || "")); },
-                8000, function () { win.setTimeout(baiKe, 900); });
+                4000, function () { win.setTimeout(baiKe, 700); });
             return;
           }
           var ds = dsBai(doc), lk = null;
@@ -751,15 +884,39 @@ if (typeof sendAsyncMessage === "function") {
             report("progress", "mo bai " + Math.floor(daMo) + "/" + soBai + " cua '" + tu + "'");
             // CHO khung "Relevant people" dung xong moi bam: bam ngay sau khi chuyen trang SPA
             // thi nut chua hydrate -> bam truot / khong thay nut (do that 06/10, 2 lan).
-            cho(win, function () { return !!nutFollow(doc); }, 9000, function (coNut) {
-              if (!coNut) {
-                report("progress", "trang bai khong co nut Follow (co the da follow roi)");
+            // Xac dinh dung TAC GIA bai roi moi xet: DA follow -> bo qua, sang bai ke;
+            // CHUA follow -> bam MOT lan. Cho o cua tac gia hien (khung hydrate muon).
+            var tg = tacGiaBai(win);
+            function xuLy(tt, noi) {
+              if (tt.da) {
+                report("progress", "@" + tg + " DA follow tu truoc (" + noi + ") — bo qua, sang bai ke");
                 win.setTimeout(baiKe, 1000);
                 return;
               }
+              if (!tt.nut) {
+                report("progress", "khong thay nut Follow cua tac gia @" + (tg || "?") + " (" + noi + ") — sang bai ke");
+                win.setTimeout(baiKe, 1000);
+                return;
+              }
+              // Xac minh theo MA NUT (<id>-follow, duy nhat) tren CA TRANG: khung nut co the bi X ve
+              // lai sau khi bam -> tham chieu khung cu mo coi, doc sai trang thai.
               bamFollow(win, doc, function (ok, mo) {
-                report("progress", "follow kenh cua bai: " + mo);
+                report("progress", "follow @" + tg + " (" + noi + "): " + mo);
                 win.setTimeout(baiKe, 1200);
+              }, tt.nut);
+            }
+            cho(win, function () { return followTacGia(doc, tg).thay; }, 5000, function (coKhung) {
+              if (coKhung) { xuLy(followTacGia(doc, tg), "khung Relevant people"); return; }
+              // Cua so HEP (xep 3 cot) -> X AN khung "Relevant people" -> sang TRANG CA NHAN tac gia.
+              var lt = linkTacGia(doc, tg);
+              if (!lt) { xuLy({ nut: null, da: false }, "khong co link tac gia"); return; }
+              clickReal(win, lt);
+              cho(win, function () {
+                return String((win.location && win.location.pathname) || "").toLowerCase() === "/" + tg
+                       && followTrenProfile(doc).thay;
+              }, 10000, function () {
+                var tp = followTrenProfile(doc);
+                xuLy(tp, "trang ca nhan");
               });
             });
           });
@@ -772,7 +929,7 @@ if (typeof sendAsyncMessage === "function") {
 
   /* ---- vong tuong tac -------------------------------------------------------- */
   var DANG_CHAY = false;
-  function chayTuongTac(win, doc, cmd) {
+  function chayTuongTac(win, doc, cmd, xongCb) {
     var soLike = parseInt(cmd.so_like || 0, 10) || 0;
     var soVideo = parseInt(cmd.so_video || 0, 10) || 0;
     var soComment = parseInt(cmd.so_comment || 0, 10) || 0;
@@ -806,10 +963,12 @@ if (typeof sendAsyncMessage === "function") {
     function conGiay() { return Math.max(0, Math.round((han - (Date.now() - batDau)) / 1000)); }
 
     function xong(vi) {
-      report("done", "xong: xem " + dem.xem + " bai, tim " + dem.like + "/" + soLike
+      var moTa = "xong: xem " + dem.xem + " bai, tim " + dem.like + "/" + soLike
              + ", video " + dem.video + "/" + soVideo + ", comment " + dem.cmt + "/" + soComment
              + ", follow " + dem.follow + "/" + soFollow
-             + (vi ? " (" + vi + ")" : ""));
+             + (vi ? " (" + vi + ")" : "");
+      if (typeof xongCb === "function") { xongCb(moTa); return; }   // chay trong KICH BAN (buoc "luot")
+      report("done", moTa);
     }
     function hetGio() { return Date.now() - batDau >= han; }
 
@@ -1039,8 +1198,369 @@ if (typeof sendAsyncMessage === "function") {
     });
   }
 
+  /* ---- DANG LAI TRICH DAN (Quote) — lenh action "xquote" ---------------------
+   * Driver (core/xwatch.dang_lai_trich_dan) dieu khien tung BUOC qua lenh co "idx" tang dan:
+   *   buoc "gom"   : url = trang kenh (https://x.com/<handle>) hoac /home -> gom toi da ``so``
+   *                  link bai -> report "quote-links" {idx, links}.
+   *   buoc "quote" : url = link bai -> lay comment DAU TIEN + 3-5 icon -> bam Dang lai >
+   *                  Trich dan -> go chu -> Dang -> report "quote-done" / "quote-fail" {idx}.
+   * Xong moi buoc agent NGOI CHO lenh moi (idx khac) roi tu chuyen trang toi url cua lenh do
+   * (doi trang = tai lai tai lieu -> agent moi chay lai onPage voi lenh moi). */
+  var QUOTE_LAM = {};       // "idx|url" da lam trong tien trinh nay (chong chay lai)
+  var QUOTE_DI = {};        // idx -> luc da dieu huong (chong dieu huong lap)
+  function laQuangCao(bai) {
+    var t = "";
+    try { t = bai.innerText || ""; } catch (e) { t = ""; }
+    return /(^|\n)\s*(Ad|Promoted|Quảng cáo)\s*(\n|$)/.test(t);
+  }
+  function coNguCanh(bai) {       // "Pinned" / "X reposted" -> khong phai bai goc cua kenh
+    try { return !!bai.querySelector('[data-testid="socialContext"]'); } catch (e) { return false; }
+  }
+  function hrefBai(bai) {
+    var l = linkBai(bai);
+    return l ? String(l.getAttribute("href") || "").split("?")[0] : "";
+  }
+  function baiGoc(doc, href) {
+    var els;
+    try { els = doc.querySelectorAll('article[data-testid="tweet"]'); } catch (e) { return null; }
+    var ma = xwIdStatus(href), khongId = null;
+    for (var i = 0; i < els.length; i++) {
+      if (ma && idBai(els[i]) === ma) { return els[i]; }
+      if (!idBai(els[i]) && !khongId) { khongId = els[i]; }   // bai goc hien ngay thang
+    }
+    return khongId || null;
+  }
+  function nutDangLai(bai) {
+    return bai ? (nutTrongBai(bai, "retweet") || nutTrongBai(bai, "unretweet")) : null;
+  }
+  function mucQuote(doc) {
+    var ds;
+    try { ds = doc.querySelectorAll('[role="menuitem"]'); } catch (e) { return null; }
+    for (var i = 0; i < ds.length; i++) {
+      if (vis(ds[i]) && xwLaMucQuote(txt(ds[i]), ds[i].getAttribute("href"))) { return ds[i]; }
+    }
+    return null;
+  }
+  /** Dang o TRANG SOAN rieng x.com/compose/post (khong co hop thoai). */
+  function laTrangSoan(doc) {
+    try { return /\/compose\/post/.test(String(doc.location.href || "")); } catch (e) { return false; }
+  }
+  /** Khung soan trich dan. Cua so RONG: X mo HOP THOAI noi tren trang bai. Cua so HEP (xep 3
+   *  cot): X mo TRANG RIENG x.com/compose/post, KHONG co role=dialog (nguoi dung bao 14/10:
+   *  dung o trang do rat lau roi tu chuyen trang, khong bam Post). */
+  function hopQuote(doc) {
+    var d = hopThoai(doc);
+    try {
+      if (d && d.querySelector('[data-testid="tweetTextarea_0"]')) { return d; }
+      if (laTrangSoan(doc) && oSoanReply(doc)) { return doc.body; }
+    } catch (e) {}
+    return null;
+  }
+  /** Xong mot buoc: ngoi cho lenh MOI (idx khac) roi chuyen trang toi url cua no. */
+  function theoDoiLenh(win, cmd) {
+    var het = Date.now() + 20 * 60 * 1000;
+    (function nhip() {
+      if (Date.now() > het) { return; }
+      var c2 = getCommand();
+      if (c2 && c2.action === "xquote" && c2.idx !== cmd.idx && c2.url) {
+        QUOTE_DI[c2.idx] = Date.now();
+        try { win.location.href = c2.url; } catch (e) {}
+        return;
+      }
+      win.setTimeout(nhip, 1500);
+    })();
+  }
+  /** Che do thu: dong hop trich dan (Close -> Discard) de chuyen trang khong bi hoi. */
+  function dongHopQuote(win, doc, xong) {
+    var n = null;
+    try {
+      n = doc.querySelector('[role="dialog"] [data-testid="app-bar-close"]')
+          || doc.querySelector('[data-testid="app-bar-close"], [data-testid="app-bar-back"]');
+    } catch (e) {}
+    if (n) { clickReal(win, n); }
+    cho(win, function () { return !!doc.querySelector('[data-testid="confirmationSheetConfirm"]'); },
+        3000, function (co) {
+          if (co) { clickReal(win, doc.querySelector('[data-testid="confirmationSheetConfirm"]')); }
+          win.setTimeout(xong, 800);
+        });
+  }
+  /** Buoc "gom": cuon trang kenh / newfeed, gom link bai (bo quang cao; trang kenh bo bai
+   *  ghim / bai dang lai cua nguoi khac — chi lay bai GOC cua kenh). */
+  function gomBai(win, doc, cmd) {
+    var can = Math.max(1, parseInt(cmd.so, 10) || 1);
+    var handle = String(cmd.handle || "").replace(/^@/, "").toLowerCase();
+    var ds = [], dsKy = [], da = {}, boKy = {}, lanCuon = 0, batDau = Date.now(), boKyDem = 0;
+    (cmd.bo_qua || []).forEach(function (id) { da[String(id)] = 1; });
+    (cmd.bo_ky || []).forEach(function (k) { if (k) { boKy[String(k)] = 1; } });
+    cho(win, function () { return dsBai(doc).length > 0; }, 20000, function (co) {
+      if (!co) {
+        report("quote-links", "khong thay bai nao o " + String(win.location.href).slice(0, 90)
+               + (handle ? " (kenh khong ton tai / bi khoa / chua co bai?)" : ""),
+               { idx: cmd.idx, links: [] });
+        theoDoiLenh(win, cmd);
+        return;
+      }
+      (function quet() {
+        var els = dsBai(doc);
+        for (var i = 0; i < els.length; i++) {
+          var b = els[i], h = hrefBai(b), id = xwIdStatus(h);
+          if (!id || da[id] || laQuangCao(b)) { continue; }
+          if (handle) {
+            if (coNguCanh(b)) { continue; }
+            if (h.toLowerCase().indexOf("/" + handle + "/status/") !== 0) { continue; }
+          }
+          da[id] = 1;
+          var ky = xwKyBai(h.split("/")[1], chuChinh(b));
+          if (ky && boKy[ky]) { boKyDem += 1; continue; }   // acc DA trich dan bai nay (tren trang ca nhan)
+          ds.push("https://x.com" + h);
+          dsKy.push(ky);
+        }
+        if (ds.length >= can || lanCuon >= 25 || Date.now() - batDau > 120000) {
+          report("quote-links", "gom " + Math.min(ds.length, can) + "/" + can + " bai sau " + lanCuon + " lan cuon"
+                 + (boKyDem ? " (bo " + boKyDem + " bai acc da trich dan)" : ""),
+                 { idx: cmd.idx, links: ds.slice(0, can), ky: dsKy.slice(0, can), bo_ky_dem: boKyDem });
+          theoDoiLenh(win, cmd);
+          return;
+        }
+        lanCuon += 1;
+        try {
+          withUserInput(win, function () {
+            win.scrollBy({ top: 650, left: 0, behavior: "auto" });
+            doc.dispatchEvent(new win.WheelEvent("wheel", { bubbles: true, deltaY: 650 }));
+          });
+        } catch (e) {}
+        win.setTimeout(quet, 1400 + Math.floor(Math.random() * 1200));
+      })();
+    });
+  }
+  /** Buoc "quote": tren trang bai viet — comment dau tien + icon -> Dang lai > Trich dan. */
+  function lamQuote(win, doc, cmd) {
+    var href = String(win.location.href || "");
+    function ket(ok, vi) {
+      if (ok && !cmd.thu) { dem.quote += 1; }
+      report(ok ? "quote-done" : "quote-fail", vi, { idx: cmd.idx, ok: !!ok });
+      theoDoiLenh(win, cmd);
+    }
+    cho(win, function () { return !!baiGoc(doc, href); }, 20000, function (coBai) {
+      if (!coBai) { ket(false, "khong mo duoc bai (bai bi xoa / an?)"); return; }
+      // Acc DA trich dan bai nay (dau van tay khop trang ca nhan) -> KHONG trich dan lai.
+      var kyGoc = xwKyBai(tacGiaBai(win), chuChinh(baiGoc(doc, href)));
+      if (kyGoc && (cmd.bo_ky || []).indexOf(kyGoc) >= 0) {
+        report("quote-trung", "acc DA trich dan bai nay (thay tren trang ca nhan) — bo qua",
+               { idx: cmd.idx, ok: false });
+        theoDoiLenh(win, cmd);
+        return;
+      }
+      cho(win, function () { return !!commentDau(doc, href); }, 8000, function (co) {
+        if (!co) {
+          try { withUserInput(win, function () { win.scrollBy({ top: 600, left: 0, behavior: "auto" }); }); } catch (e) {}
+        }
+        cho(win, function () { return !!commentDau(doc, href); }, co ? 1 : 5000, function () {
+          // Nguoi dung 14/10: CO comment -> lay comment DAU TIEN; KHONG co -> lay CAPTION bai;
+          // bai khong co chu (chi video/anh) -> chi 3-5 icon.
+          var c = commentDau(doc, href);
+          var chon = xwChonChuQuote(c ? c.chu : "", chuBai(baiGoc(doc, href)));
+          var icon = xwIcons();
+          var noi = chon.chu ? xwSoanComment(chon.chu, icon) : icon;
+          c = { chu: (chon.nguon === "comment" ? "comment dau: " : chon.nguon === "caption"
+                      ? "caption bai: " : "chi icon") + chon.chu };
+          try { withUserInput(win, function () { win.scrollTo({ top: 0, left: 0, behavior: "auto" }); }); } catch (e) {}
+          win.setTimeout(function () {
+            if (!nutDangLai(baiGoc(doc, href))) { ket(false, "khong thay nut Dang lai cua bai"); return; }
+            hoverRoiBamLay(win, function () { return nutDangLai(baiGoc(doc, href)); }, function () {
+              cho(win, function () { return !!mucQuote(doc); }, 4000, function (coMenu) {
+                if (!coMenu) {          // click gia lap khong mo menu -> click GOC mot lan
+                  var n = nutDangLai(baiGoc(doc, href));
+                  if (n) { withUserInput(win, function () { try { n.click(); } catch (e) {} }); }
+                }
+                cho(win, function () { return !!mucQuote(doc); }, coMenu ? 1 : 4000, function () {
+                  var muc = mucQuote(doc);
+                  if (!muc) { ket(false, "menu Dang lai khong co muc Trich dan (Quote)"); return; }
+                  clickReal(win, muc);
+                  cho(win, function () { return !!hopQuote(doc); }, 8000, function (coHop) {
+                    if (!coHop) {
+                      var m2 = mucQuote(doc);
+                      if (m2) { withUserInput(win, function () { try { m2.click(); } catch (e) {} }); }
+                    }
+                    cho(win, function () { return !!hopQuote(doc); }, coHop ? 1 : 8000, function (co2) {
+                      if (!co2) { ket(false, "bam Trich dan nhung khong mo duoc hop soan"); return; }
+                      report("progress", "trich dan [" + (hopThoai(doc) ? "hop thoai" : "trang /compose/post") + "]: " + c.chu.slice(0, 70),
+                             { idx: cmd.idx });
+                      guiComment(win, doc, noi, function (ok, vi) {
+                        var laThu = cmd.thu && /CHE DO THU/.test(vi || "");
+                        var moTa = (ok ? 'da trich dan "' : laThu ? 'CHAY THU (khong bam Dang) "'
+                                    : 'KHONG trich dan duoc "') + noi.slice(0, 70)
+                                   + '"' + (vi ? " (" + vi + ")" : "");
+                        if (cmd.thu) {
+                          dongHopQuote(win, doc, function () { ket(/CHE DO THU/.test(vi || ""), moTa); });
+                          return;
+                        }
+                        ket(ok, moTa);
+                      }, cmd.thu);
+                    });
+                  });
+                });
+              });
+            });
+          }, 900);
+        });
+      });
+    });
+  }
+  /** Buoc "follow": dang o trang kenh -> chua follow thi bam Follow (bamFollow xac minh doi sang
+   *  Following), DA follow thi BO QUA (bam nua la BO follow). report "quote-follow" {kq}. */
+  function lamFollowKenh(win, doc, cmd) {
+    function ket(kq, vi) {
+      report("quote-follow", vi, { idx: cmd.idx, kq: kq, ok: kq !== "loi" });
+      theoDoiLenh(win, cmd);
+    }
+    cho(win, function () { return followTrenProfile(doc).thay; }, 15000, function (co) {
+      var f = followTrenProfile(doc);
+      if (!co || !f.thay) { ket("loi", "khong thay nut Follow cua kenh @" + cmd.handle + " (kenh khong ton tai / bi khoa?)"); return; }
+      if (f.da) { ket("da_follow", "@" + cmd.handle + ": DA follow tu truoc — bo qua"); return; }
+      if (cmd.thu) { ket("thu", "@" + cmd.handle + ": CHUA follow (che do thu, khong bam)"); return; }
+      bamFollow(win, f.goc, function (ok, mo) {
+        if (ok) { ket("follow", "@" + cmd.handle + ": " + mo); return; }
+        ket(/da follow tu truoc/.test(mo || "") ? "da_follow" : "loi", "@" + cmd.handle + ": " + mo);
+      }, f.nut);
+    });
+  }
+  /** Chu CHINH cua bai: doan tweetText dau tien KHONG nam trong phan nhung bai khac. */
+  function chuChinh(bai) {
+    try {
+      var ds = bai.querySelectorAll('[data-testid="tweetText"]');
+      for (var i = 0; i < ds.length; i++) {
+        if (!ds[i].closest('div[role="link"]')) { return txt(ds[i]); }
+      }
+    } catch (e) {}
+    return "";
+  }
+  /** Phan NHUNG bai goc trong mot bai trich dan -> {handle, text} | null. */
+  function baiNhung(bai) {
+    try {
+      var ls = bai.querySelectorAll('div[role="link"]');
+      for (var i = 0; i < ls.length; i++) {
+        var un = ls[i].querySelector('[data-testid="User-Name"]');
+        if (!un) { continue; }
+        var m = txt(un).match(/@([A-Za-z0-9_]{1,15})/);
+        var t = ls[i].querySelector('[data-testid="tweetText"]');
+        if (m) { return { handle: m[1], text: t ? txt(t) : "" }; }
+      }
+    } catch (e) {}
+    return null;
+  }
+  /** Buoc "lich": trang CA NHAN cua acc -> dau van tay (xwKyBai) cac bai GOC acc da trich dan
+   *  (phan nhung khong co link nen khong lay duoc ID). Bat ca bai trich dan tu TRUOC khi co so
+   *  lich su va bai trich dan tay. Cuon ``cmd.so`` lan. report "quote-lich" {ky}. */
+  function docLichSu(win, doc, cmd) {
+    var h = "/" + String(cmd.handle || "").replace(/^@/, "").toLowerCase();
+    var ky = {}, lan = 0, toiDa = Math.max(1, parseInt(cmd.so, 10) || 8);
+    function quetMot() {
+      var els = dsBai(doc);
+      for (var i = 0; i < els.length; i++) {
+        var cua = String(hrefBai(els[i]) || "").toLowerCase().indexOf(h + "/status/") === 0;
+        if (!cua) { continue; }                     // bai cua nguoi khac (dang lai) -> bo
+        var n = baiNhung(els[i]);
+        var k = n ? xwKyBai(n.handle, n.text) : "";
+        if (k) { ky[k] = 1; }
+      }
+    }
+    cho(win, function () { return dsBai(doc).length > 0; }, 15000, function (co) {
+      (function quet() {
+        quetMot();
+        if (!co || lan >= toiDa) {
+          var ds = Object.keys(ky);
+          report("quote-lich", "trang ca nhan: " + ds.length + " bai goc da trich dan (doc " + lan + " lan cuon)",
+                 { idx: cmd.idx, ky: ds });
+          theoDoiLenh(win, cmd);
+          return;
+        }
+        lan += 1;
+        try { withUserInput(win, function () { win.scrollBy({ top: 900, left: 0, behavior: "auto" }); }); } catch (e) {}
+        win.setTimeout(quet, 1300);
+      })();
+    });
+  }
+  /** KICH BAN: ba node chay tu /home trong CUNG phien trinh duyet (driver xwatch.chay_kich_ban).
+   *   "luot" — luot newfeed (chayTuongTac: dung moi bai, tim, xem video, comment; het gio_han giay);
+   *   "tim"  — tim theo tu khoa, mo ``so_bai`` bai moi tu khoa, follow TAC GIA; dung khi du ``can``;
+   *   "goiy" — follow o trang goi y toi khi du ``can``.
+   *  report "quote-node" {node, xem, like, video, cmt, follow} roi ngoi cho lenh ke. */
+  function lamNodeHome(win, doc, cmd) {
+    var han = (parseInt(cmd.gioi_han_giay, 10) || 120) * 1000, batDau = Date.now();
+    var can = parseInt(cmd.can, 10) || 0;
+    function ket(vi) {
+      report("quote-node", vi, { idx: cmd.idx, node: cmd.buoc });
+      theoDoiLenh(win, cmd);
+    }
+    var hetGio = function () {
+      return Date.now() - batDau >= han || (cmd.buoc !== "luot" && can > 0 && dem.follow >= can);
+    };
+    cho(win, function () { return dsBai(doc).length > 0; }, 20000, function (co) {
+      if (!co) { ket("khong thay bai nao tren /home"); return; }
+      if (cmd.buoc === "luot") {
+        var c = {};
+        for (var k in cmd) { c[k] = cmd[k]; }
+        c.so_follow = 0; c.tu_khoa = []; c.so_bai_tim = 0;     // follow la node RIENG
+        chayTuongTac(win, doc, c, ket);
+        return;
+      }
+      var tu = (cmd.tu_khoa || []).map(function (t) { return String(t || "").trim(); })
+                                  .filter(function (t) { return t; });
+      if (cmd.buoc === "tim") {
+        chayTimKiem(win, doc, tu, parseInt(cmd.so_bai, 10) || 1, hetGio, function () {
+          ket("tim tu khoa: follow " + dem.follow + "/" + can);
+        });
+        return;
+      }
+      chayFollow(win, doc, can, hetGio, function () { ket("trang goi y: follow " + dem.follow + "/" + can); });
+    });
+  }
+  function chayQuote(win, cmd) {
+    var doc = win.document;
+    var href = String(win.location.href || "");
+    if (!/^https:\/\/(x|twitter)\.com\//.test(href)) { return; }
+    var man = xwPhanLoai(href, doc.body ? doc.body.innerText.slice(0, 4000) : "");
+    if (man === "x-login") { report("logged-out", href.slice(0, 120), { idx: cmd.idx }); return; }
+    if (man === "x-locked") { report("x-locked", href.slice(0, 120), { idx: cmd.idx }); return; }
+    var khoa = cmd.idx + "|" + cmd.url;
+    if (QUOTE_LAM[khoa]) { return; }
+    if (cmd.buoc === "cho") {             // trang dau vua mo: ngoi cho buoc that tu driver
+      QUOTE_LAM[khoa] = 1;
+      theoDoiLenh(win, cmd);
+      return;
+    }
+    var path = href.replace(/^https:\/\/[^/]+/, "").split("?")[0].toLowerCase();
+    var dung;
+    if (cmd.buoc === "quote") {
+      dung = !!xwIdStatus(href) && xwIdStatus(href) === xwIdStatus(cmd.url) && !/\/quotes\b/.test(path);
+    } else if (cmd.handle) {
+      var h = "/" + String(cmd.handle).replace(/^@/, "").toLowerCase();
+      dung = path === h || path === h + "/";
+    } else {
+      dung = /^\/home\/?$/.test(path);
+    }
+    if (!dung) {
+      if (Date.now() - (QUOTE_DI[cmd.idx] || 0) < 20000) { return; }
+      QUOTE_DI[cmd.idx] = Date.now();
+      report("seen", "chuyen toi " + String(cmd.url).slice(0, 100), { idx: cmd.idx });
+      try { win.location.href = cmd.url; } catch (e) {}
+      return;
+    }
+    if (!xinQuyen()) { return; }
+    QUOTE_LAM[khoa] = 1;
+    win.setTimeout(function () {
+      if (cmd.buoc === "quote") { lamQuote(win, doc, cmd); }
+      else if (cmd.buoc === "follow") { lamFollowKenh(win, doc, cmd); }
+      else if (cmd.buoc === "lich") { docLichSu(win, doc, cmd); }
+      else if (cmd.buoc === "luot" || cmd.buoc === "tim" || cmd.buoc === "goiy") { lamNodeHome(win, doc, cmd); }
+      else { gomBai(win, doc, cmd); }
+    }, 1500);
+  }
+
   function onPage(win) {
     var cmd = getCommand();
+    if (cmd && cmd.action === "xquote") { chayQuote(win, cmd); return; }
     if (cmd && cmd.action === "cmtprobe") {
       var d2 = win.document;
       if (String(win.location.href || "").indexOf("x.com") < 0) { return; }
@@ -1064,7 +1584,15 @@ if (typeof sendAsyncMessage === "function") {
         try {
           var els = dd.querySelectorAll('article[data-testid="tweet"]');
           for (var i = 0; i < els.length && i < 10; i++) {
-            ra.push("[" + i + "] " + chuBai(els[i]).slice(0, 110));
+            var ids = [];
+            var ls = els[i].querySelectorAll('a[href*="/status/"]');
+            for (var j = 0; j < ls.length; j++) {
+              var mm = String(ls[j].getAttribute("href") || "").match(/^\/([^\/]+)\/status\/(\d+)/);
+              if (mm && ids.indexOf(mm[1] + ":" + mm[2]) < 0) { ids.push(mm[1] + ":" + mm[2]); }
+            }
+            var rl = els[i].querySelectorAll('div[role="link"]').length;
+            ra.push("[" + i + "] " + chuBai(els[i]).slice(0, 80) + " {ids=" + ids.join(",")
+                    + " roleLink=" + rl + "}");
           }
         } catch (e) { ra.push("loi " + e); }
         report("done", "url=" + String(win.location.href) + " || " + ra.join(" || "));
@@ -1085,6 +1613,7 @@ if (typeof sendAsyncMessage === "function") {
       return;
     }
     if (DANG_CHAY) { return; }
+    if (!xinQuyen()) { return; }          // ban agent khac (tien trinh khac) dang chay lenh nay
     DANG_CHAY = true;
     // Cho dong thoi gian render xong roi hay luot.
     // (ten bien KHONG duoc la "cho" — se de len ham cho() o tren do var hoisting -> TypeError)

@@ -472,6 +472,9 @@ class TuongTacTab(ctk.CTkFrame):
                                           settings=getattr(self.app, "settings", None),
                                           log=nc.log, post=nc.post, so_luong=so_luong)
             ma = "tuong_tac_x" if self.platform == "x" else "tuong_tac"
+            from core import an_cua_so as _an
+            for _a in accs:                     # cong tac "An trinh duyet" cua tab Tuong tac
+                _an.danh_dau(_an.NHOM_TUONG_TAC, nc.manager, _a)
             try:
                 kq = modun_module.chay(
                     ma, nc, accs, so_video=so_video, so_like=so_like,

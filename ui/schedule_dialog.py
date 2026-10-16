@@ -153,6 +153,7 @@ class ScheduleGenDialog(ctk.CTkToplevel):
         ap = []       # (ten_tab, so_gio)
         trung = {}    # job_id -> dong cuoi cung ap (canh bao neu 2 dong cung 1 tab)
         canh_bao_trung = False
+        thieu_chay = []  # (ten_tab, so gio dat lich chua co gio tool chay) — trang lich kieu moc gio
         for idx, var in enumerate(self.row_tab_vars):
             chon = var.get()
             job = self._tab_by_choice.get(chon)
@@ -161,9 +162,14 @@ class ScheduleGenDialog(ctk.CTkToplevel):
             if job.job_id in trung:
                 canh_bao_trung = True
             trung[job.job_id] = idx
-            gio = autoup_module.parse_times(sg.dong_thanh_chuoi(self.rows[idx]))
-            job.config.times = gio
-            job.config.schedule_mode = "list"
+            if getattr(job.config, "is_lich", False):
+                gio, thieu = self._gui_vao_lich(job.config, self.rows[idx])
+                if thieu:
+                    thieu_chay.append((job.name, thieu))
+            else:
+                gio = autoup_module.parse_times(sg.dong_thanh_chuoi(self.rows[idx]))
+                job.config.times = gio
+                job.config.schedule_mode = "list"
             try:
                 job.save()
             except Exception:  # noqa: BLE001
@@ -184,10 +190,36 @@ class ScheduleGenDialog(ctk.CTkToplevel):
         them = f"\n... (+{len(ap) - 15})" if len(ap) > 15 else ""
         canh = ("\n\n⚠ Có tab nhận từ 2 dòng — dòng sau ghi đè dòng trước."
                 if canh_bao_trung else "")
+        if thieu_chay:
+            canh += ("\n\n⚠ Tab đặt lịch kiểu 'danh sách mốc giờ' còn thiếu 'Giờ tool chạy' (ghép theo thứ tự):\n"
+                     + "\n".join(f"- {ten}: thiếu {n} giờ" for ten, n in thieu_chay[:10])
+                     + "\nNhập thêm ở ô 'Giờ tool chạy' hoặc chọn kiểu 'Cách N phút'.")
         self.count_lbl.configure(text=f"Đã gửi vào {len(ap)} tab.")
         messagebox.showinfo("Gửi vào tab",
                             f"Đã gửi list giờ vào {len(ap)} {self.nhan_loai}:\n{tom}{them}{canh}",
                             parent=self)
+
+    @staticmethod
+    def _gui_vao_lich(cfg, row: list) -> tuple:
+        """Trang ĐẶT LỊCH: list giờ -> ô "Giờ đặt lịch video" (cfg.khung_lich[*].dang).
+
+        GIỮ kiểu chạy của trang (không ép 'list') và GIỮ "Giờ tool chạy" cũ ghép theo THỨ TỰ
+        (giờ thứ i <-> giờ chạy thứ i). Giữ thứ tự giờ như dòng (không sắp xếp — thứ tự là
+        cách ghép cặp). Trả (danh sách giờ, số giờ chưa có giờ tool chạy khi kiểu mốc giờ)."""
+        gio = []
+        for g in row:
+            try:
+                h = autoup_module.normalize_time(str(g))
+            except Exception:  # noqa: BLE001
+                continue
+            if h and h not in gio:
+                gio.append(h)
+        cu = [str((k or {}).get("chay") or "") for k in (cfg.khung_lich or [])]
+        cfg.khung_lich = [{"chay": cu[i] if i < len(cu) else "", "dang": d} for i, d in enumerate(gio)]
+        thieu = 0
+        if getattr(cfg, "schedule_mode", "") == "list":
+            thieu = sum(1 for k in cfg.khung_lich if not k["chay"])
+        return gio, thieu
 
     # ------------------------------------------------------------------ copy / xuất
     def _dat_clipboard(self, text: str):

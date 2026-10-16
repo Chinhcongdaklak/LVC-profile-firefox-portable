@@ -12,6 +12,7 @@ Nut "🚀 Phát hành" chi hien khi chay tu MA NGUON (khong phai .exe phat cho n
 mo phat_hanh_gui.py de chon phien ban va day len GitHub.
 """
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -32,8 +33,34 @@ def thu_muc_cai() -> str:
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def phien_ban_ma_nguon(goc: str = "") -> str:
+    """So PHIEN_BAN DOC LAI TU DIA trong core/phien_ban.py (khong lay hang da nap).
+
+    Cua so "Phat hanh" ghi so moi vao file nay roi build; tien trinh dang chay van giu
+    hang cu trong bo nho nen header + nut cap nhat van thay so cu cho den khi mo lai tool.
+    """
+    p = os.path.join(goc or thu_muc_cai(), "core", "phien_ban.py")
+    try:
+        with open(p, encoding="utf-8") as fh:
+            m = re.search(r'^PHIEN_BAN = "([^"]+)"', fh.read(), re.M)
+        if m:
+            return m.group(1)
+    except OSError:
+        pass
+    return PHIEN_BAN
+
+
 def phien_ban_hien() -> str:
-    """Ban DANG CHAY: phien_ban.txt canh .exe (bo cap nhat ghi) neu co, khong thi so trong ma."""
+    """Ban DANG CHAY.
+
+    * Chay MA NGUON: lay so trong core/phien_ban.py (doc lai tu dia). TUYET DOI khong
+      doc phien_ban.txt -- file do noi ve ban .EXE da cai o may, thuong CU hon ma nguon,
+      nen tool chay tu ma nguon se tu bao "co ban moi" ngay sau khi chinh minh phat hanh
+      (loi that 06/10: ma nguon da 1.3.1 ma phien_ban.txt con 1.3.0).
+    * Ban .exe: phien_ban.txt canh exe (bo cap nhat ghi) neu co, khong thi so trong ma.
+    """
+    if la_ma_nguon():
+        return phien_ban_ma_nguon()
     try:
         import capnhat
         ban = capnhat.phien_ban_dang_cai(thu_muc_cai())

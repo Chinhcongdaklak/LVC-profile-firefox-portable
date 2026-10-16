@@ -132,6 +132,9 @@ class Settings:
     #: KIEU CUA SO trinh duyet: "binh_thuong" (MAC DINH, tool khong sap xep) | "ba_cot"
     #: (3 cot co dinh, browser thu 4 tro di xep lop chong len; van keo di duoc).
     kieu_cua_so: str = "binh_thuong"
+    #: AN TRINH DUYET theo tung tab {"fanpage"|"nhom"|"x"|"tuong_tac": bool}; thieu khoa = BAT
+    #: (core.an_cua_so.dang_bat). Luu theo lan nguoi dung gat cong tac cuoi cung.
+    an_trinh_duyet: dict = field(default_factory=dict)
 
     @classmethod
     def load(cls) -> "Settings":

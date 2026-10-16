@@ -78,20 +78,21 @@ def tuong_tac(manager, account, *, so_video: int = 10, so_phut: int = 30, so_lik
 
     ket = {"ok": False, "state": "", "xem": 0, "like": 0, "tb": 0, "detail": ""}
     seen = set()
-    deadline = time.time() + timeout
-    # Canh tien trinh Firefox: bi tat/chet giua chung thi dung NGAY, khong ngoi
-    # cho het timeout roi moi bao (truoc day treo "đang chạy" ca chuc phut).
-    from core.fbbusiness import app_dir_cua, firefox_pids
-    app_dir = app_dir_cua(manager, account)
-    da_thay_browser = False
-    ke_tiep_kiem = 0.0
+    # TRINH DUYET DA MO -> tat ca phai nam trong try/finally, khong thi mot loi bat ngo
+    # la bo roi Firefox mo mai (loi that 06/10 o core/xpost.py).
     try:
+        deadline = time.time() + timeout
+        # Canh tien trinh Firefox: bi tat/chet giua chung thi dung NGAY, khong ngoi
+        # cho het timeout roi moi bao (truoc day treo "đang chạy" ca chuc phut).
+        from core import procutil
+        from core.fbbusiness import app_dir_cua
+        app_dir = app_dir_cua(manager, account)
+        canh_ff = procutil.CanhTrinhDuyet(app_dir)
+        ke_tiep_kiem = 0.0
         while time.time() < deadline:
             if app_dir and time.time() >= ke_tiep_kiem:
                 ke_tiep_kiem = time.time() + 3.0
-                if firefox_pids(app_dir):
-                    da_thay_browser = True
-                elif da_thay_browser:
+                if canh_ff.da_dong():
                     ket.update(ok=False, state="browser-gone",
                                detail="trình duyệt đã đóng giữa chừng")
                     break

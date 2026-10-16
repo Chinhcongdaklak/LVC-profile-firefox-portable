@@ -121,3 +121,54 @@ def ly_do_x_khong_nhan(path: str) -> str:
 def mm_ss(giay: float) -> str:
     giay = int(round(giay or 0))
     return f"{giay // 60}:{giay % 60:02d}"
+
+
+def kich_thuoc(path: str) -> Optional[tuple]:
+    """(rong, cao) HIEN THI cua video, None neu khong doc duoc.
+
+    Doc hop ``tkhd`` cua track hinh: width/height la so 16.16, con MA TRAN 3x3 ngay truoc do
+    cho biet video co bi QUAY 90/270 do khong (dien thoai hay quay doc nhung luu ngang +
+    ma tran quay). Quay 90/270 -> DAO rong/cao, khong thi video doc bi coi la ngang. THUAN.
+    """
+    try:
+        cuoi = os.path.getsize(path)
+        with open(path, "rb") as fh:
+            for kieu, dau, co in _duyet(fh, 0, cuoi):
+                if kieu != b"moov":
+                    continue
+                for k2, d2, c2 in _duyet(fh, dau, dau + co):
+                    if k2 != b"trak":
+                        continue
+                    for k3, d3, c3 in _duyet(fh, d2, d2 + c2):
+                        if k3 != b"tkhd":
+                            continue
+                        fh.seek(d3)
+                        raw = fh.read(min(c3, 108))
+                        phien_ban = raw[0]
+                        # Dau hop tkhd den HET thoi luong:
+                        #   v0 = co/flag 4 + ngay 4 + ngay 4 + id 4 + dat truoc 4 + dai 4 = 24
+                        #   v1 = 4 + 8 + 8 + 4 + 4 + 8 = 36
+                        # Tiep: dat truoc 8, lop 2, nhom 2, am luong 2, dat truoc 2 = 16
+                        # roi MA TRAN 36 byte, roi rong 4 + cao 4 (so 16.16).
+                        goc = 36 if phien_ban == 1 else 24
+                        vt = goc + 16
+                        mt = struct.unpack(">9i", raw[vt:vt + 36])
+                        w, h = struct.unpack(">II", raw[vt + 36:vt + 44])
+                        rong, cao = w >> 16, h >> 16
+                        if not rong or not cao:
+                            continue                  # track khong phai hinh (tiếng)
+                        a, b, c, d = mt[0], mt[1], mt[3], mt[4]
+                        if a == 0 and d == 0 and b and c:        # quay 90 hoac 270 do
+                            rong, cao = cao, rong
+                        return rong, cao
+    except (OSError, struct.error, IndexError):
+        return None
+    return None
+
+
+def la_doc(path: str) -> Optional[bool]:
+    """Video DOC (cao hon rong) hay khong. None = khong doc duoc kich thuoc. THUAN."""
+    kt = kich_thuoc(path)
+    if not kt:
+        return None
+    return kt[1] > kt[0]

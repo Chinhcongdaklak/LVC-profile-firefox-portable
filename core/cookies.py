@@ -334,3 +334,33 @@ def to_json(cookies: list[Cookie]) -> str:
         ensure_ascii=False,
         indent=2,
     )
+
+
+#: Cookie cua Facebook nam o cac host nay (ca ten cu). Lay lai cookie chi lay dung ho.
+FB_HOSTS = ("facebook.com", "messenger.com", "fb.com")
+
+#: Thu tu dua len dau chuoi (cac cookie quyet dinh phien), con lai theo ten.
+THU_TU_DAU = ("c_user", "xs", "fr", "datr", "sb")
+
+
+def chi_facebook(cookies: Iterable[Cookie], hosts: Iterable[str] = FB_HOSTS) -> list[Cookie]:
+    """Giu lai cookie thuoc ho Facebook (bo google/2fa.live/... lan trong cookies.sqlite). THUAN."""
+    ds = tuple(h.lower().lstrip(".") for h in hosts)
+    ra = []
+    for c in cookies:
+        h = (c.host or "").lower().lstrip(".")
+        if any(h == d or h.endswith("." + d) for d in ds):
+            ra.append(c)
+    return ra
+
+
+def to_header(cookies: Iterable[Cookie]) -> str:
+    """Chuoi 'ten=gia_tri; ten=gia_tri' (kieu header Cookie) — dinh dang nguoi dung dung
+    de dan sang tool khac. Bo cookie trung ten (giu ban dau), bo ten rong. THUAN."""
+    thay = {}
+    for c in cookies:
+        if c.name and c.name not in thay:
+            thay[c.name] = c.value or ""
+    dau = [n for n in THU_TU_DAU if n in thay]
+    con = sorted(n for n in thay if n not in THU_TU_DAU)
+    return "; ".join(f"{n}={thay[n]}" for n in dau + con)

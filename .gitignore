@@ -4,6 +4,7 @@ data/
 
 # Moi acc mot thu muc Firefox rieng, ca cum vai GB va chua phien dang nhap.
 profile/
+profile_*/
 
 # Installer Firefox (~190 MB) va file .xpi da ky -- tai/dung lai duoc.
 extension/

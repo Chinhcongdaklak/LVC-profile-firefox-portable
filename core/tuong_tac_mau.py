@@ -30,6 +30,8 @@ def _sach(m: dict) -> dict:
         "so_phut": max(1, int(m.get("so_phut") or 1)),
         "so_like": max(0, int(m.get("so_like") or 0)),
         "so_video": max(1, int(m.get("so_video") or 1)),
+        # Chi dung cho acc X: so bai vao lay comment dau tien dang lai (mau cu khong co -> 0).
+        "so_comment": max(0, int(m.get("so_comment") or 0)),
     }
 
 
@@ -65,17 +67,29 @@ def tim(ten: str, ds: Optional[list] = None) -> Optional[dict]:
     return None
 
 
-def chay_truoc(manager, account, mau: Optional[dict], *,
+def chay_truoc(manager, account, mau: Optional[dict], *, nen_tang: str = "fb",
                log: Optional[Callable[[str], None]] = None) -> dict:
-    """Chạy TƯƠNG TÁC (xem reel + like) theo ``mau`` TRƯỚC việc chính của tab. Mẫu KHÔNG dùng delay.
+    """Chạy TƯƠNG TÁC theo ``mau`` TRƯỚC việc chính của tab. Mẫu KHÔNG dùng delay.
 
-    ``mau`` None/rỗng -> không làm gì, trả {}. Trả kết quả core.fbwatch.tuong_tac."""
+    ``nen_tang``:
+      * "fb" -> core.fbwatch.tuong_tac: vào /reel/ xem video + like;
+      * "x"  -> core.xwatch.tuong_tac: lướt x.com/home, thả tim, bấm video, comment
+        (mẫu lưu PHÚT, xwatch nhận GIÂY). Acc X phải là acc của kho profile X.
+
+    ``mau`` None/rỗng -> không làm gì, trả {}."""
     if not mau:
         return {}
-    from core import fbwatch
     m = _sach(mau)
     noi = log or (lambda _m: None)
     noi(f"[{account.id}] tương tác trước ({m['ten']}): xem {m['so_video']} video, "
-        f"like {m['so_like']}, ≤{m['so_phut']} phút...")
+        f"like {m['so_like']}"
+        + (f", comment {m['so_comment']}" if nen_tang == "x" and m["so_comment"] else "")
+        + f", ≤{m['so_phut']} phút...")
+    if nen_tang == "x":
+        from core import xwatch
+        return xwatch.tuong_tac(manager, account, so_like=m["so_like"], so_video=m["so_video"],
+                                so_comment=m["so_comment"], gioi_han_giay=m["so_phut"] * 60,
+                                log=log)
+    from core import fbwatch
     return fbwatch.tuong_tac(manager, account, so_video=m["so_video"], so_phut=m["so_phut"],
                              so_like=m["so_like"], log=log)

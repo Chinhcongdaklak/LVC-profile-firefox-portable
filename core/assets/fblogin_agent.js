@@ -138,6 +138,17 @@ if (typeof sendAsyncMessage === "function") {
     });
     return m.length ? m[m.length - 1] : null;
   }
+  function kieuDieuHuong(win) {
+    var ra = [];
+    try {
+      var e = win.performance && win.performance.getEntriesByType
+              ? win.performance.getEntriesByType("navigation")[0] : null;
+      ra.push("nav=" + (e && e.type ? e.type : "?"));
+    } catch (e1) { ra.push("nav=?"); }
+    try { ra.push("ref=" + String(win.document.referrer || "").slice(0, 60)); } catch (e2) {}
+    try { ra.push(win === win.top ? "top" : "frame"); } catch (e3) {}
+    return ra.join(" ");
+  }
   function dump(doc) {
     var out = [];
     try {
@@ -178,8 +189,79 @@ if (typeof sendAsyncMessage === "function") {
     return true;
   }
 
+  /* ---- reCAPTCHA: TU TICH "Toi khong phai la nguoi may" ------------------------------
+   * Nguoi dung chot 08/10: khuc dinh captcha thi tu tich o do; neu FB/Google doi XAC MINH
+   * them (chon anh) thi DUNG YEN cho nguoi dung lam, roi cho chuyen sang o nhap ma 2FA.
+   * O tick nam trong IFRAME cheo nguon google.com/recaptcha/api2/anchor -> process-script
+   * chay duoc trong iframe do (onFrame), con cua so chinh thi khong voi toi. */
+  var daTichCaptcha = false;
+  //: MOI iframe xac minh (Arkose MatchKey / FunCaptcha / reCAPTCHA / hCaptcha). Agent TUYET DOI
+  //: khong duoc dung vao: cac he nay phat hien script la truy cap DOM iframe cua no la DANH Rot
+  //: -> Facebook day ve dang nhap (goc loi 08/10: Chrome sach qua duoc, profile tool khong qua
+  //: vi agent poll vao iframe Arkose fbsbx.com/captcha/arkose moi 0.8-2 giay).
+  function laKhungXacMinh(href) {
+    var h = String(href || "");
+    return /fbsbx\.com\/captcha\//.test(h)              // Arkose/reCAPTCHA FB nhung trong fbsbx
+        || /arkoselabs\.com|funcaptcha|arkose/.test(h)
+        || /(google\.com|recaptcha\.net)\/recaptcha\//.test(h)
+        || /hcaptcha\.com/.test(h);
+  }
+  function laKhungAnchor(href) {
+    return /recaptcha\/(api2|enterprise)\/anchor/.test(String(href || ""));
+  }
+  function laKhungThuThach(href) {
+    return /recaptcha\/(api2|enterprise)\/bframe/.test(String(href || ""));
+  }
+  /** O tick cua reCAPTCHA v2/enterprise trong khung anchor. */
+  function oTichCaptcha(doc) {
+    try {
+      var el = doc.getElementById("recaptcha-anchor")
+            || doc.querySelector('[role="checkbox"].recaptcha-checkbox')
+            || doc.querySelector(".recaptcha-checkbox");
+      return el && vis(el) ? el : null;
+    } catch (e) { return null; }
+  }
+  function daTich(el) {
+    try {
+      return el.getAttribute("aria-checked") === "true"
+          || (el.className || "").indexOf("recaptcha-checkbox-checked") !== -1;
+    } catch (e) { return false; }
+  }
+  /** Trong khung anchor: tich o mot lan roi theo doi ket qua. */
+  function tichCaptcha(win, cmd) {
+    var doc = win.document, doi = 0, daBam = false;
+    (function tick() {
+      var el = oTichCaptcha(doc);
+      if (!el) { if (doi++ < 20) { win.setTimeout(tick, 700); } return; }
+      if (daTich(el)) {
+        daTichCaptcha = true;
+        report("captcha-ticked", "đã tích 'Tôi không phải là người máy' — chờ Facebook chuyển sang ô nhập mã");
+        return;
+      }
+      if (cmd && cmd.tu_tich_captcha === false) {
+        report("captcha-cho-tay", "reCAPTCHA chưa tích — chế độ KHÔNG tự tích, chờ bạn tích tay");
+        if (doi++ < 200) { win.setTimeout(tick, 1500); }
+        return;
+      }
+      // Chi bam MOT lan: bam lai khi khung dang xac minh co the huy token -> FB day ve trang chu.
+      if (!daBam) {
+        daBam = true;
+        report("captcha-tick", "tự tích ô 'Tôi không phải là người máy' (một lần, rồi chờ)");
+        clickReal(win, el);
+        try { el.click(); } catch (e) {}
+      }
+      if (doi++ < 60) { win.setTimeout(tick, 1500); }
+    })();
+  }
+
   function onFrame(win) {
-    // IFRAME: chi lo dien 2FA (o ma 2FA cua FB nam trong iframe fbsbx). Khong dien form login.
+    var hrefF = "";
+    try { hrefF = String(win.location.href || ""); } catch (e) { return; }
+    // IFRAME XAC MINH (Arkose/FunCaptcha/reCAPTCHA/hCaptcha): KHONG dung vao GI CA — khong
+    // getCommand, khong doc DOM, khong poll, khong dispatch su kien. De nguyen cho he xac minh
+    // + nguoi dung lam. Dung vao la bi danh rot (nguoi dung chot 08/10: "bi gan vao trinh duyet").
+    if (laKhungXacMinh(hrefF)) { return; }
+    // IFRAME khac: lo dien 2FA (o ma 2FA cua FB mot so phien nam trong iframe fbsbx KHONG phai captcha).
     var cmd = getCommand();
     if (!cmd || cmd.action !== "weblogin") { return; }
     var doc = win.document, step = cmd.delay || 2000, waited = 0, cap = cmd.formTimeout || 45000;
@@ -191,6 +273,55 @@ if (typeof sendAsyncMessage === "function") {
       waited += step;
       if (codeInput(doc) && waited < cap) { win.setTimeout(tick, step); }
     }, 800);
+  }
+
+  /* ---- TRANG 2FA DANG CHUYEN HUONG -------------------------------------------------
+   * Nguoi dung chot 08/10 (anh man hinh): o trang two_step_verification co reCAPTCHA
+   * "Toi khong phai la nguoi may" DA TICH va trang dang quay vong de chuyen sang man
+   * NHAP MA. Luc nay tool phai CHO IT NHAT 10 GIAY cho no chuyen huong, TUYET DOI khong
+   * duoc quay lai (history.back) ve man dang nhap. */
+  var CHO_CHUYEN_2FA = 10000;
+  //: Con captcha (nguoi dung dang xac minh) thi cho toi da bao lau roi moi bo cuoc.
+  var CHO_CAPTCHA_TOI_DA = 300000;
+  var moc2FA = 0;                 // lan dau thay trang 2FA ma chua co o nhap ma
+  var mocCaptcha = 0;             // lan dau thay captcha o trang 2FA
+  //: DA TUNG vao trang 2FA trong phien nay. Sau do FB hay day nguoc ve trang chu/form
+  //: dang nhap vai giay (nhat la sau khi tich reCAPTCHA) -> KHONG duoc dien lai form
+  //: ngay, phai CHO no tu quay ve 2FA, khong thi lap vo tan (nguoi dung bao 08/10).
+  var daThay2FA = false;
+  var mocVeLogin = 0;             // luc bi day ve form login sau khi da thay 2FA
+  var lanDienLai = 0;             // so lan da dien lai form login sau khi thay 2FA
+  var soLanDayVe = 0;             // SO LAN bi day 2FA -> login (dem TICH LUY, khong reset)
+  //: Lap nhieu lan kieu 2FA<->login = SAI MAT KHAU (FB qua kiem tra bao mat nhung pass sai nen
+  //: khong vao duoc) hoac acc bi chan -> dung bao, dung cho mai (nguoi dung chot 08/10).
+  var CHO_VE_2FA = 60000, DIEN_LAI_TOI_DA = 1, DAY_VE_TOI_DA = 3;
+  function la2FA(href) {
+    return String(href || "").indexOf("two_step_verification") !== -1
+        || String(href || "").indexOf("two_factor") !== -1
+        || String(href || "").indexOf("twofactor/reauth") !== -1;
+  }
+  //: Trang 2FA "Dang tien hanh kiem tra bao mat / Hệ thống sẽ tự động chuyển hướng" (Arkose
+  //: chay ngam, khong co iframe captcha thay duoc) -> FB TU NOI se chuyen, phai cho LAU.
+  function dangKiemTraBaoMat(doc) {
+    try {
+      var t = low(doc.body ? doc.body.innerText : "");
+      return /đang tiến hành kiểm tra bảo mật|tự động chuyển hướng|kiểm tra bảo mật|security check|checking your|verifying your login|xác minh lần đăng nhập/.test(t);
+    } catch (e) { return false; }
+  }
+  /** Trang 2FA chua san sang (chua co o nhap ma) -> con duoc cho bao lau nua, 0 = het cho. */
+  function conCho2FA(doc) {
+    if (codeInput(doc)) { moc2FA = 0; mocCaptcha = 0; return 0; }
+    // Dang kiem tra bao mat / co captcha / dang xac minh -> CHO TIEP, dong ho dat lai moi nhip,
+    // nhung van co TRAN (CHO_CAPTCHA_TOI_DA) de khong treo mai neu FB khong bao gio chuyen.
+    if (dangKiemTraBaoMat(doc) || coCaptcha(doc)) {
+      if (!mocCaptcha) { mocCaptcha = Date.now(); }
+      if (Date.now() - mocCaptcha >= CHO_CAPTCHA_TOI_DA) { return 0; }
+      moc2FA = Date.now();
+      return CHO_CHUYEN_2FA;
+    }
+    mocCaptcha = 0;
+    if (!moc2FA) { moc2FA = Date.now(); }
+    return Math.max(0, CHO_CHUYEN_2FA - (Date.now() - moc2FA));
   }
 
   // ---- LUONG KHOI PHUC (khi login web bi "Invalid request" o trang 2FA) ------------------
@@ -297,12 +428,84 @@ if (typeof sendAsyncMessage === "function") {
     }, 1500);
   }
 
+  var daVeTrangChu = false;
+  /** login.php mà trang chỉ có chữ "Not Found" (Facebook trả cho phiên đã đăng nhập). THUẦN. */
+  function laNotFoundLogin(href, doc) {
+    if (String(href || "").indexOf("facebook.com/login") === -1) { return false; }
+    var t = "";
+    try { t = String((doc.body && doc.body.innerText) || "").trim().toLowerCase(); } catch (e) { t = ""; }
+    return t === "not found" || t === "không tìm thấy";
+  }
+
   function onPage(win) {
     var cmd = getCommand();
     if (cmd && cmd.action === "gettoken") { return layTokenPage(win, cmd); }
     if (!cmd || cmd.action !== "weblogin") { return; }
     var doc = win.document, href = low(win.location.href);
 
+    if (la2FA(href)) { daThay2FA = true; mocVeLogin = 0; }
+
+    // (0) Acc DA DANG NHAP SAN: Facebook tra trang trang "Not Found" cho login.php -> khong co
+    //     form nao, truoc day ngoi cho het gio roi bao khong_ro (nguoi dung bao 12/10). Sang
+    //     trang chu MOT LAN de probe thay phien song (cha tu ket luan "vao").
+    if (laNotFoundLogin(href, doc)) {
+      if (!daVeTrangChu) {
+        daVeTrangChu = true;
+        report("da-dang-nhap-san", "login.php báo 'Not Found' (acc đã đăng nhập sẵn) — sang facebook.com kiểm tra");
+        try { win.location.href = "https://www.facebook.com/"; } catch (e) {}
+      }
+      return;
+    }
+
+    // (1) Dang o trang 2FA (two_step/two_factor) MA CHUA co o nhap ma -> man "Đang tiến hành
+    //     kiểm tra bảo mật", dang quay vong qua reCAPTCHA/Arkose. CHO, khong dieu huong,
+    //     khong bam gi, cho toi khi o nhap ma hien ra (nguoi dung chot 08/10).
+    if (la2FA(href) && !codeInput(doc)) {
+      var con2 = conCho2FA(doc);
+      if (con2 > 0) {
+        report("2fa-cho-chuyen", (coCaptcha(doc) ? "trang 2FA có reCAPTCHA/Arkose — chờ xác minh"
+               : "trang 2FA 'Đang tiến hành kiểm tra bảo mật' — chờ nó tự chuyển sang ô nhập mã")
+               + " (còn " + Math.ceil(con2 / 1000) + "s), KHÔNG quay lại màn đăng nhập");
+        win.setTimeout(function () { onPage(win); }, 1500);
+        return;                         // CHAN moi xu ly khac: khong lap tick, khong dien form
+      }
+    }
+
+    // (2) DA TUNG thay trang 2FA ma GIO lai o login/home -> Facebook vua day nguoc ve (sau khi
+    //     "kiểm tra bảo mật" chua xong). TUYET DOI khong dien lai form ngay: dien = bam Dang
+    //     nhap lai = FB lai bat kiem tra bao mat -> quay vong vo tan (dung loi nguoi dung bao).
+    //     CHO im lang cho FB tu dua tro lai 2FA; het CHO_VE_2FA moi dien lai, toi da 1 lan.
+    //     Dat NGAY DAU onPage de khong co tick loop cu nao con song lot qua xuong dien form.
+    if (daThay2FA && !codeInput(doc) && !la2FA(href)) {
+      var coForm = q(doc, "input[name=pass]") || q(doc, "input[name=email]")
+                || /facebook\.com\/?($|\?|login)/.test(href);
+      if (coForm) {
+        if (!mocVeLogin) { mocVeLogin = Date.now(); soLanDayVe += 1; }
+        if (soLanDayVe > DAY_VE_TOI_DA) {
+          report("lap-login", "bị đẩy từ 2FA về màn đăng nhập " + soLanDayVe + " lần — RẤT CÓ THỂ "
+                 + "SAI MẬT KHẨU (Facebook qua kiểm tra bảo mật nhưng mật khẩu không đúng nên không "
+                 + "vào được), hoặc acc bị chặn. Kiểm tra lại mật khẩu, hoặc đăng nhập TAY một lần.");
+          return;
+        }
+        var choTiep0 = CHO_VE_2FA - (Date.now() - mocVeLogin);
+        if (choTiep0 > 0) {
+          report("cho-ve-2fa", "vừa ở trang 2FA, Facebook đẩy về màn đăng nhập — CHỜ "
+                 + Math.ceil(choTiep0 / 1000) + "s cho nó tự quay lại ô nhập mã, KHÔNG đăng nhập lại");
+          win.setTimeout(function () { onPage(win); }, 2000);
+          return;                       // CHAN tat ca: khong lap tick, khong dien form
+        }
+        if (lanDienLai >= DIEN_LAI_TOI_DA) {
+          report("lap-login", "đã chờ " + Math.round(CHO_VE_2FA / 1000) + "s + đăng nhập lại "
+                 + lanDienLai + " lần mà Facebook vẫn không qua kiểm tra bảo mật — DỪNG "
+                 + "(acc bị chặn ở bước xác minh Arkose, hãy đăng nhập TAY một lần)");
+          return;
+        }
+        lanDienLai += 1; mocVeLogin = 0;
+        report("dien-lai-login", "lần " + lanDienLai + "/" + DIEN_LAI_TOI_DA
+               + " — chờ mãi không tự quay lại, thử đăng nhập lại một lần");
+        // roi THOI: de cac tick ben duoi dien form mot lan.
+      }
+    }
     // Trang khoi phuc (quen mat khau / identify / recover) -> xu ly rieng.
     if (href.indexOf("/login/identify") !== -1 || href.indexOf("/recover") !== -1
         || href.indexOf("/recovery") !== -1) {
@@ -315,6 +518,15 @@ if (typeof sendAsyncMessage === "function") {
       var bodyLow = low(doc.body ? doc.body.innerText : "");
       if (href.indexOf("two_step_verification") !== -1
           && /invalid request|could not validate|try starting the flow|bắt đầu lại|không xác thực được/.test(bodyLow)) {
+        // CHUA duoc quay lai khi trang con dang chuyen huong sang man nhap ma: reCAPTCHA
+        // vua tich xong, FB quay vong vai giay roi moi hien o ma (nguoi dung bao 08/10).
+        var con = conCho2FA(doc);
+        if (con > 0) {
+          report("2fa-cho-chuyen", "trang 2FA đang chuyển hướng — chờ thêm "
+                 + Math.ceil(con / 1000) + "s, KHÔNG quay lại");
+          win.setTimeout(function () { onPage(win); }, 1500);
+          return;
+        }
         lanInvalid++;
         if (lanInvalid > 3) {
           report("invalid-fail", "Invalid request 3 lần → tắt trình duyệt, báo lỗi đăng nhập");
@@ -329,7 +541,9 @@ if (typeof sendAsyncMessage === "function") {
     var step = cmd.delay || 2000, waited = 0, cap = cmd.formTimeout || 40000;
 
     // Chan doan: bao trang vua tai (url + cau truc) — cha ghi lai moi thay doi.
-    report("seen", win.location.href.slice(0, 70) + " | " + dump(doc));
+    // Kem KIEU DIEU HUONG (navigate / back_forward / reload) + trang truoc do, de biet
+    // "bi back" la ai lam: agent, nguoi dung, hay FB tu chuyen (08/10).
+    report("seen", win.location.href.slice(0, 70) + " | " + dump(doc) + " | " + kieuDieuHuong(win));
     win.setTimeout(function () {
       try { report("seen", win.location.href.slice(0, 70) + " | " + dump(win.document)); } catch (e) {}
     }, 5000);
@@ -358,6 +572,8 @@ if (typeof sendAsyncMessage === "function") {
       var em = q(doc, "input[name=email]"), pw = q(doc, "input[name=pass]");
       var er = errText(doc);
       if (er) { report(er, ""); return; }
+      // (Viec "da thay 2FA ma gio o login -> CHO" da chuyen len DAU onPage de chan moi
+      //  tick loop cu lot qua. O day khong lam gi nua.)
       // Sau khi "quay lai" tu trang Invalid request (lanInvalid>0): neu FB hoi cach xac minh,
       // CHON "Nhap mat khau" de ve o mat khau (khong co o pass + khong co o ma 2FA moi chon).
       if (lanInvalid > 0 && !(pw && vis(pw)) && !codeInput(doc)) {
@@ -430,8 +646,17 @@ if (typeof sendAsyncMessage === "function") {
       var win = subject;
       try {
         var top = (win.top === win);
+        // Iframe xac minh (captcha): KHONG dang ky gi, khong cham vao -> he xac minh thay
+        // iframe SACH nhu trinh duyet thuong (goc loi 08/10).
+        if (!top) {
+          var hf = "";
+          try { hf = String(win.location.href || ""); } catch (e0) {}
+          if (laKhungXacMinh(hf)) { return; }
+        }
         win.addEventListener("load", function onload() {
           win.removeEventListener("load", onload);
+          // Khi load xong co the da dieu huong sang iframe captcha -> kiem lai.
+          try { if (win.top !== win && laKhungXacMinh(String(win.location.href || ""))) { return; } } catch (e1) {}
           if (top) { onPage(win); } else { onFrame(win); }
         }, { once: true });
       } catch (e) {}

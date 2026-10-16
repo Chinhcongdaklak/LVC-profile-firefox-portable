@@ -108,7 +108,7 @@ def wait_state(profile_dir: str, states, timeout: float = 90.0,
     """
     muon = set(states)
     deadline = time.time() + timeout
-    da_thay_browser = False
+    canh_ff = procutil.CanhTrinhDuyet(app_dir)
     ke_tiep = 0.0
     while time.time() < deadline:
         ket_qua = read_result(profile_dir)
@@ -117,9 +117,7 @@ def wait_state(profile_dir: str, states, timeout: float = 90.0,
         # Quet tien trinh kha nang -> 3 giay mot lan la du nhay (procutil cache 1.5s).
         if app_dir and time.time() >= ke_tiep:
             ke_tiep = time.time() + 3.0
-            if firefox_pids(app_dir):
-                da_thay_browser = True
-            elif da_thay_browser:
+            if canh_ff.da_dong():
                 return {"state": BROWSER_GONE,
                         "detail": "trình duyệt đã đóng giữa chừng "
                                   "(bị tắt tay, Not Responding, hoặc tự thoát)"}
@@ -173,8 +171,13 @@ def upload(
     timeout: float = 900.0,
     stuck_timeout: float = 60.0,
     lich: Optional[dict] = None,
+    lich_thu: bool = False,
+    thu_mat_tieu_diem: bool = False,
 ) -> str:
     """Mo Business Suite cua fanpage roi nap video vao composer.
+
+    ``lich_thu=True`` (chi dung de KIEM): dien ngay/gio trong hop lich, xac minh, roi
+    DUNG — khong bam Dang, khong tao bai nao. Agent bao "schedule-dry".
 
     ``lich`` = {"ngay": "25/09/2026", "gio": "20:00"} (gio theo MUI GIO PAGE):
     thay vi dang ngay, agent bat che do "Đặt lịch", dien ngay/gio roi bam.
@@ -200,7 +203,7 @@ def upload(
     put_command(profile, action="upload", path=os.path.abspath(video_path),
                 caption=caption, publish=bool(publish),
                 mime=fbupload.mime_of(video_path),
-                lich=(dict(lich) if lich else None),
+                lich=(dict(lich) if lich else None), lichThu=bool(lich_thu and lich), thuMatTieuDiem=bool(lich_thu and lich and thu_mat_tieu_diem),
                 doneTimeout=int(max(60, timeout - 120)),
                 stuckTimeout=int(stuck_timeout),
                 readyTimeout=int(max(120, timeout / 3)))
@@ -217,6 +220,8 @@ def upload(
             "check-timeout", "error"}
     TREO = "upload-stuck"
     XONG = {"publish-done", "publish-timeout"} if publish else {"caption-filled"}
+    if lich_thu and lich:
+        XONG = {"schedule-dry"}
     HONG = HONG | {LANG_STATE}
 
     nhan_hoso = f"fanpage-{page_id}"
@@ -273,6 +278,8 @@ def upload(
         except OSError:
             pass
 
+    if lich_thu and lich:
+        return "THỬ: đã điền đủ ngày/giờ đặt lịch — không bấm Đăng"
     if publish:
         if lich:
             noi("Facebook đã nhận lịch")

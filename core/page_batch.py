@@ -26,6 +26,7 @@ from core import fbcreatepage
 LOI_KHOA = "khoa"            # acc checkpoint/khoa/cam -> loai ngay
 LOI_NHAP_LIEU = "nhap_lieu"  # hang muc sai/trong -> dung ca dot (doi acc cung hong)
 LOI_HONG = "hong"            # tao hong -> dem cho acc, du max_hong thi loai
+LOI_BM_HAN_CHE = "bm_han_che"  # BM bi Facebook han che -> DUNG ngay, doi BM khac
 
 
 def ket_qua(ok: bool, page_id: str = "", loi: str = "", ghi_chu: str = "") -> dict:
@@ -85,6 +86,9 @@ def tao_mot_page(manager, account, ten: str, *, category: str, description: str 
         if not submit and "chạy thử" in note:
             return ket_qua(True, ghi_chu=note)
         return ket_qua(False, loi=LOI_HONG, ghi_chu=note or "không rõ")
+    except fbcreatepage.BmHanCheError as exc:
+        # BM han che: khong phai loi cua acc hay cua ten -> dung ngay, bao de nguoi dung doi BM.
+        return ket_qua(False, loi=LOI_BM_HAN_CHE, ghi_chu=str(exc))
     except fbcreatepage.AccountBlockedError as exc:
         return ket_qua(False, loi=LOI_KHOA, ghi_chu=str(exc))
     except fbcreatepage.FormInputError as exc:
@@ -167,6 +171,15 @@ def chay_theo_dot(accs: list, names: list, *, so_moi_dot: int, nghi_phut: float,
                                 "toi_da": max(1, int(thu_moi_vong)),
                                 "ly_do": f"acc bị khoá/checkpoint: {ghi}"})
                 loai(acc, kq.get("ghi_chu") or "bị khoá/checkpoint")
+                return
+            if ma == LOI_BM_HAN_CHE:
+                # BM bi han che: thu TEN KHAC cung vo ich (loi o BM, khong phai o ten/acc)
+                # -> bo ten + LOAI acc do khoi luot chay, acc khac (BM khac) van chay tiep.
+                phat("bo_ten", {"vong": vong, "acc": acc.id, "ten": ten, "lan": thu + 1,
+                                "toi_da": max(1, int(thu_moi_vong)),
+                                "ly_do": f"BM bị hạn chế: {ghi}"})
+                phat("bm_han_che", {"acc": acc.id, "vong": vong, "ly_do": ghi})
+                loai(acc, f"BM bị hạn chế: {ghi}")
                 return
             if ma == LOI_NHAP_LIEU:
                 phat("bo_ten", {"vong": vong, "acc": acc.id, "ten": ten, "lan": thu + 1,

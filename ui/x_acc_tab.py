@@ -27,6 +27,7 @@ from core import totp
 from core import useragent
 from core.profiles import ProfileManager
 from core.proxy import Proxy
+from core import trang_thai as trang_thai_module
 from core.store import Account, AccountStore, STATUSES
 
 from core import x_import
@@ -206,21 +207,55 @@ class NordVpnDialog(BaseDialog):
         self.destroy()
 
 
-def x_settings(settings):
-    """Ban sao Settings voi thu muc profile rieng cho X (goc + "_x"); ban goc giu nguyen."""
+def x_settings(settings, hau_to: str = "_x"):
+    """Ban sao Settings voi thu muc profile RIENG (goc + hau to); ban goc giu nguyen.
+
+    Dung chung cho tab X ("_x") va tab YouTube ("_yt") — xem ui/yt_acc_tab.py."""
     ban = copy.copy(settings)
-    ban.profiles_root = settings.profiles_root.rstrip("\\/") + "_x"
+    ban.profiles_root = settings.profiles_root.rstrip("\\/") + hau_to
     return ban
 
 
 class XAccTab(ctk.CTkFrame):
-    """Bang acc X.com: store rieng + ProfileManager rieng."""
+    """Bang acc X.com: store rieng + ProfileManager rieng.
+
+    Cac HANG SO cua nen tang de o THUOC TINH LOP -> tab khac (YouTube) ke thua roi
+    doi la dung duoc ca bang/menu/proxy/keo chon ma khong chep lai nghin dong."""
+
+    #: Kho acc + hau to thu muc profile rieng cua nen tang.
+    ACCOUNTS_PATH = X_ACCOUNTS_PATH
+    HAU_TO_PROFILE = "_x"
+    #: Trang mo khi bam "Mo profile" / sau khi nap cookie.
+    START_URL = X_START_URL
+    HOME_URL = X_HOME_URL
+    #: Cookie: mien mac dinh khi dan, host tinh la "cua nen tang", cookie bao DA dang nhap.
+    COOKIE_DOMAIN = X_COOKIE_DOMAIN
+    COOKIE_HOSTS = X_COOKIE_HOSTS
+    AUTH_COOKIE = X_AUTH_COOKIE
+    CACHE_DIRS = X_CACHE_DIRS
+    COLUMNS = X_COLUMNS
+    #: Cac o trong BANG THONG TIN acc ben phai: (nhan, khoa, cao). Khoa phai nam trong tap
+    #: show_detail/save_detail biet (id/password/recovery_mail*/gmail_2fa/cookie/proxy/group/note).
+    DETAIL_ROWS = (
+        ("User X", "id", 0),
+        ("Pass X", "password", 0),
+        ("Gmail", "recovery_mail", 0),
+        ("Pass Gmail", "recovery_mail_password", 0),
+        ("Mail KP Gmail", "recovery_mail_backup", 0),
+        ("2FA Gmail (secret)", "gmail_2fa", 0),
+        ("Cookie X", "cookie", 0),
+        ("Proxy", "proxy", 0),
+        ("Nhóm", "group", 0),
+    )
+    #: O "Luong" rieng cua tab (khoa trong Settings).
+    THREADS_KEY = "x_threads"
 
     def __init__(self, master, app, *, store_path=None):
         super().__init__(master, fg_color="transparent")
         self.app = app
-        self.store = AccountStore(store_path or X_ACCOUNTS_PATH)
-        self.manager = ProfileManager(x_settings(app.settings), getattr(app.manager, "relays", None))
+        self.store = AccountStore(store_path or self.ACCOUNTS_PATH)
+        self.manager = ProfileManager(x_settings(app.settings, self.HAU_TO_PROFILE),
+                                      getattr(app.manager, "relays", None))
         self._show_secrets = tk.BooleanVar(master=self, value=True)
         self._rows: list[Account] = []
         self._build_toolbar()
@@ -288,11 +323,11 @@ class XAccTab(ctk.CTkFrame):
         wrapper = ctk.CTkFrame(self._table_area)
         wrapper.grid(row=0, column=0, sticky="nsew")
 
-        self.tree = ttk.Treeview(wrapper, columns=[c[0] for c in X_COLUMNS],
+        self.tree = ttk.Treeview(wrapper, columns=[c[0] for c in self.COLUMNS],
                                  show="headings", selectmode="extended",
                                  # dung chung style bang Facebook -> doi mau sang/toi theo App
                                  style="Accounts.Treeview")
-        for key, title, width, anchor in X_COLUMNS:
+        for key, title, width, anchor in self.COLUMNS:
             self.tree.heading(key, text=title)
             self.tree.column(key, width=width, anchor=anchor, stretch=False)
 
@@ -352,23 +387,16 @@ class XAccTab(ctk.CTkFrame):
             self._detail_fields[key] = widget
             return widget
 
-        # Thu tu khop cot bang: user/pass X roi chuoi Gmail, roi cookie/proxy.
-        row("User X", "id")
-        self._detail_fields["id"].configure(state="disabled")
-        row("Pass X", "password")
-        row("Gmail", "recovery_mail")
-        row("Pass Gmail", "recovery_mail_password")
-        row("Mail KP Gmail", "recovery_mail_backup")
-
-        twofa = row("2FA Gmail (secret)", "gmail_2fa")
-        self._detail_2fa = ctk.CTkLabel(body, text="", anchor="w", text_color="gray60",
-                                        font=ctk.CTkFont(size=11))
-        self._detail_2fa.pack(fill="x")
-        twofa.bind("<KeyRelease>", lambda _e: self._tick_detail_2fa())
-
-        row("Cookie X", "cookie")
-        row("Proxy", "proxy")
-        row("Nhóm", "group")
+        # Thu tu lay tu DETAIL_ROWS (tab YouTube ke thua chi doi danh sach nay).
+        for nhan, khoa, cao in self.DETAIL_ROWS:
+            w = row(nhan, khoa, cao)
+            if khoa == "id":
+                w.configure(state="disabled")       # dinh danh khong sua o day
+            elif khoa == "gmail_2fa":
+                self._detail_2fa = ctk.CTkLabel(body, text="", anchor="w", text_color="gray60",
+                                                font=ctk.CTkFont(size=11))
+                self._detail_2fa.pack(fill="x")
+                w.bind("<KeyRelease>", lambda _e: self._tick_detail_2fa())
 
         ctk.CTkLabel(body, text="Trạng thái", anchor="w", text_color="gray60",
                      font=ctk.CTkFont(size=11)).pack(fill="x", pady=(6, 0))
@@ -684,7 +712,7 @@ class XAccTab(ctk.CTkFrame):
         self.count_label.configure(text=f"{len(self._rows)}/{len(self.store)} acc")
 
     def row_values(self, index: int, account: Account) -> tuple:
-        """Gia tri tung o, dung thu tu X_COLUMNS."""
+        """Gia tri tung o, dung thu tu self.COLUMNS."""
         show = self._show_secrets.get()
         installed = self.manager.is_installed(account)
         def an(value: str) -> str:
@@ -705,11 +733,13 @@ class XAccTab(ctk.CTkFrame):
             "profile": "đã tạo" if installed else "chưa tạo",
             "cookie": "có" if (account.cookie or "").strip() else "—",
             "running": "▶" if installed and self.manager.is_running(account) else "",
-            "status": account.status or "—",
+            # Viec GAN NHAT (live / checkpoint / loi proxy / han che dang bai...), xem
+            # core/trang_thai.py. Chua co ban ghi nao thi ve status nhap tay nhu truoc.
+            "status": trang_thai_module.hien(account) or account.status or "—",
             "proxy": account.get_proxy().display(mask=not show) or "—",
             "note": (account.note or "").replace(chr(10), " ")[:120],
         }
-        return tuple(cells[key] for key, *_ in X_COLUMNS)
+        return tuple(cells[key] for key, *_ in self.COLUMNS)
 
     def selected(self) -> list[Account]:
         ids = set(self.tree.selection())
@@ -838,7 +868,7 @@ class XAccTab(ctk.CTkFrame):
                 if not self.manager.is_installed(a):
                     self.app._post(lambda a=a: self.app.set_status(f"X.com: tạo profile {a.id}..."))
                     self.manager.create(a)
-                self.manager.launch(a, url=X_START_URL)
+                self.manager.mo_tay(a, url=self.START_URL)   # tay: khong agent nao chay
                 self.store.mark_opened(a.id)
             self.app._post(lambda: self.app.set_status(f"X.com: đã mở {len(chon)} profile."))
         self._chay_nen(work)
@@ -886,13 +916,14 @@ class XAccTab(ctk.CTkFrame):
                         self.manager.create(a)
                     if self.manager.is_running(a):
                         self.manager.close(a, wait=3.0)
-                    ck = cookie_module.parse(a.cookie, default_domain=X_COOKIE_DOMAIN)
+                    ck = cookie_module.parse(a.cookie, default_domain=self.COOKIE_DOMAIN)
                     if not ck:
                         with khoa:
                             loi.append(f"{a.id}: không đọc được cookie nào")
                         return
                     cookie_module.write_to_profile(self.manager.profile_dir(a), ck)
-                    self.manager.launch(a, url=X_HOME_URL)
+                    # Mo cho nguoi dung xem -> khong agent nao chay (cookie da ghi xong roi).
+                    self.manager.mo_tay(a, url=self.HOME_URL)
                     with khoa:
                         self.store.mark_opened(a.id)
                         vao += 1
@@ -1244,7 +1275,7 @@ class XAccTab(ctk.CTkFrame):
         dlg = CookieDialog(parent, account, dang_co)
         # Hop thoai dung chung voi Facebook -> doi domain mac dinh sang X.
         dlg.domain_entry.delete(0, "end")
-        dlg.domain_entry.insert(0, X_COOKIE_DOMAIN)
+        dlg.domain_entry.insert(0, self.COOKIE_DOMAIN)
         result = dlg.show()
         if not result:
             return
@@ -1254,7 +1285,7 @@ class XAccTab(ctk.CTkFrame):
         if not result["apply"]:
             self.app.set_status(f"X.com: đã lưu cookie của {account.id}.")
             return
-        domain = result["domain"] or X_COOKIE_DOMAIN
+        domain = result["domain"] or self.COOKIE_DOMAIN
         replace = bool(result["replace"])
 
         def work():
@@ -1360,14 +1391,14 @@ class XAccTab(ctk.CTkFrame):
                 thieu += 1
                 continue
             try:
-                ck = cookie_module.parse(raw, default_domain=X_COOKIE_DOMAIN)
+                ck = cookie_module.parse(raw, default_domain=self.COOKIE_DOMAIN)
             except Exception as exc:           # noqa: BLE001 - cookie sai dinh dang
                 dong.append(f"{a.id}: không đọc được ({exc})")
                 thieu += 1
                 continue
             cua_x = [c for c in ck
-                     if any(c.host.lstrip(".").endswith(h) for h in X_COOKIE_HOSTS)]
-            co_auth = any(c.name == X_AUTH_COOKIE for c in cua_x)
+                     if any(c.host.lstrip(".").endswith(h) for h in self.COOKIE_HOSTS)]
+            co_auth = any(c.name == self.AUTH_COOKIE for c in cua_x)
             if co_auth:
                 du += 1
             else:
@@ -1462,7 +1493,7 @@ class XAccTab(ctk.CTkFrame):
             xoa = 0
             for a in lam:
                 profile = self.manager.profile_dir(a)
-                for ten in X_CACHE_DIRS:
+                for ten in self.CACHE_DIRS:
                     duong = os.path.join(profile, ten)
                     if os.path.isdir(duong):
                         shutil.rmtree(duong, ignore_errors=True)
@@ -1490,8 +1521,8 @@ class XAccTab(ctk.CTkFrame):
                 dang_mo.append(a.id)
             found = cookie_module.read_from_profile(self.manager.profile_dir(a))
             cua_x = [c for c in found
-                     if c.name and any(c.host.lstrip(".").endswith(h) for h in X_COOKIE_HOSTS)]
-            if not any(c.name == X_AUTH_COOKIE for c in cua_x):
+                     if c.name and any(c.host.lstrip(".").endswith(h) for h in self.COOKIE_HOSTS)]
+            if not any(c.name == self.AUTH_COOKIE for c in cua_x):
                 rong.append(a.id)
                 continue
             a.cookie = "; ".join(f"{c.name}={c.value}" for c in cua_x)
@@ -1535,15 +1566,15 @@ class XAccTab(ctk.CTkFrame):
 
     # ---- tien ich ------------------------------------------------------
     def _so_luong(self) -> int:
-        """So acc X chay CUNG LUC -- o "Luong" RIENG cua tab X (settings.x_threads, 1..8, mac dinh 2)."""
+        """So acc chay CUNG LUC -- o "Luong" RIENG cua tab (settings[THREADS_KEY], 1..8, mac dinh 2)."""
         try:
-            return max(1, min(8, int(getattr(self.app.settings, "x_threads", 2) or 2)))
+            return max(1, min(8, int(getattr(self.app.settings, self.THREADS_KEY, 2) or 2)))
         except (TypeError, ValueError, AttributeError):
             return 2
 
     def _set_threads(self, value: str) -> None:
         try:
-            self.app.settings.x_threads = max(1, min(8, int(value)))
+            setattr(self.app.settings, self.THREADS_KEY, max(1, min(8, int(value))))
             self.app.settings.save()
         except Exception:                      # noqa: BLE001 - luu loi thi van dung gia tri moi
             pass

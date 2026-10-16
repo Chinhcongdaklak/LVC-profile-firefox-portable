@@ -765,6 +765,42 @@ def xoa_mot_bai(post_id: str, token: str, *, cookie: str = "", delete: Optional[
     return True, "", h
 
 
+#: Mã lỗi "cần page token / không có quyền" khi LIỆT KÊ -> thử token kế (không phải lỗi mạng, hạn mức).
+MA_CAN_PAGE_TOKEN = {200, 210, 10, 100}
+
+
+def _token_liet_ke(page_id: str, token: str, bando: dict) -> list:
+    """Thứ tự token để LIỆT KÊ bài: page token CỦA ĐÚNG page -> token gốc -> page token các page khác.
+
+    Có page chỉ cho page token đọc bài ((#210) A page access token is required — gặp thật 10/10);
+    id "new Page experience" người dùng nhập có thể khác id trong /me/accounts nên vẫn thử token còn lại."""
+    ds = []
+    for t in [bando.get(str(page_id))] + [token] + list(bando.values()):
+        if t and t not in ds:
+            ds.append(t)
+    return ds
+
+
+def _liet_ke_thu_token(page_id: str, tokens: list, since: int, until: int, **kw) -> list:
+    """liet_ke_bai lần lượt với từng token; lỗi "cần page token" thì thử token kế, lỗi khác nêm ra."""
+    noi = kw.get("log") or (lambda _m: None)
+    loi_cuoi = None
+    for i, tok in enumerate(tokens):
+        try:
+            return liet_ke_bai(page_id, tok, since, until, **kw)
+        except TokenChet:
+            raise
+        except XoaBaiError as exc:
+            m = re.search(r"\((?:#)?(\d+)\)", str(exc))
+            code = int(m.group(1)) if m else 0
+            loi_cuoi = exc
+            if code in MA_CAN_PAGE_TOKEN and i + 1 < len(tokens):
+                noi(f"[{page_id}] token {i + 1}/{len(tokens)} không đọc được bài ({code}) — thử token kế")
+                continue
+            raise
+    raise loi_cuoi or XoaBaiError("không liệt kê được bài")
+
+
 def ban_do_page_token(token: str, *, cookie: str = "",
                       get: Optional[Callable] = None) -> dict:
     """{page_id: page_token} tất cả page mà token quản lý (từ /me/accounts). Rỗng nếu không có.
@@ -865,8 +901,9 @@ def chay_xoa(page_id: str, token: str, tu: str, den: str, loai: str = "tat_ca", 
         noi(f"[{page_id}] không thấy page token (token có quyền pages_manage_posts không?) — thử token hiện tại")
     try:
         # Xoa HET (tat_ca) thi khong can phan loai -> khoi lay attachments, nhanh hon.
-        bai = liet_ke_bai(page_id, token, since, until, cookie=cookie, get=get, log=noi,
-                          nen_dung=nen_dung, sleep=sleep, can_media=(loai != "tat_ca"))
+        bai = _liet_ke_thu_token(page_id, _token_liet_ke(page_id, token, bando), since, until,
+                                 cookie=cookie, get=get, log=noi, nen_dung=nen_dung, sleep=sleep,
+                                 can_media=(loai != "tat_ca"))
     except XoaBaiError as exc:
         kq["loi"] = str(exc)
         return kq
@@ -966,7 +1003,14 @@ def thong_ke_nam(page_id: str, token: str, *, cookie: str = "", get: Optional[Ca
     if not (token or "").strip():
         return {}, "Chưa có token."
     try:
-        bai = liet_ke_bai(page_id, token, 0, 0, cookie=cookie, get=get, log=log, nen_dung=nen_dung, sleep=sleep)
+        try:
+            bando = ban_do_page_token(token, cookie=cookie, get=get)
+        except TokenChet:
+            raise
+        except Exception:  # noqa: BLE001 — không có bản đồ thì vẫn thử token gốc
+            bando = {}
+        bai = _liet_ke_thu_token(page_id, _token_liet_ke(page_id, token, bando), 0, 0, cookie=cookie,
+                                 get=get, log=log, nen_dung=nen_dung, sleep=sleep)
     except XoaBaiError as exc:
         return {}, str(exc)
     return dem_theo_nam(bai), ""

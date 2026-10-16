@@ -402,7 +402,9 @@ def dang_nhap(manager, account, user: str, mat_khau: str, *,
 #: X phai qua cong nay: mo ipinfo -> cho IP ra ngoai KHAC IP may -> moi sang x.com.
 # /ip (chu thuan): /json bi trinh xem JSON cua Firefox thay trang -> agent khong chay.
 CONG_URL = "https://ipinfo.io/ip"
-CONG_TIMEOUT = 60.0
+#: Cho VPN noi toi da bao nhieu giay truoc khi bo cuoc. 60s QUA SAT: do that 06/10 co acc noi
+#: xong o giay thu 71 (ezlol8530, Seattle) -- suyt bi coi la "VPN chua noi" va bo ca luot.
+CONG_TIMEOUT = 150.0
 _IP_MAY: dict = {"ip": "", "at": 0.0}
 
 
@@ -480,6 +482,14 @@ def mo_qua_cong_vpn(manager, account, url_tiep: str, *, timeout: float = CONG_TI
             if kq:
                 break
             time.sleep(0.5)
+    except BaseException:
+        # Loi bat ngo trong khi cong dang mo -> DONG trinh duyet roi hay nem tiep,
+        # khong thi Firefox dung mo mai (nguoi goi chua kip vao try/finally cua minh).
+        try:
+            manager.close(account, wait=8.0)
+        except OSError:
+            pass
+        raise
     finally:
         _clear(profile)          # xong cong -> bo lenh, tai lai ipinfo khong bi chuyen trang nua
     if danh_gia_cong(states) == "ok":

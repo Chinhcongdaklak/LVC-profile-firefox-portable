@@ -12,6 +12,7 @@ import ipaddress
 import re
 import time
 
+from core import trang_thai as tt
 from core.modun import KetQua, Modun, NguCanh, dang_ky
 from core.proxy_relay import test_proxy
 
@@ -70,6 +71,9 @@ def chay(nc: NguCanh, accs: list, tham_so: dict) -> KetQua:
         ok, detail = test_proxy(a.get_proxy())
         a.proxy_status = "Live" if ok else "Die"
         a.proxy_checked = time.strftime("%Y-%m-%d %H:%M")
+        if not ok:
+            # Proxy chet -> cot "Trạng thái" phai noi ro, dung de nguoi dung tuong acc hong.
+            tt.ghi(a, tt.LOI_PROXY, detail, "check proxy")
         if ok:
             kq.them_ok(a.id)
             ip = extract_exit_ip(detail)

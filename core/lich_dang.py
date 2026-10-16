@@ -303,3 +303,81 @@ def doc_gio(text: str, goc: Optional[datetime] = None) -> datetime:
             return d.replace(year=goc.year)
         return d
     raise LichError(f"Giờ không hiểu: '{text}' (dùng 'HH:MM' hoặc 'dd/mm HH:MM').")
+
+
+# ---- MUI GIO DONG HO TRINH DUYET CUA ACC DANG BAI --------------------------
+#: Nguon suy ra mui gio dong ho trinh duyet cua acc.
+NGUON_TAY = "tay"        # nguoi dung tu chon trong o
+NGUON_PROXY = "proxy"    # khop theo proxy cua acc (Account.identity, do bang geoip)
+NGUON_GEOIP = "geoip"    # do TRUC TIEP tu proxy luc dang (chua tung khop mui gio)
+NGUON_MAY = "may"        # khong co gi -> dong ho cua MAY
+
+#: Gia tri o chon nghia la "de tool tu quyet dinh".
+TU_DONG = ""
+NHAN_TU_DONG = "Tự động (theo proxy của acc)"
+
+
+def mui_gio_acc(account=None, chon_tay: str = "", co_shim: bool = True,
+                now: Optional[datetime] = None, do_proxy=None) -> dict:
+    """Mui gio ma DONG HO TRINH DUYET cua acc dang chay theo -> {iana, nguon, nhan}.
+
+    Business Suite doc gio hen theo dong ho CUA TRINH DUYET. Tool da khop mui gio
+    profile theo PROXY cua acc (``Account.identity.timezone`` + tz shim tiem vao
+    trang), nen acc chay proxy My thi trang DA o gio My -- luc do khong duoc quy doi
+    ve gio may nua (dung la loi nguoi dung bao 07/10).
+
+    Thu tu uu tien: nguoi dung CHON TAY -> mui gio DA KHOP theo proxy (identity) ->
+    DO TRUC TIEP tu proxy (``do_proxy(account)`` -> ten IANA, nguoi goi tiem vao; UI
+    KHONG truyen vi se goi mang moi lan ve lai) -> dong ho MAY.
+    ``iana`` rong = dung dong ho may. ``co_shim`` = Settings.use_tz_shim (tat shim thi
+    trang lay mui gio cua MAY du acc co identity). THUAN khi khong truyen ``do_proxy``.
+    """
+    tay = (chon_tay or "").strip()
+    if tay and tay != NHAN_TU_DONG:
+        iana = iana_tu_nhan(tay)
+        return {"iana": iana, "nguon": NGUON_TAY,
+                "nhan": f"{iana} ({_chu_offset(iana, now)}) — bạn chọn tay"}
+    tz = ""
+    try:
+        tz = (account.get_identity().timezone or "").strip() if account is not None else ""
+    except Exception:  # noqa: BLE001
+        tz = ""
+    if tz and co_shim:
+        return {"iana": tz, "nguon": NGUON_PROXY,
+                "nhan": f"{tz} ({_chu_offset(tz, now)}) — theo proxy của acc"}
+    if callable(do_proxy) and co_shim:
+        try:
+            tz2 = (do_proxy(account) or "").strip()
+        except Exception:  # noqa: BLE001
+            tz2 = ""
+        if tz2:
+            return {"iana": tz2, "nguon": NGUON_GEOIP,
+                    "nhan": f"{tz2} ({_chu_offset(tz2, now)}) — dò từ proxy của acc"}
+    vi_sao = "acc chưa khớp múi giờ theo proxy"
+    if tz and not co_shim:
+        vi_sao = f"acc khớp {tz} nhưng Cài đặt đang TẮT giả lập múi giờ"
+    return {"iana": "", "nguon": NGUON_MAY, "nhan": f"giờ máy — {vi_sao}"}
+
+
+def do_mui_gio_proxy(account) -> str:
+    """Mui gio theo PROXY cua acc, do bang geoip. "" neu khong co proxy / khong do duoc.
+
+    Goi MANG (toi ~12s) -> chi dung luc DANG BAI, khong goi trong luc ve giao dien.
+    Cache theo acc.id trong tien trinh (moi acc goi mang MOT lan). UI khong goi geoip
+    truc tiep (cong kien truc md15), nen ham nay nam o core.
+    """
+    if account is None:
+        return ""
+    kho = do_mui_gio_proxy.__dict__.setdefault("_cache", {})
+    if account.id in kho:
+        return kho[account.id]
+    tz = ""
+    try:
+        px = account.get_proxy()
+        if px.enabled:
+            from . import geoip
+            tz = (geoip.lookup(px).timezone or "").strip()
+    except Exception:  # noqa: BLE001  (mang hong / proxy chet -> ve gio may, khong nem)
+        tz = ""
+    kho[account.id] = tz
+    return tz

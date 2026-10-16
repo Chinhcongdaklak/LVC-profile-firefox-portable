@@ -56,10 +56,28 @@ def _executable_path(pid: int) -> str:
         kernel32.CloseHandle(handle)
 
 
+#: So lan thu lai khi chup anh tien trinh that bai. CreateToolhelp32Snapshot co the
+#: tra ve loi THOANG QUA (ERROR_BAD_LENGTH) khi danh sach tien trinh dang doi -- may
+#: chay nhieu Firefox thi gap luon. Khong thu lai thi ham tra ve RONG, nguoi goi tuong
+#: "khong con tien trinh nao" -> bao oan "trinh duyet bi dong giua chung" (loi that 05/10).
+CHUP_THU_LAI = 3
+
+
+def _chup_tien_trinh():
+    """Anh chup danh sach tien trinh, thu lai vai lan khi Windows tu choi thoang qua."""
+    for lan in range(CHUP_THU_LAI):
+        snapshot = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+        if snapshot != INVALID_HANDLE_VALUE:
+            return snapshot
+        if lan + 1 < CHUP_THU_LAI:
+            time.sleep(0.05)
+    return None
+
+
 def iter_processes(name_filter: str = "") -> Iterator[ProcessInfo]:
     """Duyet tien trinh dang chay. ``name_filter`` so sanh khong phan biet hoa thuong."""
-    snapshot = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
-    if snapshot == INVALID_HANDLE_VALUE:
+    snapshot = _chup_tien_trinh()
+    if snapshot is None:
         return
     try:
         entry = PROCESSENTRY32W()
@@ -132,3 +150,36 @@ def terminate_under(directory: str, name_filter: str = "") -> int:
         if terminate(info.pid):
             killed += 1
     return killed
+
+
+#: So lan doc LIEN TIEP khong thay tien trinh nao thi moi ket luan "trinh duyet da dong".
+#: MOT lan doc hut (anh chup loi thoang qua / OpenProcess bi tu choi khi may dang tai)
+#: tung du de bao oan va huy ca luot dang bai.
+BIEN_MAT_LAN = 3
+
+
+class CanhTrinhDuyet:
+    """Canh tien trinh Firefox cua MOT profile trong luc dang bai.
+
+    Dung trong vong cho cua cac driver (dang bai, tuong tac): goi ``da_dong()``
+    moi nhip. Chi tra True khi TRUOC DO da thay trinh duyet chay va sau do doc
+    ``lan`` lan LIEN TIEP deu khong thay -- de khong huy luot dang vi mot lan quet hut.
+    """
+
+    def __init__(self, app_dir: str, lan: int = BIEN_MAT_LAN) -> None:
+        self.app_dir = app_dir or ""
+        self.lan = max(1, int(lan))
+        self.da_thay = False
+        self.vang = 0
+
+    def da_dong(self) -> bool:
+        if not self.app_dir:
+            return False
+        if find_under(self.app_dir, use_cache=False):
+            self.da_thay = True
+            self.vang = 0
+            return False
+        if not self.da_thay:
+            return False
+        self.vang += 1
+        return self.vang >= self.lan

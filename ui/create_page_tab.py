@@ -862,14 +862,18 @@ class CreatePageTab(ctk.CTkFrame):
         except tk.TclError:
             return
 
-    def _cap_nhat_acc_run(self, acc_id: str, tao_them: bool = False, checkpoint: bool = False) -> None:
+    def _cap_nhat_acc_run(self, acc_id: str, tao_them: bool = False, checkpoint: bool = False,
+                          bm_han_che: bool = False) -> None:
         """Cập nhật số page tạo được / trạng thái của 1 acc khi đang chạy (gọi qua app._post)."""
         if tao_them:
             self._acc_page[acc_id] = self._acc_page.get(acc_id, 0) + 1
-            if self._acc_tt.get(acc_id) != "Checkpoint":
+            if self._acc_tt.get(acc_id) not in ("Checkpoint", "BM hạn chế"):
                 self._acc_tt[acc_id] = "Live"
         if checkpoint:
             self._acc_tt[acc_id] = "Checkpoint"
+        if bm_han_che:
+            # Trang thai cua BM (khong phai cua acc) — nhung hien o dong acc vi moi acc mot BM.
+            self._acc_tt[acc_id] = "BM hạn chế"
         self._show_accounts()
 
     # ------------------------------------------------------------------ anh
@@ -1624,9 +1628,17 @@ class CreatePageTab(ctk.CTkFrame):
             elif loai == "hong":
                 self._log(f"[{d['acc']}] ⏸ {d['toi_da']} lần không tạo được — chờ vòng sau "
                           f"(vòng hỏng {d.get('vong_hong', d.get('lan'))}).")
+            elif loai == "bm_han_che":
+                # BM bi Facebook han che: loi o BM, KHONG phai o acc -> bao ro, hien trang thai,
+                # va KHONG phat acc nghi 3 ngay (doi ID BM khac la chay lai duoc ngay).
+                self._log(f"[{d['acc']}] ⛔ BM BỊ HẠN CHẾ — {d.get('ly_do') or ''}\n"
+                          "   → Facebook không cho dùng BM này để tạo tài sản. "
+                          "Đổi ID BM khác rồi bấm Tạo lại.")
+                self.app._post(lambda a=d["acc"]: self._cap_nhat_acc_run(a, bm_han_che=True))
             elif loai == "loai_acc":
                 self._log(f"[{d['acc']}] ⛔ LOẠI acc — {d['ly_do']}")
-                if not acc_nghi.dang_dung(self._acc_nghi, d["acc"]):
+                ly = (d.get("ly_do") or "").lower()
+                if "hạn chế" not in ly and not acc_nghi.dang_dung(self._acc_nghi, d["acc"]):
                     self._dung_acc_nghi(d["acc"], d.get("ly_do") or "loại acc")
                 if any(k in (d.get("ly_do") or "").lower() for k in ("khoá", "khoa", "checkpoint")):
                     self.app._post(lambda a=d["acc"]: self._cap_nhat_acc_run(a, checkpoint=True))
@@ -1682,7 +1694,15 @@ class CreatePageTab(ctk.CTkFrame):
             self.app._post(lambda a=acc_id: self._cap_nhat_acc_run(a, tao_them=True))
             return
         loi, ghi = kq.get("loi"), kq.get("ghi_chu") or ""
-        if loi == page_batch.LOI_KHOA:
+        if loi == page_batch.LOI_BM_HAN_CHE:
+            # BM bi Facebook han che -> KHONG phai loi acc/ten: dung acc do lai, bao ro de
+            # nguoi dung doi BM khac (yeu cau nguoi dung 05/10).
+            self._log(f"⛔ BM BỊ HẠN CHẾ (acc {acc_id}): {ghi}\n"
+                      "   → Facebook không cho dùng BM này để tạo tài sản. Đổi ID BM khác "
+                      "rồi bấm Tạo lại.")
+            self.app._post(lambda a=acc_id: self._cap_nhat_acc_run(a, bm_han_che=True))
+            tt = f"⛔ BM bị hạn chế ({ghi})"
+        elif loi == page_batch.LOI_KHOA:
             self.app._post(lambda a=acc_id: self._cap_nhat_acc_run(a, checkpoint=True))
             tt = f"✖ acc bị khoá/checkpoint ({ghi}) — bỏ tên"
         elif loi == page_batch.LOI_NHAP_LIEU:

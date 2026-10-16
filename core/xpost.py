@@ -31,18 +31,26 @@ from .autoup import CHECKPOINT_MARK, GIOI_HAN_MARK, LOGOUT_MARK, STUCK_MARK, VID
 
 #: Loi cong VPN (acc co NordVPN ma VPN chua noi) -- khong dang bang IP that.
 VPN_MARK = "VPN CHƯA NỐI"
+#: Agent bao khong tim thay nut lich tren /home -> thu lai tren /compose/post.
+KHONG_THAY_NUT_LICH = "không thấy nút lịch"
 
 CMD_NAME = "qlfp-xpost.json"
 RESULT_NAME = "qlfp-xpost-result.json"
 X_HOME_URL = "https://x.com/home"
+X_COMPOSE_URL = "https://x.com/compose/post"
 
 #: Trang thai KET THUC ma agent co the bao (moi cai dung mot lan).
-XONG = ("post-done", "publish-timeout", "dry-done")
-HONG = ("post-error", "no-composer", "file-error", "upload-stuck", "text-error", "media-rejected")
+XONG = ("post-done", "scheduled-done", "publish-timeout", "dry-done")
+HONG = ("post-error", "no-composer", "file-error", "upload-stuck", "text-error", "media-rejected",
+        "schedule-failed")
 ACC_LOI = ("logged-out", "x-locked", "daily-limit")
 
 #: Trinh duyet bi dong giua chung (nguoi dung tat / crash) -- xem fbbusiness.
 BROWSER_GONE = "browser-gone"
+#: Cho video tai len toi da bao nhieu phut (khop CHO_UPLOAD_TOI_DA trong xpost_agent.js).
+CHO_UPLOAD_PHUT = 30
+#: Tu bao nhieu MB thi coi la video NANG -> ghi canh bao vao nhat ky ngay tu dau.
+NANG_MB = 80
 
 
 # --- ham THUAN --------------------------------------------------------------
@@ -51,6 +59,25 @@ def mime_of(path: str) -> str:
     """Kieu MIME cua file media, doan theo duoi ten."""
     mime, _ = mimetypes.guess_type(path or "")
     return mime or "application/octet-stream"
+
+
+def tach_lich_x(lich: Optional[dict]) -> Optional[dict]:
+    """``{"ngay":"dd/mm/yyyy","gio":"HH:MM"}`` (GIỜ MÁY) -> dict cho hộp lịch X:
+    ``{thang(1-12), ngay(1-31), nam, gio12(1-12), phut(0-59), buoi("AM"/"PM"), nhan}``.
+    X hiện đồng hồ 12 giờ + AM/PM; giờ nhập hiểu theo múi giờ trình duyệt = giờ máy. THUẦN."""
+    if not lich:
+        return None
+    try:
+        dd, mm, yyyy = [int(x) for x in str(lich.get("ngay", "")).split("/")]
+        hh, mi = [int(x) for x in str(lich.get("gio", "")).split(":")]
+    except (ValueError, AttributeError):
+        return None
+    buoi = "AM" if hh < 12 else "PM"
+    gio12 = hh % 12
+    if gio12 == 0:
+        gio12 = 12
+    return {"thang": mm, "ngay": dd, "nam": yyyy, "gio12": gio12, "phut": mi, "buoi": buoi,
+            "nhan": f"{dd:02d}/{mm:02d}/{yyyy} {gio12}:{mi:02d} {buoi}"}
 
 
 def ket_luan(states: set, het_gio: bool) -> Optional[str]:
@@ -73,7 +100,8 @@ def _clear(profile_dir: str) -> None:
             pass
 
 
-def _put_cmd(profile_dir: str, text: str, path: str, thu: bool = False) -> None:
+def _put_cmd(profile_dir: str, text: str, path: str, thu: bool = False,
+             lich: Optional[dict] = None) -> None:
     # Firefox (nsIFile) chi nhan duong dan Windows dau "\\": "C:/a/b.mp4" -> NS_ERROR_FILE_UNRECOGNIZED_PATH.
     path = os.path.normpath(path) if path else ""
     cmd = {
@@ -83,10 +111,13 @@ def _put_cmd(profile_dir: str, text: str, path: str, thu: bool = False) -> None:
         "name": os.path.basename(path) if path else "",
         "mime": mime_of(path) if path else "",
         "delay": 1200,
-        # Agent tu dung sau 22 phut: 15 phut cho video tai len + mo trang + cho xac nhan dang.
-        "timeout": 22 * 60 * 1000,
+        # Agent tu dung sau 38 phut: 30 phut cho video tai len (nguoi dung chot 06/10)
+        # + mo trang + cho xac nhan dang.
+        "timeout": 38 * 60 * 1000,
         # Che do THU: dien chu (+ gan video neu co, doc % tai len, cho nut Post bat), KHONG bam Dang.
         "dry": bool(thu),
+        # Dat lich: None = dang ngay; co -> mo nut lich, dien ngay/gio, Confirm, bam Schedule.
+        "lich": tach_lich_x(lich),
     }
     os.makedirs(profile_dir, exist_ok=True)
     with open(os.path.join(profile_dir, CMD_NAME), "w", encoding="utf-8") as fh:
@@ -109,8 +140,8 @@ def _app_dir(manager, account) -> str:
 
 
 def upload(manager, account, path: str, caption: str, *,
-           timeout: float = 23 * 60.0, thu: bool = False,
-           log: Optional[Callable[[str], None]] = None) -> str:
+           timeout: float = 40 * 60.0, thu: bool = False, lich: Optional[dict] = None,
+           url: str = "", log: Optional[Callable[[str], None]] = None) -> str:
     """Dang MOT bai len tuong acc X. Tra chuoi mo ta; hong nem UploadError.
 
     ``path`` la file media (video/anh) hoac file .txt (bai chi chu -- khi do
@@ -133,24 +164,39 @@ def upload(manager, account, path: str, caption: str, *,
     manager.close(account, wait=8.0)
     manager.configure(account)          # trien khai/lam moi agent vao profile
     _clear(profile)
-    _put_cmd(profile, text, media, thu=thu)
+    _put_cmd(profile, text, media, thu=thu, lich=lich)
 
+    # Noi ro DUNG LUONG: mang yeu + video nang la nguyen nhan so mot cua "cho mai khong len".
+    co = ""
+    if media:
+        try:
+            mb = os.path.getsize(media) / (1024 * 1024)
+            co = f", {mb:.0f} MB" + ("  ⚠ nặng — mạng yếu sẽ rất lâu" if mb >= NANG_MB else "")
+        except OSError:
+            co = ""
     noi(f"[{account.id}] mở Firefox → x.com → đăng bài"
-        + (f" ({os.path.basename(media)})" if media else " (chỉ chữ)"))
+        + (f" ({os.path.basename(media)}{co})" if media else " (chỉ chữ)"))
     # Kiem VPN TRUOC (acc co NordVPN): chua noi thi KHONG dang bai bang IP that.
-    cong = nordvpn.mo_qua_cong_vpn(manager, account, X_HOME_URL, log=noi)
+    # DAT LICH mo /home: o day hop lich la MODAL tren composer inline -> GIU nguyen chu + video.
+    # /compose/post co man lich CA TRANG, Confirm xong X dung composer MOI -> mat chu/video/ca lich
+    # (da do that 05/10 tren 3 acc). Chi dung /compose/post lam duong lui khi /home khong co nut lich.
+    trang = url or X_HOME_URL
+    cong = nordvpn.mo_qua_cong_vpn(manager, account, trang, log=noi)
     if not cong["ok"]:
         _clear(profile)
         raise fbupload.UploadError(f"{VPN_MARK}: {cong['detail']}")
 
-    app_dir = _app_dir(manager, account)
+    # TU DAY TRO DI TRINH DUYET DA MO -> moi thu phai nam trong try/finally, khong thi
+    # mot loi bat ngo (vd goi ham chua co trong ban core cu) la bo roi Firefox mo mai
+    # (loi that 06/10: 5 acc X mo browser 40 phut vi dong tao canh canh nam ngoai try).
     chi_tiet: dict = {}
     states: set = set()
     _seen: set = set()
-    da_thay_ff = False
-    deadline = time.time() + timeout
     chot = None
     try:
+        app_dir = _app_dir(manager, account)
+        canh_ff = procutil.CanhTrinhDuyet(app_dir)
+        deadline = time.time() + timeout
         while time.time() < deadline:
             r = _read_result(profile)
             if r:
@@ -160,7 +206,7 @@ def upload(manager, account, path: str, caption: str, *,
                     key = "seen|" + det
                     if key not in _seen:
                         _seen.add(key)
-                        noi(f"[{account.id}] seen: {det[:150]}")
+                        noi(f"[{account.id}] seen: {det[:400]}")
                 elif st == "upload-progress":
                     # % video X dang tai len: bao MOI LAN doi (mang yeu co the mat nhieu phut).
                     if det and det != chi_tiet.get(st):
@@ -169,18 +215,16 @@ def upload(manager, account, path: str, caption: str, *,
                 elif st and st not in states:
                     states.add(st)
                     chi_tiet[st] = det
-                    noi(f"[{account.id}] {st}" + (f": {det[:80]}" if det else ""))
+                    noi(f"[{account.id}] {st}" + (f": {det[:400]}" if det else ""))
             chot = ket_luan(states, het_gio=False)
             if chot:
                 break
             # Canh trinh duyet bi dong giua chung -- khong ngoi cho het timeout.
-            if app_dir:
-                dang_chay = bool(procutil.find_under(app_dir, use_cache=False))
-                if dang_chay:
-                    da_thay_ff = True
-                elif da_thay_ff:
-                    chot = BROWSER_GONE
-                    break
+            # Phai VANG MAT nhieu nhip lien tiep moi ket luan: mot lan quet hut (anh
+            # chup tien trinh loi thoang qua) tung huy oan ca luot dang (loi that 05/10).
+            if canh_ff.da_dong():
+                chot = BROWSER_GONE
+                break
             time.sleep(0.8)
         if chot is None:
             chot = ket_luan(states, het_gio=True)
@@ -196,6 +240,19 @@ def upload(manager, account, path: str, caption: str, *,
         return chi_tiet.get("dry-done", "")          # che do THU: JSON {lan, lan_dien, noi_dung}
     if chot == "post-done":
         return f"đã đăng {ten} lên tường @{account.id}"
+    if chot == "scheduled-done":
+        hen = (tach_lich_x(lich) or {}).get("nhan", "")
+        return f"đã đặt lịch {ten} @{account.id}" + (f" lúc {hen} (giờ máy)" if hen else "")
+    if chot == "schedule-failed":
+        ly_do = chi_tiet.get("schedule-failed", "")
+        # Acc khong co nut lich inline tren /home -> thu MOT lan tren composer toan trang.
+        if KHONG_THAY_NUT_LICH in ly_do and not url and not thu:
+            noi(f"[{account.id}] /home không có nút lịch — thử lại trên /compose/post")
+            return upload(manager, account, path, caption, timeout=timeout, thu=thu, lich=lich,
+                          url=X_COMPOSE_URL, log=log)
+        raise fbupload.UploadError(
+            f"Không đặt lịch được {ten} trên X — {ly_do[:150]} "
+            "(xem nhật ký 'seen' để chỉnh selector hộp lịch).")
     if chot == "publish-timeout":
         # DA bam Dang -- coi nhu len roi (nhu Facebook), thu lai la dang trung.
         return f"đã bấm Đăng {ten} (không thấy xác nhận — coi như đã lên)"
@@ -219,7 +276,7 @@ def upload(manager, account, path: str, caption: str, *,
     if chot == "upload-stuck":
         pt = chi_tiet.get("upload-progress", "")
         raise fbupload.UploadError(
-            f"{STUCK_MARK} — chờ 15 phút nút Post vẫn chưa bật (mạng yếu / video xử lý quá lâu)"
+            f"{STUCK_MARK} — chờ {CHO_UPLOAD_PHUT} phút nút Post vẫn chưa bật (mạng yếu / video xử lý quá lâu)"
             + (f", lần cuối {pt}" if pt else "") + ".")
     if chot == BROWSER_GONE:
         raise fbupload.UploadError("Trình duyệt bị đóng giữa chừng khi đang đăng.")

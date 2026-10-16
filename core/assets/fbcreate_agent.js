@@ -834,6 +834,28 @@ if (typeof sendAsyncMessage === "function") {
     return /chắc chắn muốn tiếp tục|are you sure|yêu cầu của bạn|your request/i.test(t);
   }
   /** Hop "Không thể tạo Trang" / "Unable to add Facebook Page" (vd: trung ten page da quan ly) -> chu loi, hoac "". */
+  /** BM BI HAN CHE: trang BM hien "Bạn không thể dùng hồ sơ doanh nghiệp này để quảng cáo"
+   *  (anh nguoi dung 05/10, acc 61581758306491 / BM Hồ Trường Shop — da doc duoc chu that).
+   *  Tra CAU FB BAO (rong = BM binh thuong). Cung cach nhan dien voi fbbm_agent.bmHanChe. */
+  function bmBiHanChe(doc) {
+    var t = "";
+    try {
+      var g = doc.querySelector('[role="main"]') || doc.body;
+      t = ((g && g.innerText) || "").replace(/\s+/g, " ");
+    } catch (e) { return ""; }
+    var re = [
+      /Bạn không thể (dùng|sử dụng)[^.]{0,80}(doanh nghiệp|hồ sơ doanh nghiệp)[^.]{0,80}(quảng cáo)[^.]{0,20}\.?/i,
+      /You can'?t use this business (portfolio|account)[^.]{0,60}\.?/i,
+      /You can'?t use[^.]{0,60}to (advertise|create ads)[^.]{0,20}\.?/i,
+      /(doanh nghiệp|business portfolio)[^.]{0,40}(bị hạn chế|bị vô hiệu hoá|is restricted|has been restricted|is disabled)[^.]{0,30}\.?/i,
+    ];
+    for (var i = 0; i < re.length; i++) {
+      var m = re[i].exec(t);
+      if (m) { return m[0].trim().slice(0, 160); }
+    }
+    return "";
+  }
+
   function loiTaoBm(doc) {
     try {
       var d = dialogEl(doc);
@@ -890,6 +912,13 @@ if (typeof sendAsyncMessage === "function") {
           + " form=" + daForm + " ten=" + daTen + " hm=" + daHm + " chonhm=" + daChonHm
           + " next=" + daNext + " tich=" + daTich + " tao=" + daTao);
       }
+      // BM BI HAN CHE -> KHONG tao page duoc, DUNG NGAY (nguoi dung chot 05/10).
+      // Kiem truoc khi bam gi: bam Thêm tren BM han che chi phi thoi gian + de dinh checkpoint.
+      if (!daForm) {
+        var hc = bmBiHanChe(doc);
+        if (hc) { return xong("bm-restricted", hc); }
+      }
+
       var r = bmRoot(doc);
       report("bm-step", "B" + buoc + " them=" + daThem + " menu=" + daMenuTao + " form=" + daForm
         + " ten=" + daTen + " hm=" + daHm + " chonhm=" + daChonHm + " next=" + daNext

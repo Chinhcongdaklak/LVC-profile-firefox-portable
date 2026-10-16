@@ -86,6 +86,16 @@ class PagePickerDialog(BaseDialog):
         self.destroy()
 
 
+def _gio_ngan(luc: str) -> str:
+    """"2026-10-08 09:01:33" -> "09:01" (hom nay) hoac "08/10 09:01" (ngay khac)."""
+    from datetime import datetime as _dt
+    try:
+        t = _dt.strptime(luc, "%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError):
+        return ""
+    return t.strftime("%H:%M") if t.date() == _dt.now().date() else t.strftime("%d/%m %H:%M")
+
+
 class JobPanel(ctk.CTkFrame):
     """Noi dung mot tab con: mot fanpage, mot thu muc, mot lich rieng."""
 
@@ -636,9 +646,23 @@ class JobPanel(ctk.CTkFrame):
                 text=f"điền giờ {tay} vào Business Suite (bạn chọn tay)", text_color="gray55")
             return
         kho = self.acc_store
+        da_do = {}
+        try:
+            da_do = self.auto.mui_gio_da_do()
+        except Exception:  # noqa: BLE001
+            da_do = {}
         nhom: dict = {}
         for ma in (self.auto.config.account_ids or []):
             acc = kho.get(ma) if kho is not None else None
+            # MUI GIO TOOL DA LAY DUOC luc dang bai — uu tien hien cai nay, vi do la mui gio
+            # THAT SU dung de dien vao hop lich (yeu cau nguoi dung 08/10). Chua dang lan nao
+            # thi doan truoc nhu cu.
+            ban = da_do.get(ma) or {}
+            if ban.get("nhan"):
+                gio = _gio_ngan(ban.get("luc", ""))
+                nhom.setdefault(f"đã lấy từ acc: {ban['nhan']}"
+                                + (f" (lúc {gio})" if gio else ""), []).append(ma)
+                continue
             # KHONG truyen do_proxy: dong goi y ve lai moi ~3 giay, goi geoip o day la
             # dap mang. Acc chua khop thi noi ro se DO LUC DANG.
             r = ld.mui_gio_acc(acc, "", co_shim=co_shim)
@@ -1715,7 +1739,7 @@ class JobPanel(ctk.CTkFrame):
                 self.app._post(self._sync_page_entry)
             url = autoup_module.business_url(asset)
             try:
-                self.profiles.launch(acc, url=url)
+                self.profiles.mo_tay(acc, url=url)      # tay: khong agent nao chay
             except Exception as exc:
                 self.app._post(lambda e=exc: messagebox.showerror("Mở Business", str(e),
                                                                   parent=self.app))
@@ -1735,9 +1759,8 @@ class JobPanel(ctk.CTkFrame):
 
         def work():
             try:
-                if not self.profiles.is_installed(acc):
-                    self.profiles.create(acc)
-                self.profiles.launch(acc, url=self.trang_nen or "https://x.com/home")
+                # Mo cho nguoi dung xem/thao tac TAY -> khong agent nao duoc chay.
+                self.profiles.mo_tay(acc, url=self.trang_nen or "https://x.com/home")
             except Exception as exc:  # noqa: BLE001
                 self.app._post(lambda e=exc: messagebox.showerror(
                     ten, str(e), parent=self.app))
@@ -1876,7 +1899,7 @@ class JobPanel(ctk.CTkFrame):
 
         def work():
             try:
-                self.profiles.launch(
+                self.profiles.mo_tay(                      # tay: khong agent nao chay
                     acc, url=url,
                     on_status=lambda m: self.app._post(lambda t=m: self.app.set_status(t)))
             except Exception as exc:
@@ -1907,7 +1930,7 @@ class JobPanel(ctk.CTkFrame):
 
         def work():
             try:
-                self.profiles.launch(acc, url=url,
+                self.profiles.mo_tay(acc, url=url,       # tay: khong agent nao chay
                                      on_status=lambda m: self.app._post(lambda t=m: self.app.set_status(t)))
             except Exception as exc:
                 self.app._post(lambda e=exc: messagebox.showerror("Mở nhóm", str(e),
@@ -2185,6 +2208,12 @@ class JobPanel(ctk.CTkFrame):
         mat = self.auto.thu_muc_mat()
         if mat:
             return f"⚠ Thư mục video KHÔNG TỒN TẠI: {mat} — chọn lại thư mục"
+        if cfg.is_lich and self.auto.chua_toi_gio_bat_dau():
+            # Noi RO vi sao chua mo trinh duyet: truoc day dong ho hien 00:00 ma khong
+            # co loi gi -> nguoi dung tuong tool hong (bao 08/10, lan thu hai).
+            phut = (self.auto.giay_toi_gio_bat_dau() + 59) // 60
+            return (f"⏳ Chưa tới giờ bắt đầu chạy {cfg.gio_bat_dau} — còn {phut} phút "
+                    "mới mở trình duyệt đặt lịch")
         if self.platform == "x":
             so_video = (len(fbupload.find_by_kind(cfg.folder, self.auto.effective_kind()))
                         if cfg.folder else 0)
@@ -2194,6 +2223,11 @@ class JobPanel(ctk.CTkFrame):
             phan = [f"{so_video} video trong thư mục"]
         if self.auto.busy:
             phan.append("đang đăng...")
+        elif so_video <= 0 and cfg.is_lich and self.auto.lich_con_khung():
+            # HET VIDEO ma khung van con (tich "Đăng xong xoá video" nen dang het la thu muc
+            # rong): noi RO cho nguoi dung biet khong phai tool hong (bao 08/10). Khung
+            # KHONG mat — tha video moi vao la dang tiep.
+            phan.append("HẾT VIDEO — thả video mới vào thư mục, khung còn lại sẽ tự đăng tiếp")
         elif cfg.is_lich and not self.auto.lich_con_khung():
             # Het khung hom nay -> KHONG hen "bai ke tiep" nua, cho sang ngay mai.
             phan.append("xong hôm nay — chờ ngày mai")
@@ -3242,7 +3276,7 @@ class AutoUpTabs(ctk.CTkFrame):
     """
 
     def __init__(self, parent, app, *, manager=None, acc_store=None, profiles=None,
-                 kinds=("page", "lich")):
+                 kinds=("page", "lich"), nhom_an: str = ""):
         super().__init__(parent, fg_color="transparent")
         self.app = app
         self.manager = manager or app.autoup
@@ -3260,6 +3294,12 @@ class AutoUpTabs(ctk.CTkFrame):
                       command=self.doi_ten_tab).pack(side="left", padx=6)
         ctk.CTkButton(thanh, text="🗑 Xoá tab", width=100, fg_color="#a33",
                       command=self.xoa_tab).pack(side="left")
+        # Cong tac AN TRINH DUYET cua tab nay (nguoi dung 14/10: canh nut Xoa tab).
+        self.cong_tac_an = None
+        if nhom_an:
+            from .an_trinh_duyet import CongTacAn
+            self.cong_tac_an = CongTacAn(thanh, app, nhom_an)
+            self.cong_tac_an.pack(side="left", padx=(12, 0))
         ctk.CTkLabel(thanh, text="· mỗi tab có danh sách trang riêng; hai tab mặc định "
                                  "không xoá được",
                      text_color="gray60").pack(side="left", padx=10)

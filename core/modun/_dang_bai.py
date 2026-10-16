@@ -52,6 +52,9 @@ def thao_tac_job(nc: NguCanh, tham_so: dict, kind) -> KetQua:
     try:
         if hanh_dong == "bat":
             cfg.enabled = True
+            # Xoa co dung + quen cac moc hong truoc (job.start() lam) TRUOC khi save,
+            # de so luu xuong dia cung sach: bat lai la mot co hoi moi tron ven.
+            job.start()
             job.save()
             if cfg.schedule_mode == "delay":
                 job.run_delay_now()
@@ -59,7 +62,6 @@ def thao_tac_job(nc: NguCanh, tham_so: dict, kind) -> KetQua:
             else:
                 job.skip_past()
                 kq.ghi_chu = "đã bật — chờ đúng mốc giờ mới đăng"
-            job.start()
         elif hanh_dong == "tat":
             cfg.enabled = False
             job.save()

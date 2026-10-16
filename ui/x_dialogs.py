@@ -195,16 +195,28 @@ class XBulkImportDialog(BaseDialog):
     SO_COT = 8
     SEP_NHAN = {"|": "|", "\t": "Tab", ";": ";", ",": ",", " ": "Space"}
 
+    #: Mo-dun tach dong + ten cot (tab YouTube ke thua, doi may dong nay la xong).
+    MODULE = x_import
+    FIELDS = x_import.X_FIELDS
+    FIELD_LABEL = x_import.X_FIELD_LABEL
+    FIELD_KEY = x_import.X_FIELD_KEY
+    MAC_DINH = x_import.X_MAC_DINH
+    #: Cot BAT BUOC phai co (thieu thi khong cho nhap) + tieu de hop.
+    COT_BAT_BUOC = "user"
+    NHAN_BAT_BUOC = "User X"
+    TIEU_DE = "Nhập hàng loạt acc X"
+    NHAN_DAN = "Dán danh sách acc X (mỗi dòng một acc):"
+
     def __init__(self, parent, groups=()):
-        super().__init__(parent, "Nhập hàng loạt acc X", 980, 720)
+        super().__init__(parent, self.TIEU_DE, 980, 720)
         self.minsize(760, 600)
         self._groups = list(groups or [])
         self._refresh_job = None
         self._fmt_touched = False     # nguoi dung da tu sua dinh dang chua
-        self._dong: list[x_import.XDong] = []
+        self._dong: list = []
 
         # --- 1) O dan ---
-        ctk.CTkLabel(self, text="Dán danh sách acc X (mỗi dòng một acc):").pack(
+        ctk.CTkLabel(self, text=self.NHAN_DAN).pack(
             anchor="w", padx=PAD, pady=(PAD, 2))
         self.textbox = ctk.CTkTextbox(self, height=150)
         self.textbox.pack(fill="x", padx=PAD, pady=(0, 4))
@@ -222,12 +234,12 @@ class XBulkImportDialog(BaseDialog):
 
         fmt = ctk.CTkFrame(self, fg_color="transparent")
         fmt.pack(fill="x", padx=PAD, pady=(2, 4))
-        nhan = [lbl for _k, lbl in x_import.X_FIELDS]
+        nhan = [lbl for _k, lbl in self.FIELDS]
         self.field_boxes: list = []
         for i in range(self.SO_COT):
             box = ctk.CTkOptionMenu(fmt, values=nhan, width=150, command=self._doi_cot)
-            mac = x_import.X_MAC_DINH[i] if i < len(x_import.X_MAC_DINH) else ""
-            box.set(x_import.X_FIELD_LABEL[mac])
+            mac = self.MAC_DINH[i] if i < len(self.MAC_DINH) else ""
+            box.set(self.FIELD_LABEL[mac])
             box.grid(row=i // 5, column=i % 5, padx=2, pady=2, sticky="w")
             self.field_boxes.append(box)
 
@@ -290,7 +302,7 @@ class XBulkImportDialog(BaseDialog):
         return {"Tab": "\t", "Space": " "}.get(self.separator.get(), self.separator.get())
 
     def _fields(self) -> list:
-        return [x_import.X_FIELD_KEY.get(b.get(), "") for b in self.field_boxes]
+        return [self.FIELD_KEY.get(b.get(), "") for b in self.field_boxes]
 
     def _doi_cot(self, _v=None) -> None:
         self._fmt_touched = True      # nguoi dung tu sua -> ngung tu doan de len
@@ -323,10 +335,10 @@ class XBulkImportDialog(BaseDialog):
         text = self.textbox.get("1.0", "end")
         if not text.strip():
             return
-        sep, fields = x_import.de_xuat(text, so_cot=self.SO_COT)
+        sep, fields = self.MODULE.de_xuat(text, so_cot=self.SO_COT)
         self.separator.set(self.SEP_NHAN.get(sep, "|"))
         for box, k in zip(self.field_boxes, fields):
-            box.set(x_import.X_FIELD_LABEL.get(k, x_import.X_FIELD_LABEL[""]))
+            box.set(self.FIELD_LABEL.get(k, self.FIELD_LABEL[""]))
 
     def _ve_bang(self) -> None:
         fields = self._fields()
@@ -335,12 +347,12 @@ class XBulkImportDialog(BaseDialog):
         self.preview.configure(columns=cols)
         rong = {k: w for k, _t, w in XEM_TRUOC_COT}
         for c in cols:
-            tieu_de = {"stt": "STT", "loi": "Lỗi"}.get(c) or x_import.X_FIELD_LABEL.get(c, c)
+            tieu_de = {"stt": "STT", "loi": "Lỗi"}.get(c) or self.FIELD_LABEL.get(c, c)
             self.preview.heading(c, text=tieu_de)
             self.preview.column(c, width=rong.get(c, 120), stretch=False,
                                 anchor="center" if c == "stt" else "w")
         self.preview.delete(*self.preview.get_children())
-        self._dong = x_import.tach_van_ban(self.textbox.get("1.0", "end"), self._sep(), fields)
+        self._dong = self.MODULE.tach_van_ban(self.textbox.get("1.0", "end"), self._sep(), fields)
         for i, d in enumerate(self._dong[:500], start=1):
             vals = [i] + [("có" if getattr(d, k) else "—") if k == "cookie" else getattr(d, k)
                           for k in dung] + [d.loi]
@@ -350,7 +362,7 @@ class XBulkImportDialog(BaseDialog):
         except tk.TclError:
             pass
         loi = sum(1 for d in self._dong if d.loi)
-        canh = "  ⚠ chưa có cột User X" if "user" not in fields else ""
+        canh = f"  ⚠ chưa có cột {self.NHAN_BAT_BUOC}" if self.COT_BAT_BUOC not in fields else ""
         self.summary_label.configure(
             text=f"{len(self._dong)} dòng · {len(self._dong) - loi} hợp lệ · {loi} lỗi{canh}",
             text_color="gray60")
@@ -369,10 +381,11 @@ class XBulkImportDialog(BaseDialog):
     def _submit(self) -> None:
         text = self.textbox.get("1.0", "end")
         fields = self._fields()
-        if "user" not in fields:
-            self.summary_label.configure(text="Phải có một cột là “User X”.", text_color="#e06c6c")
+        if self.COT_BAT_BUOC not in fields:
+            self.summary_label.configure(text=f"Phải có một cột là “{self.NHAN_BAT_BUOC}”.",
+                                         text_color="#e06c6c")
             return
-        if not x_import.tach_van_ban(text, self._sep(), fields):
+        if not self.MODULE.tach_van_ban(text, self._sep(), fields):
             self.summary_label.configure(text="Chưa có dòng nào để nhập.", text_color="#e06c6c")
             return
         ua_loai = [ten for ten, var in self.ua_vars.items() if var.get()]

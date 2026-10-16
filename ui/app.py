@@ -61,6 +61,9 @@ TOI = "🌙 Tối"
 DETAIL_WIDTH = 340   # be ngang bang thong tin acc ben phai
 
 # Tab "Auto dang nhom" gom hai tab con: dang nhom (JobPanel) va quet bai (AiLabTab).
+# Menu chuot phai co muc "🧩 Mô-đun" (sinh tu registry) hay khong — nguoi dung 10/10 cho AN.
+HIEN_MENU_MODUN = False
+
 NHOM_TAB = "👥 Auto đăng nhóm"
 NHOM_CON_DANG = "👥 Đăng nhóm"
 NHOM_CON_QUET = "🔎 Quét bài"
@@ -120,6 +123,22 @@ COLUMNS = (
     ("identity", "Múi giờ / Ngôn ngữ", 200, "w"),
 )
 
+#: THU TU COT MAC DINH cua bang Quan ly acc Facebook (nguoi dung chot 08/10 theo anh):
+#: # · ID acc · Ten acc · Nhom · Dang chay · Ghi chu · Trang thai · Ngay sinh · Mail khoi phuc ·
+#: Mat khau · 2FA · Profile · Cookie · Proxy · Mui gio · Chuyen nghiep · Token. Chi ap khi nguoi
+#: dung CHUA tung chinh "Cot hien thi" (settings.column_order rong); da chinh thi theo lan cuoi.
+THU_TU_COT_MAC_DINH = ("stt", "id", "fb_name", "group", "running", "note", "status", "dob",
+                       "mail", "password", "twofa", "profile", "cookie", "proxy", "identity",
+                       "pro", "token")
+
+
+def thu_tu_cot_mac_dinh(da_luu) -> list:
+    """Thu tu cot dang dung: ``da_luu`` (lan cuoi nguoi dung chinh) neu co, khong thi MAC DINH.
+    Cot co trong COLUMNS ma thieu o danh sach thi xep ra CUOI (cot them sau nay). THUAN."""
+    keys = [key for key, *_ in COLUMNS]
+    goc = [k for k in (da_luu or []) if k in keys] or [k for k in THU_TU_COT_MAC_DINH if k in keys]
+    return goc + [k for k in keys if k not in goc]
+
 
 class App(ctk.CTk):
     #: Mo tool len thi tu lay ngay sinh cho TOI DA bao nhieu acc (ngay sinh phai mo trinh duyet
@@ -146,6 +165,12 @@ class App(ctk.CTk):
 
         self.settings = Settings.load()
         self.settings.save()  # ghi lai duong dan paf.exe tim duoc o lan chay dau
+        # Cong tac "Ẩn trình duyệt" cho ProfileManager.launch doc (mo len la da nam san ben canh).
+        try:
+            from core import an_cua_so as _an_cs
+            _an_cs.lay_cai_dat = lambda: getattr(self.settings, "an_trinh_duyet", None)
+        except Exception:  # noqa: BLE001
+            pass
         ctk.set_appearance_mode(self.settings.appearance)
         self.store = AccountStore()
         self.relays = RelayManager()
@@ -163,6 +188,9 @@ class App(ctk.CTk):
         # chay song song, chi chan khi trung acc dang ban. _busy_accs = id acc dang
         # co tac vu chay; _task_count = so tac vu dang chay (de an/hien thanh tien trinh).
         self._busy_accs: set = set()
+        #: id acc -> {"ten": tác vụ đang giữ, "luc": epoch bắt đầu, "tk": mã tác vụ} — để báo RÕ
+        #: acc đang bận việc gì, từ bao giờ, và cho GIẢI PHÓNG khi tác vụ treo không bao giờ xong.
+        self._busy_info: dict = {}
         self._busy_lock = threading.Lock()
         self._task_count = 0
         self._show_secrets = tk.BooleanVar(value=True)
@@ -237,12 +265,14 @@ class App(ctk.CTk):
         # "Auto dang fanpage": hai tab con mac dinh "🌐 Công khai" (dang ngay) va
         # "🕒 Đặt lịch" (hen gio), nguoi dung THEM duoc tab moi. Moi tab co danh sach
         # trang RIENG (AutoUpConfig.tab_id), khong tron vao nhau.
-        self.fanpage_tabs = AutoUpTabs(tab_page, self)
+        from core import an_cua_so as _an
+        self.fanpage_tabs = AutoUpTabs(tab_page, self, nhom_an=_an.NHOM_FANPAGE)
         self.fanpage_tabs.pack(fill="both", expand=True)
         # "Auto dang nhom" co HAI TAB CON: "Dang nhom" (JobPanel nhu cu) va "Quet bai"
         # (AiLabTab, truoc day la tab rieng o thanh tren). Chi doi CHO, chuc nang khong doi:
         # quet -> gui vao job nhom -> xao o hang doi -> dang theo lich (ADR-009).
         from .ai_lab_tab import AiLabTab
+        self.cong_tac_an_nhom = self._thanh_an(tab_group, _an.NHOM_NHOM)
         self.group_tabs = ctk.CTkTabview(tab_group, anchor="w")
         self.group_tabs.pack(fill="both", expand=True)
         g_dang = self.group_tabs.add(NHOM_CON_DANG)
@@ -254,6 +284,7 @@ class App(ctk.CTk):
         self.group_tabs.set(NHOM_CON_DANG)
         # "Auto dang X" giong het "Auto dang fanpage": 2 tab con Cong khai + Dat lich.
         # Dung manager RIENG self.autoup_x -> job X khong tron voi job Facebook.
+        self.cong_tac_an_x = self._thanh_an(tab_x_dang, _an.NHOM_X)
         self.x_fanpage_tabs = ctk.CTkTabview(tab_x_dang, anchor="w")
         self.x_fanpage_tabs.pack(fill="both", expand=True)
         x_congkhai = self.x_fanpage_tabs.add("🌐 Công khai")
@@ -294,16 +325,19 @@ class App(ctk.CTk):
         # "Tuong tac" co HAI TAB CON: Facebook (giu nguyen) va X.com (giao dien y het,
         # kho acc + cau hinh RIENG cua X; co che tuong tac X lam sau).
         from .tuong_tac_tab import TuongTacTab
+        self.cong_tac_an_tt = self._thanh_an(tab_tuongtac, _an.NHOM_TUONG_TAC)
         self.tuong_tac_tabs = ctk.CTkTabview(tab_tuongtac, anchor="w")
         self.tuong_tac_tabs.pack(fill="both", expand=True)
         tt_fb = self.tuong_tac_tabs.add(TT_CON_FB)
         tt_x = self.tuong_tac_tabs.add(TT_CON_X)
         self.tuong_tac_tab = TuongTacTab(tt_fb, self)
         self.tuong_tac_tab.pack(fill="both", expand=True)
-        self.tuong_tac_x_tab = TuongTacTab(tt_x, self, platform="x",
-                                           acc_store=self.x_acc_tab.store,
-                                           profiles=self.x_acc_tab.manager)
-        self.tuong_tac_x_tab.pack(fill="both", expand=True)
+        # Tab X = man KICH BAN (15/10): mau kich ban (chuoi node Luot -> Follow -> Trich dan),
+        # gan mau tung acc, list kenh rieng acc. Thay hai tab con cu (Luot tuong tac / Dang lai trich dan).
+        from .kich_ban_x_tab import KichBanXTab
+        self.kich_ban_x_tab = KichBanXTab(tt_x, self, acc_store=self.x_acc_tab.store,
+                                          profiles=self.x_acc_tab.manager)
+        self.kich_ban_x_tab.pack(fill="both", expand=True)
         self.tuong_tac_tabs.set(TT_CON_FB)
         from .rename_tab import RenameTab
         self.rename_tab = RenameTab(tab_rename, self)
@@ -405,6 +439,10 @@ class App(ctk.CTk):
                 cfg = job.config
                 # Acc dang LUOT NAY -- co the la acc2 khi dang luan phien.
                 acc_id = job.pick_account()
+                # Trinh duyet sap mo thuoc tab Auto dang fanpage / nhom (cong tac An trinh duyet).
+                from core import an_cua_so as _an
+                _an.danh_dau(_an.NHOM_NHOM if cfg.is_group else _an.NHOM_FANPAGE,
+                             self.manager, self.store.get(acc_id) if acc_id else None)
                 # Gan MAU TUONG TAC -> xem reel + like TRUOC khi dang (khong dung delay cua tab).
                 mau = getattr(cfg, "tuong_tac_mau", None)
                 if mau and acc_id:
@@ -530,7 +568,7 @@ class App(ctk.CTk):
         return r["iana"]
 
     def _tz_tu_proxy(self, account) -> str:
-        """Mui gio theo PROXY cua acc, do bang geoip. Cache trong phien (goi mang 1 lan/acc).
+        """Mui gio theo PROXY cua acc (do o core/lich_dang, cache theo acc — mang 1 lan/acc).
 
         Dung khi acc CHUA chay "Khop mui gio + ngon ngu theo proxy" nhung van muon tool
         tu biet acc dang o mui gio nao (nguoi dung chot 07/10: uu tien lay theo proxy).
@@ -542,14 +580,12 @@ class App(ctk.CTk):
             kho = self._tz_proxy_cache = {}
         if account.id in kho:
             return kho[account.id]
-        tz = ""
-        try:
-            px = account.get_proxy()
-            if px.enabled:
-                from core import geoip
-                tz = (geoip.lookup(px).timezone or "").strip()
-        except Exception as exc:  # noqa: BLE001
-            self.set_status(f"Không dò được múi giờ theo proxy của {account.id}: {exc}"[:150])
+        # Do geoip nam o CORE (lich_dang.do_mui_gio_proxy) — UI khong goi geoip truc tiep
+        # (cong kien truc md15 bat 08/10). Core cung tu cache theo acc.
+        from core import lich_dang as ld
+        tz = ld.do_mui_gio_proxy(account)
+        if not tz:
+            self.set_status(f"Không dò được múi giờ theo proxy của {account.id} — dùng giờ máy"[:150])
         kho[account.id] = tz
         return tz
 
@@ -572,6 +608,8 @@ class App(ctk.CTk):
                 if acc is None:
                     raise fbupload.UploadError(
                         f"Acc X {acc_id} không còn trong bảng Quản lý acc X.")
+                from core import an_cua_so as _an
+                _an.danh_dau(_an.NHOM_X, tab.manager, acc)
                 from core import xpost
                 lich = None
                 if job.config.is_lich:
@@ -921,6 +959,10 @@ class App(ctk.CTk):
         ttk.Separator(actions, orient="vertical").pack(side="left", fill="y", padx=8)
         button("⏹ Đóng", self.close_profiles, color="#7a5", width=90)
         button("🔄 Quét thư mục", self.scan_existing, width=130)
+        # Lich su hoat dong: bam -> khung 1/4 goc duoi PHAI tool, dong MOI NHAT len TREN.
+        self.lich_su_btn = button("📜 Lịch sử", self.toggle_lich_su, width=110)
+        # Chuyen may: goi acc + profile + trang auto dang -> GOP THEM vao may khac.
+        self.chuyen_may_btn = button("📦 Chuyển máy", self.menu_chuyen_may, width=130)
 
         # MOT o "Luong" dung chung cho: dang nhap cookie, tao profile, bat chuyen nghiep, dang nhap web.
         self.login_threads_label = ctk.CTkLabel(actions, text="Luồng", font=bold)
@@ -1077,10 +1119,11 @@ class App(ctk.CTk):
         self._menu.add_cascade(label="✏️ Sửa", menu=edit_menu)
         self._menu.add_separator()
 
-        # 🧩 MO-DUN: menu SINH TU REGISTRY (ADR-028) — cascade theo nhom, moi muc = 1 mo-dun.
-        # Them mo-dun moi vao core/modun la tu hien o day, khong sua App.
-        self._menu.add_cascade(label="🧩 Mô-đun", menu=self._menu_modun(self._menu))
-        self._menu.add_separator()
+        # 🧩 MO-DUN (ADR-028): menu sinh tu registry — nguoi dung 10/10 yeu cau AN khoi menu
+        # chuot phai (moi chuc nang da co muc rieng). Bat lai: them cascade _menu_modun o day.
+        if HIEN_MENU_MODUN:
+            self._menu.add_cascade(label="🧩 Mô-đun", menu=self._menu_modun(self._menu))
+            self._menu.add_separator()
 
         self._menu.add_command(label="🌐 Đổi proxy...", command=self.change_proxy)
         check_menu = self._make_menu(self._menu)
@@ -1869,7 +1912,10 @@ class App(ctk.CTk):
         hien thi, nen khong phai dung lai ca bang.
         """
         keys = [key for key, *_ in COLUMNS]
-        order = [k for k in (self.settings.column_order or []) if k in keys]
+        # Chua tung chinh (column_order rong) -> THU TU MAC DINH nguoi dung chot 08/10;
+        # da chinh qua "Cot hien thi" thi theo lan cuoi (settings). Cot moi them sau nay
+        # chua co trong danh sach thi xep ra CUOI.
+        order = [k for k in thu_tu_cot_mac_dinh(self.settings.column_order) if k in keys]
         order += [k for k in keys if k not in order]
         hidden = {k for k in (self.settings.column_hidden or []) if k in keys}
 
@@ -1881,8 +1927,10 @@ class App(ctk.CTk):
     def choose_columns(self) -> None:
         """Cho nguoi dung chon cot nao hien va sap lai thu tu."""
         columns = [(key, title) for key, title, *_ in COLUMNS]
+        # Hop chon cot mo ra theo thu tu DANG HIEN (mac dinh neu chua tung chinh).
         picked = ColumnDialog(
-            self, columns, self.settings.column_order, self.settings.column_hidden
+            self, columns, thu_tu_cot_mac_dinh(self.settings.column_order),
+            self.settings.column_hidden
         ).show()
         if picked is None:
             return
@@ -1971,10 +2019,272 @@ class App(ctk.CTk):
         self._events.put(callback)
 
     def set_status(self, message: str) -> None:
-        self._post(lambda: self.status_label.configure(text=message))
+        self._post(lambda: self._status_va_lich_su(message))
+
+    # ---- LICH SU hoat dong (nut "📜 Lịch sử" tab Quan ly acc) ------------------------
+    #: Giu toi da bay nhieu dong (cu nhat bi bo) — tool chay ca ngay khong phinh bo nho.
+    LICH_SU_TOI_DA = 2000
+
+    def _status_va_lich_su(self, message: str) -> None:
+        """Thanh trang thai + ghi vao lich su (LUONG CHINH). Dong trung dong ngay truoc thi bo."""
+        try:
+            self.status_label.configure(text=message)
+        except Exception:  # noqa: BLE001
+            pass
+        chu = str(message or "").strip()
+        ls = self.__dict__.setdefault("_lich_su", [])
+        if not chu or (ls and ls[-1][1] == chu):
+            return
+        dong = (time.strftime("%d/%m %H:%M:%S"), chu)
+        ls.append(dong)
+        if len(ls) > self.LICH_SU_TOI_DA:
+            del ls[: len(ls) - self.LICH_SU_TOI_DA]
+        box = self.__dict__.get("_lich_su_box")
+        if box is not None:
+            self._lich_su_chen(box, dong)
+
+    @staticmethod
+    def _lich_su_chen(box, dong) -> None:
+        """Chen MOT dong len DAU khung (moi nhat tren cung, cu troi xuong)."""
+        try:
+            box.configure(state="normal")
+            box.insert("1.0", f"{dong[0]}  {dong[1]}\n")
+            box.configure(state="disabled")
+        except Exception:  # noqa: BLE001
+            pass
+
+    # ------------------------------------------------------------ CHUYEN MAY
+    def _nen_tang_chuyen_may(self) -> dict:
+        """Doi tuong THAT dang chay cua ca 3 nen tang (core/chuyen_may.NenTang)."""
+        from core import chuyen_may as cm
+        data = os.path.dirname(self.store.path)
+        ra = {"fb": cm.NenTang(self.store, self.manager, self.autoup, data)}
+        for p, tab, mgr in (("x", "x_acc_tab", "autoup_x"), ("yt", "yt_acc_tab", "autoup_yt")):
+            t = getattr(self, tab, None)
+            if t is not None:
+                ra[p] = cm.NenTang(t.store, t.manager, getattr(self, mgr, None), data)
+        return ra
+
+    def menu_chuyen_may(self) -> None:
+        m = tk.Menu(self, tearoff=0)
+        m.add_command(label="📤 Xuất gói (làm ở MÁY CŨ)", command=self.xuat_chuyen_may)
+        m.add_command(label="📥 Nhập gói — gộp thêm (làm ở MÁY MỚI)",
+                      command=self.nhap_chuyen_may)
+        b = self.chuyen_may_btn
+        m.tk_popup(b.winfo_rootx(), b.winfo_rooty() + b.winfo_height())
+
+    def _acc_dang_mo(self, nt: dict) -> list:
+        ra = []
+        for p, n in nt.items():
+            for a in list(n.store.accounts):
+                try:
+                    if n.profiles.is_installed(a) and n.profiles.is_running(a):
+                        ra.append((n, a))
+                except Exception:
+                    pass
+        return ra
+
+    def xuat_chuyen_may(self) -> None:
+        from core import chuyen_may as cm
+        from ui.chuyen_may_dialog import XuatGoiDialog
+        nt = self._nen_tang_chuyen_may()
+        so_acc = sum(len(n.store.accounts) for n in nt.values())
+        so_trang = sum(len(n.autoup.jobs) for n in nt.values() if n.autoup is not None)
+        so_pf = 0
+        for n in nt.values():
+            for a in list(n.store.accounts):
+                try:
+                    so_pf += bool(n.profiles.is_installed(a))
+                except Exception:
+                    pass
+        self.set_status("Đang đếm kho video...")
+        chon = XuatGoiDialog(self, so_trang, so_acc, so_pf, cm.uoc_luong_video(nt)).show()
+        if not chon:
+            return
+        dang_mo = self._acc_dang_mo(nt) if chon["co_profile"] else []
+        tat = False
+        if dang_mo:
+            tat = messagebox.askyesnocancel(
+                "Xuất gói chuyển máy",
+                f"{len(dang_mo)} acc đang MỞ trình duyệt — profile của acc đang mở không gói "
+                "được (dữ liệu đăng nhập đang ghi dở).\n\nCó = TẮT các trình duyệt đó rồi gói "
+                "đủ\nKhông = vẫn gói, bỏ profile các acc đang mở\nHuỷ = thôi", parent=self)
+            if tat is None:
+                return
+        dich = filedialog.asksaveasfilename(
+            parent=self, title="Lưu gói chuyển máy", defaultextension=".zip",
+            initialfile=f"LVC-chuyen-may-{time.strftime('%Y%m%d-%H%M')}.zip",
+            filetypes=[("Gói chuyển máy", "*.zip")])
+        if not dich:
+            return
+
+        def work():
+            if tat:
+                for n, a in dang_mo:
+                    try:
+                        n.profiles.close(a, wait=8.0)
+                    except Exception:
+                        pass
+            bc = cm.xuat_goi(dich, nt, co_profile=chon["co_profile"], co_acc=chon["co_acc"],
+                             co_trang=chon["co_trang"], co_video=chon["co_video"],
+                             tien_do=lambda m: self._post(
+                lambda m=m: self.set_status(m)))
+            mb = os.path.getsize(dich) / 1e6
+            chu = (f"Đã xuất gói: {dich}\n({mb:.1f} MB)\n\n"
+                   f"• {sum(bc['acc'].values())} acc · {bc['profile']} profile · "
+                   f"{sum(bc['trang'].values())} trang auto đăng"
+                   f" · {bc['hang_doi']} file hàng đợi nhóm\n")
+            if bc["profile_bo"]:
+                chu += ("\n⚠ KHÔNG gói được profile (đang mở): "
+                        + ", ".join(bc["profile_bo"][:10]) + "\n")
+            v = bc.get("video") or {}
+            if chon["co_video"]:
+                chu += (f"• Kho video: {v.get('thu_muc', 0)} thư mục, {v.get('file', 0)} file, "
+                        f"{v.get('byte', 0) / 1e9:.2f} GB\n")
+            else:
+                chu += "\nVideo KHÔNG nằm trong gói — tự chép thư mục video sang máy mới.\n"
+            if chon["co_acc"]:
+                chu += "Gói chứa mật khẩu, 2FA, cookie: giữ kín, đừng gửi qua kênh công khai."
+            self._post(lambda: messagebox.showinfo("Xuất gói chuyển máy", chu, parent=self))
+
+        self._run_async(work, "Đã xuất gói chuyển máy.", ten="Xuất gói chuyển máy")
+
+    def nhap_chuyen_may(self) -> None:
+        from core import chuyen_may as cm
+        from ui.chuyen_may_dialog import NhapGoiDialog
+        duong = filedialog.askopenfilename(parent=self, title="Chọn gói chuyển máy",
+                                           filetypes=[("Gói chuyển máy", "*.zip")])
+        if not duong:
+            return
+        try:
+            goi = cm.doc_goi(duong)
+        except cm.GoiLoi as exc:
+            messagebox.showerror("Nhập gói chuyển máy", str(exc), parent=self)
+            return
+        nt = self._nen_tang_chuyen_may()
+        kh = cm.lap_ke_hoach(goi, nt)
+        kq = NhapGoiDialog(
+            self, goi, kh,
+            lap=lambda a, t, p: cm.lap_ke_hoach(goi, nt, co_acc=a, co_trang=t, co_profile=p),
+            video_mac_dinh=os.path.join(os.path.dirname(os.path.dirname(self.store.path)),
+                                        "Kho video chuyen may")).show()
+        if kq is None:
+            return
+        ban_do, kh, video_vao = kq
+        can_tat = cm.acc_can_tat(goi, kh, nt)
+        if can_tat:
+            if not messagebox.askyesno(
+                    "Nhập gói chuyển máy",
+                    f"{len(can_tat)} acc sẽ bị GHI ĐÈ profile đang MỞ trình duyệt:\n"
+                    + ", ".join(a.id for _p, a in can_tat[:10])
+                    + "\n\nTắt các trình duyệt đó rồi nhập?\n(Không = thôi, chưa nhập gì)",
+                    parent=self):
+                return
+        # Khoa cac acc bi ghi de: dang co viec khac dung thi khong nhap chen vao.
+        khoa = [nt[p].store.get(ma) for p in cm.NEN_TANG if p in nt
+                for ma in kh["acc_ghi_de"].get(p) or []]
+        khoa = [a for a in khoa if a is not None]
+
+        def work():
+            for p, a in can_tat:
+                try:
+                    nt[p].profiles.close(a, wait=8.0)
+                except Exception:
+                    pass
+            bc = cm.ap_dung(goi, kh, nt, ban_do, so_luong=self._so_luong(), video_vao=video_vao,
+                            tien_do=lambda m: self._post(lambda m=m: self.set_status(m)))
+            self._post(lambda: self._sau_nhap_chuyen_may(bc))
+
+        self._run_async(work, "Đã nhập gói chuyển máy.", accs=khoa or None,
+                        ten="Nhập gói chuyển máy")
+
+    def _sau_nhap_chuyen_may(self, bc: dict) -> None:
+        """Ve lai moi bang/tab sau khi gop, roi bao ket qua."""
+        for ve in (self.refresh, self._rebuild_group_menu,
+                   lambda: self.x_acc_tab.refresh(), lambda: self.yt_acc_tab.refresh(),
+                   lambda: self.fanpage_tabs._ve(), lambda: self.group_tab._rebuild()):
+            try:
+                ve()
+            except Exception:
+                pass
+        for ten in ("x_autoup_tab", "x_lich_tab", "yt_autoup_tab", "yt_lich_tab"):
+            try:
+                getattr(self, ten)._rebuild()
+            except Exception:
+                pass
+        dong = [f"Acc thêm mới: {len(bc['acc_them'])} · ghi đè: {len(bc['acc_ghi_de'])}",
+                f"Profile đặt xong: {len(bc['profile_ok'])}"]
+        if bc["profile_loi"]:
+            dong.append(f"⚠ Profile LỖI: {len(bc['profile_loi'])}")
+            dong += [f"   {a}: {l}" for a, l in bc["profile_loi"][:10]]
+        if bc.get("video"):
+            dong.append(f"Kho video giải nén: {len(bc['video'])} thư mục, "
+                        f"{sum(so for _c, _d, so in bc['video'])} file")
+            dong += [f"   {cu}  →  {dich}" for cu, dich, _s in bc["video"][:10]]
+        dong.append(f"Trang auto đăng thêm: {len(bc['trang_them'])} (đã TẮT tự động đăng)")
+        dong += [f"   {nt} · {ten} (trang số {ma})" for nt, ten, ma, _f in bc["trang_them"][:15]]
+        if bc["trang_bo_qua"]:
+            dong.append(f"Trang bỏ qua (trùng): {len(bc['trang_bo_qua'])}")
+            dong += [f"   {nt} · {ten}" for nt, ten, _l in bc["trang_bo_qua"][:10]]
+        if bc["loi"]:
+            dong += ["⚠ Lỗi:"] + [f"   {x}" for x in bc["loi"]]
+        dong.append("\nKiểm lại thư mục video từng trang rồi bật “Bật tự động đăng”. "
+                    "Nhớ TẮT các trang này ở máy cũ để không đăng trùng.")
+        canh = bc["profile_loi"] or bc["loi"]
+        (messagebox.showwarning if canh else messagebox.showinfo)(
+            "Nhập gói chuyển máy", "\n".join(dong), parent=self)
+
+    def toggle_lich_su(self) -> None:
+        """Bat/tat khung lich su o 1/4 goc duoi ben phai cua so tool."""
+        khung = self.__dict__.get("_lich_su_khung")
+        if khung is not None:
+            self._dong_lich_su()
+            return
+        khung = ctk.CTkFrame(self, border_width=2, border_color=("gray55", "gray35"))
+        khung.place(relx=0.5, rely=0.5, relwidth=0.5, relheight=0.5)
+        khung.lift()
+        dau = ctk.CTkFrame(khung, fg_color="transparent")
+        dau.pack(fill="x", padx=6, pady=(6, 2))
+        ctk.CTkLabel(dau, text="📜 Lịch sử hoạt động (mới nhất ở trên)",
+                     font=ctk.CTkFont(weight="bold")).pack(side="left", padx=4)
+        ctk.CTkButton(dau, text="✕ Đóng", width=70, fg_color="gray40",
+                      command=self._dong_lich_su).pack(side="right", padx=2)
+        ctk.CTkButton(dau, text="🗑 Xoá", width=70, fg_color="gray40",
+                      command=self._xoa_lich_su).pack(side="right", padx=2)
+        ctk.CTkButton(dau, text="📋 Copy", width=70, fg_color="gray40",
+                      command=self._copy_lich_su).pack(side="right", padx=2)
+        box = ctk.CTkTextbox(khung, wrap="word")
+        box.pack(fill="both", expand=True, padx=6, pady=(0, 6))
+        noi = "".join(f"{t}  {m}\n" for t, m in reversed(self.__dict__.get("_lich_su", [])))
+        box.insert("1.0", noi or "(chưa có hoạt động nào)\n")
+        box.configure(state="disabled")
+        self._lich_su_khung, self._lich_su_box = khung, box
+
+    def _dong_lich_su(self) -> None:
+        khung = self.__dict__.pop("_lich_su_khung", None)
+        self.__dict__.pop("_lich_su_box", None)
+        if khung is not None:
+            khung.destroy()
+
+    def _xoa_lich_su(self) -> None:
+        self.__dict__["_lich_su"] = []
+        box = self.__dict__.get("_lich_su_box")
+        if box is not None:
+            box.configure(state="normal")
+            box.delete("1.0", "end")
+            box.configure(state="disabled")
+
+    def _copy_lich_su(self) -> None:
+        chu = "\n".join(f"{t}  {m}" for t, m in reversed(self.__dict__.get("_lich_su", [])))
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(chu)
+            self.set_status(f"Đã copy {len(self.__dict__.get('_lich_su', []))} dòng lịch sử.")
+        except Exception:  # noqa: BLE001
+            pass
 
     def _run_async(self, work: Callable[[], None], done_message: str = "Xong.",
-                   accs: Optional[list] = None) -> None:
+                   accs: Optional[list] = None, ten: str = "") -> None:
         """Chay ``work`` o luong nen, KHOA theo tung acc.
 
         ``accs``: danh sach id acc (hoac Account) tac vu se dung. Chi chan khi CO
@@ -1996,8 +2306,13 @@ class App(ctk.CTk):
             xs = sorted(str(x) for x in tap)
             return ", ".join(xs[:6]) + (f" (+{len(xs) - 6})" if len(xs) > 6 else "")
 
+        bao_ban = None
+        ten_tv = (ten or getattr(work, "ten_tac_vu", "") or done_message
+                  or getattr(work, "__name__", "") or "tác vụ").strip()
+
         with self._busy_lock:
             ban = ids & self._busy_accs
+            mo_ta_ban = self._mo_ta_acc_ban(ban) if ban else ""
             if ban:
                 ranh = ids - ban
                 if nhan_acc and ranh:
@@ -2010,22 +2325,27 @@ class App(ctk.CTk):
                         f"Vẫn chạy trên {n} acc còn lại.",
                         parent=self))
                 else:
-                    # Het acc ranh, hoac tac vu don/toan cuc -> chan.
-                    self._post(lambda t=_ten(ban): messagebox.showinfo(
-                        "Acc đang bận",
-                        f"Các acc này đang chạy tác vụ khác: {t}.\n\n"
-                        "Chờ xong hoặc bỏ chọn acc đó rồi thao tác acc khác — "
-                        "acc không bận vẫn dùng được bình thường.",
-                        parent=self))
-                    return
+                    # Het acc ranh, hoac tac vu don/toan cuc -> chan; neu tac vu giu acc da qua
+                    # lau (nhieu kha nang TREO) thi cho nguoi dung GIAI PHONG roi chay luon.
+                    bao_ban = (set(ban), mo_ta_ban, self._acc_giu_lau(ban))
             else:
                 run_ids = ids
                 run_objs = acc_objs
-            self._busy_accs |= run_ids
-            self._task_count += 1
-            if self._task_count == 1:
-                self.progress.pack(side="right", padx=12)
-                self.progress.start()
+            if bao_ban is None:
+                self._busy_accs |= run_ids
+                tk = object()
+                for i in run_ids:
+                    self._busy_info[i] = {"ten": ten_tv, "luc": time.time(), "tk": tk}
+                self._task_count += 1
+                if self._task_count == 1:
+                    self.progress.pack(side="right", padx=12)
+                    self.progress.start()
+
+        if bao_ban is not None:
+            # Bao NGOAI khoa (hop thoai co the chay lai _run_async -> khong duoc giu _busy_lock).
+            self._post(lambda b=bao_ban: self._bao_acc_ban(b[0], b[1], b[2], work, done_message,
+                                                           accs, ten))
+            return
 
         def runner():
             try:
@@ -2037,13 +2357,77 @@ class App(ctk.CTk):
                 self.set_status(f"Lỗi: {message}")
                 self._post(lambda: messagebox.showerror("Lỗi", message, parent=self))
             finally:
-                self._post(lambda: self._finish_async(run_ids))
+                self._post(lambda: self._finish_async(run_ids, tk=tk))
 
         threading.Thread(target=runner, daemon=True).start()
 
-    def _finish_async(self, ids: Optional[set] = None) -> None:
+    #: Tác vụ giữ acc quá chừng này giây thì coi là CÓ THỂ TREO -> cho người dùng giải phóng.
+    BAN_LAU_GIAY = 180
+
+    def _mo_ta_acc_ban(self, ban) -> str:
+        """'61581… — Đăng nhập web, từ 15:02 (12 phút)' mỗi acc một dòng (gọi khi đang giữ _busy_lock)."""
+        dong = []
+        bay_gio = time.time()
+        for i in sorted(str(x) for x in ban)[:8]:
+            info = self._busy_info.get(i) or self._busy_info.get(int(i) if i.isdigit() else i) or {}
+            if info:
+                phut = int((bay_gio - info["luc"]) // 60)
+                tu = time.strftime("%H:%M", time.localtime(info["luc"]))
+                dong.append(f"• {i} — {info['ten']}, từ {tu} ({phut} phút)")
+            else:
+                dong.append(f"• {i}")
+        if len(ban) > 8:
+            dong.append(f"• … và {len(ban) - 8} acc nữa")
+        return "\n".join(dong)
+
+    def _acc_giu_lau(self, ban) -> bool:
+        """Có acc nào bị giữ quá BAN_LAU_GIAY (gọi khi đang giữ _busy_lock)."""
+        bay_gio = time.time()
+        return any(bay_gio - (self._busy_info.get(i) or {}).get("luc", bay_gio) >= self.BAN_LAU_GIAY
+                   for i in ban)
+
+    def giai_phong_acc(self, ids) -> int:
+        """Nhả khoá acc bị tác vụ treo giữ (người dùng chọn). Tác vụ cũ xong muộn cũng không nhả
+        nhầm khoá mới (so mã tác vụ). Trả số acc đã nhả."""
+        ids = {getattr(a, "id", a) for a in ids}
+        with self._busy_lock:
+            nha = ids & self._busy_accs
+            for i in nha:
+                self._busy_info.pop(i, None)
+            self._busy_accs -= nha
+        return len(nha)
+
+    def _bao_acc_ban(self, ban, mo_ta, lau, work, done_message, accs, ten) -> None:
+        """Báo acc đang bận VIỆC GÌ + từ bao giờ; giữ quá lâu thì hỏi giải phóng rồi chạy luôn."""
+        dau = "Các acc này đang chạy tác vụ khác:\n" + mo_ta + "\n\n"
+        if not lau:
+            messagebox.showinfo("Acc đang bận", dau + "Chờ tác vụ đó xong rồi thao tác lại — acc không "
+                                "bận vẫn dùng được bình thường.", parent=self)
+            return
+        dang_mo = []
+        for i in ban:
+            try:
+                a = self.store.get(str(i))
+                if a is not None and self.manager.is_running(a):
+                    dang_mo.append(a.id)
+            except Exception:  # noqa: BLE001
+                pass
+        canh = ("Trình duyệt của acc này vẫn đang mở — nếu tác vụ cũ còn chạy thật, hai việc có thể "
+                "giẫm lên nhau." if dang_mo else
+                "Trình duyệt của acc không mở — gần như chắc tác vụ cũ đã TREO.")
+        if messagebox.askyesno("Acc đang bận", dau + canh + "\n\nGiải phóng acc rồi chạy lệnh vừa bấm luôn?",
+                               parent=self):
+            n = self.giai_phong_acc(ban)
+            self.set_status(f"Đã giải phóng {n} acc bị tác vụ cũ giữ.")
+            self._run_async(work, done_message, accs=accs, ten=ten)
+
+    def _finish_async(self, ids: Optional[set] = None, tk: object = None) -> None:
         with self._busy_lock:
             if ids:
+                if tk is not None:
+                    ids = {i for i in ids if (self._busy_info.get(i) or {}).get("tk") is tk}
+                for i in ids:
+                    self._busy_info.pop(i, None)
                 self._busy_accs -= ids
             self._task_count = max(0, self._task_count - 1)
             het = self._task_count == 0
@@ -2116,6 +2500,7 @@ class App(ctk.CTk):
                     + "\n".join(dong) + them,
                     parent=self))
 
+        work.ten_tac_vu = ten        # _run_async ghi vao so "acc dang ban viec gi"
         self._run_async(work, done_message, accs=accs if khoa else None)
 
     # ---- Menu Mo-dun sinh tu registry ----------------------------------------
@@ -2142,9 +2527,17 @@ class App(ctk.CTk):
             "dang_nhom_tu_dong": lambda: self.mo_tab_nhom(NHOM_CON_DANG),
             "quet_bai": lambda: self.mo_tab_nhom(NHOM_CON_QUET), "nhan_tin_ai": lambda: tab("💬 Nhắn tin AI"),
             "tuong_tac": lambda: self.mo_tab_tuong_tac(TT_CON_FB),
+            "tuong_tac_x": lambda: self.mo_tab_tuong_tac(TT_CON_X),
+            "dang_lai_x": lambda: self.mo_tab_tuong_tac(TT_CON_X),
+            "kich_ban_x": lambda: self.mo_tab_tuong_tac(TT_CON_X),
             "doi_ten_file": lambda: tab("✏️ Đổi tên file"),
             "xoa_bai": lambda: tab("🗑 Xoá bài viết"),
             "mo_cung_windows": self._gat_mo_cung_windows,   # cong tac goc duoi trai
+            # Ba mo-dun them sau (05/10) chua duoc dinh tuyen -> menu "Mo-dun" chay generic,
+            # mat hop thoai hoi/xac nhan cua lenh chuot phai tuong ung (md14 bat, 08/10).
+            "lay_cookie": self.save_cookie_from_profile,
+            "lay_thong_tin": self.lay_thong_tin_selected,
+            "lay_token": self.lay_token_selected,
         }
 
     def mo_tab_tuong_tac(self, con: str = TT_CON_FB) -> None:
@@ -2233,6 +2626,7 @@ class App(ctk.CTk):
                 self.tree.set(account.id, "running",
                               "▶" if self.manager.is_installed(account) and self.manager.is_running(account) else "")
         self._tu_xep_cua_so()
+        self._tu_an_cua_so()           # SAU khi xep: vi tri "cu" de tra ve = vi tri da xep
         self._schedule_running_check()
 
     def _goc_profile(self) -> list:
@@ -2245,6 +2639,31 @@ class App(ctk.CTk):
             if r:
                 goc.append(r)
         return [g for g in goc if g]
+
+    def _thanh_an(self, cha, nhom: str):
+        """Thanh mong tren cung cua mot tab, chua cong tac "🙈 Ẩn trình duyệt" cua tab do."""
+        from .an_trinh_duyet import CongTacAn
+        thanh = ctk.CTkFrame(cha, fg_color="transparent")
+        thanh.pack(fill="x", padx=8, pady=(4, 0))
+        ct = CongTacAn(thanh, self, nhom)
+        ct.pack(side="left")
+        ctk.CTkLabel(thanh, text="· dời trình duyệt của tab này sang trái màn hình, chừa 1 cm",
+                     text_color="gray60").pack(side="left", padx=8)
+        return ct
+
+    def _tu_an_cua_so(self) -> None:
+        """An / tra trinh duyet theo cong tac tung tab (core.an_cua_so). Khong duoc lam chet
+        vong giao dien."""
+        try:
+            from core import an_cua_so as _an
+            if getattr(self, "_an", None) is None:
+                self._an = _an.bo_chung()          # dung chung voi luong canh nhanh
+            kq = self._an.quet(getattr(self.settings, "an_trinh_duyet", None))
+            if kq["an"] or kq["hien"]:
+                self.set_status(f"Ẩn trình duyệt: dời {len(kq['an'])} cửa sổ, "
+                                f"trả lại {len(kq['hien'])} cửa sổ")
+        except Exception:  # noqa: BLE001
+            pass
 
     def _tu_xep_cua_so(self) -> None:
         """Cai dat chon "Xếp lớp 3 cột" -> cua so Firefox MOI cua tool duoc xep vao 3 cot co dinh."""
@@ -3442,6 +3861,11 @@ class App(ctk.CTk):
 
     def _on_close(self) -> None:
         self._da_dong = True            # cac bo theo doi nen tu thoi
+        try:                            # dong tool -> tra trinh duyet dang AN ve cho cu
+            if getattr(self, "_an", None) is not None:
+                self._an.hien_het()
+        except Exception:  # noqa: BLE001
+            pass
         try:
             self.autoup.stop()
         except Exception:

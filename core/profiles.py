@@ -829,7 +829,46 @@ class ProfileManager:
         # kieu "Etc/GMT-7" -- gia tri gan nhu khong nguoi that nao co, thanh ra
         # lai LO hon. De trong thi Firefox bao mui gio OS sach (vd Asia/Ho_Chi_Minh).
         procutil.clear_snapshot_cache()     # trang thai "▶" tuoi ngay sau khi mo
+        # "An trinh duyet": tab tu dong mo + cong tac BAT -> Firefox mo THANG o vi tri an (ghi san
+        # xulstore); cong tac TAT / nguoi dung tu mo -> xoa vi tri an Firefox con nho.
+        # (DA DO THAT: Firefox bo qua co mo thu nho SW_SHOWMINNOACTIVE lan sizemode "minimized" trong
+        # xulstore -> khong dung; luong canh nhanh cua an_cua_so giu cua so o cho an.)
+        try:
+            from core import an_cua_so
+            an_cua_so.truoc_khi_mo(self, account)
+        except Exception:  # noqa: BLE001  (an hong KHONG duoc chan viec mo trinh duyet)
+            pass
         return subprocess.Popen(args, cwd=os.path.dirname(exe))
+
+    def mo_tay(self, account: Account, url: str = "",
+               on_status: Optional[Callable[[str], None]] = None) -> subprocess.Popen:
+        """Mo profile cho NGUOI DUNG THAO TAC TAY: KHONG agent nao duoc chay.
+
+        Dung cho moi nut "Mo profile / Mo x.com / Mo YouTube Studio / Mo Business / Mo
+        fanpage". Khac ``launch`` o hai viec, lam TRUOC khi mo:
+          1. xoa HET file lenh agent con sot (autoconfig.LENH_AGENT) -> khong agent nao tu
+             chay lai lenh cu khi tai trang;
+          2. ghi co CHE DO TAY (qlfp-tay.json) -> mozilla.cfg KHONG nap agent nao cho phien
+             nay, ke ca agent "bo qua checkpoint" luon chay. (Nguoi dung bao 08/10: dang xac
+             minh "khong phai nguoi may" bang tay thi trinh duyet tu BACK.)
+        Co dung MOT lan (Firefox doc xong la xoa) -> tac vu tu dong sau do chay binh thuong.
+        """
+        profile = self.profile_dir(account)
+        if self.is_installed(account):
+            autoconfig.xoa_lenh_agent(profile)
+            autoconfig.bat_che_do_tay(profile)
+        else:
+            # launch() se tu tao profile; ghi co SAU khi tao -> boc ham tao.
+            if on_status:
+                on_status(f"Acc {account.id}: chưa có profile — tự tạo trước khi mở...")
+            self.create(account, on_status=on_status)
+            autoconfig.bat_che_do_tay(profile)
+        try:                    # nguoi dung TU mo -> khong bi "An trinh duyet" day di
+            from core import an_cua_so
+            an_cua_so.bo_danh_dau(self, account)
+        except Exception:  # noqa: BLE001
+            pass
+        return self.launch(account, url=url, on_status=on_status)
 
     def launch_debug(self, account: Account, url: str, port: int,
                      on_status: Optional[Callable[[str], None]] = None) -> subprocess.Popen:
