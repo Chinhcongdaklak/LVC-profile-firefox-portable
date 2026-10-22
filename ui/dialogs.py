@@ -1397,6 +1397,7 @@ class AccountPickerDialog(BaseDialog):
         # Trang thai keo chuot chon nhieu (dat truoc _fill).
         self._drag_active = False
         self._drag_target = True
+        self._anchor = None                # neo dong da bam gan nhat, cho Shift+chuot chon dai
 
         head = ctk.CTkFrame(self, fg_color="transparent")
         head.pack(fill="x", padx=PAD, pady=(PAD, 4))
@@ -1423,7 +1424,8 @@ class AccountPickerDialog(BaseDialog):
         ctk.CTkButton(tools, text="Chọn tất cả", width=100,
                       command=lambda: self._set_all(True)).pack(side="right", padx=6)
 
-        ctk.CTkLabel(self, text="Mẹo: kéo chuột dọc theo các dòng để chọn/bỏ nhiều acc một lúc.",
+        ctk.CTkLabel(self, text="Mẹo: kéo chuột dọc theo các dòng để chọn/bỏ nhiều acc; "
+                     "Shift+bấm để chọn cả dải.",
                      text_color="gray50").pack(anchor="w", padx=PAD)
 
         # Hang tieu de cot, nam ngoai vung cuon de luon nhin thay.
@@ -1488,10 +1490,12 @@ class AccountPickerDialog(BaseDialog):
                                   text_color="gray60")
             lb_ghi.pack(side="left", fill="x", expand=True)
             # Keo chuot tren PHAN NHAN (khong phai o tick) -> chon/bo nhieu dong lien tiep.
+            # Shift+chuot trai -> chon CA DAI tu dong da bam truoc den dong nay.
             for w in (hang, lb_nhom, lb_ghi):
                 w.bind("<Button-1>", lambda e, a=account.id: self._drag_start(a))
                 w.bind("<B1-Motion>", self._drag_move)
                 w.bind("<ButtonRelease-1>", self._drag_end)
+                w.bind("<Shift-Button-1>", lambda e, a=account.id: self._shift_click(a))
         self._count()
 
     def _acc_duoi_chuot(self, x_root: int, y_root: int):
@@ -1508,9 +1512,27 @@ class AccountPickerDialog(BaseDialog):
         var = self._vars.get(acc_id)
         if var is None:
             return
+        self._anchor = acc_id                  # neo cho Shift+chuot chon ca dai
         self._drag_active = True
         self._drag_target = not var.get()      # keo tu dong dau: dao trang thai dong do
         var.set(self._drag_target)
+
+    def _shift_click(self, acc_id: str) -> str:
+        """Shift+chuot trai: chon CA DAI tu dong da bam gan nhat (_anchor) den dong nay."""
+        ids = [a.id for a in self._dang_hien()]
+        if acc_id not in ids:
+            return "break"
+        neo = getattr(self, "_anchor", None)
+        if neo not in ids:
+            neo = acc_id
+        i, j = sorted((ids.index(neo), ids.index(acc_id)))
+        for a in ids[i:j + 1]:
+            var = self._vars.get(a)
+            if var is not None:
+                var.set(True)
+        self._anchor = acc_id
+        self._count()
+        return "break"
 
     def _drag_move(self, event) -> None:
         if not self._drag_active:

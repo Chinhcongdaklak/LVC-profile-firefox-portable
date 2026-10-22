@@ -215,6 +215,8 @@ class TuongTacTab(ctk.CTkFrame):
         ctk.CTkButton(thanh, text="👤 Chọn acc", width=110, command=self._pick_accounts).pack(side="left")
         ctk.CTkButton(thanh, text="🗑 Xoá acc đã chọn", width=140, fg_color="gray40",
                       command=self._remove_selected_accs).pack(side="left", padx=6)
+        ctk.CTkButton(thanh, text="🗑 Xoá tất cả acc", width=130, fg_color="#a33",
+                      command=self._remove_all_accs).pack(side="left", padx=(0, 6))
         self.btn_start = ctk.CTkButton(thanh, text="▶ Bắt đầu", width=110, fg_color="#2f7d4f",
                                        command=self._start)
         self.btn_start.pack(side="left", padx=(16, 6))
@@ -247,6 +249,11 @@ class TuongTacTab(ctk.CTkFrame):
         self.acc_tree.configure(yscrollcommand=sb.set)
         self.acc_tree.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
+        # Chuột phải = menu (mở profile / copy / xoá); Ctrl+A = chọn hết.
+        # Kéo chuột + Ctrl + Shift để chọn nhiều là sẵn có của Treeview selectmode="extended".
+        self.acc_tree.bind("<Button-3>", self._menu_acc)
+        self.acc_tree.bind("<Control-a>", self._chon_het)
+        self.acc_tree.bind("<Control-A>", self._chon_het)
 
         right = ctk.CTkFrame(than, width=320)
         right.pack(side="left", fill="both", padx=(8, 0))
@@ -327,6 +334,101 @@ class TuongTacTab(ctk.CTkFrame):
         self._acc_ids = [a for a in self._acc_ids if a not in chon]
         self._show_accs()
         self._save_cfg()
+
+    def _remove_all_accs(self) -> None:
+        if not self._acc_ids:
+            return
+        if not messagebox.askyesno("Xoá tất cả acc",
+                                   f"Bỏ tất cả {len(self._acc_ids)} acc khỏi bảng tương tác?",
+                                   parent=self.app):
+            return
+        self._acc_ids = []
+        self._show_accs()
+        self._save_cfg()
+
+    def _chon_het(self, _ev=None):
+        self.acc_tree.selection_set(self.acc_tree.get_children())
+        return "break"
+
+    # ---- chuột phải: mở profile · copy trường · xoá khỏi bảng -----------------
+    def _menu_acc(self, ev) -> None:
+        iid = self.acc_tree.identify_row(ev.y)
+        if iid and iid not in self.acc_tree.selection():
+            self.acc_tree.selection_set(iid)      # chuột phải dòng chưa chọn -> chọn dòng đó
+        ids = list(self.acc_tree.selection())
+        if not ids:
+            return
+        so = f" ({len(ids)} acc)" if len(ids) > 1 else ""
+        m = tk.Menu(self, tearoff=0)
+        m.add_command(label="▶ Mở profile" + so, command=self._mo_profile)
+        cp = tk.Menu(m, tearoff=0)
+        for nhan, truong in (("ID", "id"), ("Mật khẩu", "password"), ("2FA (mã bí mật)", "twofa"),
+                             ("Mã 2FA (OTP)", "otp"), ("Mail khôi phục", "recovery_mail"),
+                             ("Pass email", "recovery_mail_password")):
+            cp.add_command(label=nhan, command=lambda t=truong, n=nhan: self._copy_truong(t, n))
+        m.add_cascade(label="📋 Copy" + so, menu=cp)
+        m.add_separator()
+        m.add_command(label="🗑 Xoá khỏi bảng" + so, command=self._remove_selected_accs)
+        try:
+            m.tk_popup(ev.x_root, ev.y_root)
+        finally:
+            m.grab_release()
+
+    def _gia_tri_truong(self, acc, truong: str) -> str:
+        if truong == "id":
+            return str(getattr(acc, "id", "") or "")
+        if truong == "otp":
+            bi_mat = (getattr(acc, "twofa", "") or "").strip()
+            if not bi_mat:
+                return ""
+            try:
+                from core import totp
+                return totp.generate(bi_mat)
+            except Exception:  # noqa: BLE001
+                return ""
+        return str(getattr(acc, truong, "") or "")
+
+    def _copy_truong(self, truong: str, nhan: str) -> None:
+        ids = list(self.acc_tree.selection())
+        vals, thieu = [], 0
+        for i in ids:
+            a = self.acc_store.get(i)
+            v = self._gia_tri_truong(a, truong) if a else ""
+            if v:
+                vals.append(v)
+            else:
+                thieu += 1
+        if not vals:
+            self.set_status(f"Không acc nào có {nhan}.")
+            return
+        self.clipboard_clear()
+        self.clipboard_append("\n".join(vals))
+        self.set_status(f"Đã copy {nhan} của {len(vals)} acc"
+                        + (f" ({thieu} acc không có)" if thieu else "") + ".")
+
+    def _mo_profile(self) -> None:
+        """Mở profile cho người dùng thao tác TAY (mo_tay: không agent nào chạy)."""
+        accs = [a for a in (self.acc_store.get(i) for i in self.acc_tree.selection()) if a]
+        if not accs or self.profiles is None:
+            return
+        url = "https://x.com/home" if self.platform == "x" else "https://www.facebook.com/"
+        try:
+            from core import an_cua_so
+            for a in accs:
+                an_cua_so.bo_danh_dau(self.profiles, a)   # mở tay -> không bị "Ẩn trình duyệt"
+        except Exception:  # noqa: BLE001
+            pass
+
+        def work():
+            for a in accs:
+                try:
+                    mo = getattr(self.profiles, "mo_tay", None)
+                    (mo or self.profiles.launch)(a, url=url)
+                    self.app._post(lambda i=a.id: self.set_status(f"Đã mở profile {i}."))
+                except Exception as exc:  # noqa: BLE001
+                    self.app._post(lambda i=a.id, e=exc: self._log(f"[{i}] mở profile lỗi: {e}"))
+
+        threading.Thread(target=work, daemon=True, name="mo_profile_tt").start()
 
     def _accounts(self) -> list:
         out = []
