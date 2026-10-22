@@ -1480,8 +1480,11 @@ class AccountPickerDialog(BaseDialog):
             hang = ctk.CTkFrame(self.body, fg_color="transparent")
             hang.pack(fill="x", pady=1)
             hang._acc_id = account.id                       # de tim acc duoi con tro khi keo
-            ctk.CTkCheckBox(hang, text=account.id, width=ID_W,
-                            variable=self._vars[account.id]).pack(side="left")
+            # O TICH khong chu (bam thang vao o tich = tu toggle) + NHAN ID rieng de KEO CHUOT
+            # tren ca cot ID cung chon duoc (nguoi dung 22/10: "keo dung dong la chon duoc").
+            ctk.CTkCheckBox(hang, text="", width=24, variable=self._vars[account.id]).pack(side="left")
+            lb_id = ctk.CTkLabel(hang, text=account.id, width=ID_W - 24, anchor="w")
+            lb_id.pack(side="left")
             lb_nhom = ctk.CTkLabel(hang, text=account.group or "—", width=GROUP_W, anchor="w",
                                    text_color="gray60")
             lb_nhom.pack(side="left")
@@ -1489,9 +1492,9 @@ class AccountPickerDialog(BaseDialog):
             lb_ghi = ctk.CTkLabel(hang, text=ghi_chu or "—", anchor="w", justify="left",
                                   text_color="gray60")
             lb_ghi.pack(side="left", fill="x", expand=True)
-            # Keo chuot tren PHAN NHAN (khong phai o tick) -> chon/bo nhieu dong lien tiep.
+            # Keo chuot tren HANG / ID / NHOM / GHI CHU (khong phai o tich) -> chon/bo nhieu dong.
             # Shift+chuot trai -> chon CA DAI tu dong da bam truoc den dong nay.
-            for w in (hang, lb_nhom, lb_ghi):
+            for w in (hang, lb_id, lb_nhom, lb_ghi):
                 w.bind("<Button-1>", lambda e, a=account.id: self._drag_start(a))
                 w.bind("<B1-Motion>", self._drag_move)
                 w.bind("<ButtonRelease-1>", self._drag_end)
