@@ -119,7 +119,8 @@ if (typeof sendAsyncMessage === "function") {
     return (coTen.length ? coTen : ds)[0];
   }
   var lanTiepTuc = 0;    // so lan da bam "Tiep tuc" o man nho profile
-  var lanInvalid = 0;    // so lan gap "Invalid request" o trang 2FA (back -> tiep tuc -> nhap mk, toi da 3)
+  var lanInvalid = 0;    // so lan gap "Invalid request" o trang 2FA -> dang nhap lai tu dau (toi da INVALID_TOI_DA)
+  var dangXuLyInvalid = false;   // dang dieu huong ra URL login sau "Invalid request" -> chan lam lai
   function codeInput(doc) {
     return q(doc, 'input[autocomplete=one-time-code],input[name=approvals_code],input#approvals_code')
       || (function () {
@@ -294,7 +295,14 @@ if (typeof sendAsyncMessage === "function") {
   var soLanDayVe = 0;             // SO LAN bi day 2FA -> login (dem TICH LUY, khong reset)
   //: Lap nhieu lan kieu 2FA<->login = SAI MAT KHAU (FB qua kiem tra bao mat nhung pass sai nen
   //: khong vao duoc) hoac acc bi chan -> dung bao, dung cho mai (nguoi dung chot 08/10).
-  var CHO_VE_2FA = 60000, DIEN_LAI_TOI_DA = 1, DAY_VE_TOI_DA = 3;
+  var CHO_VE_2FA = 60000, DIEN_LAI_TOI_DA = 1, DAY_VE_TOI_DA = 3, INVALID_TOI_DA = 4;
+  /** Hop thoai "Invalid request / We could not validate your request" o trang 2FA. THUAN. */
+  function laYeuCauLoi(doc) {
+    try {
+      var t = low(doc.body ? doc.body.innerText : "");
+      return /invalid request|could not validate your request|try starting the flow from beginning|yêu cầu không hợp lệ|không xác thực được yêu cầu|bắt đầu lại.*từ đầu/.test(t);
+    } catch (e) { return false; }
+  }
   function la2FA(href) {
     return String(href || "").indexOf("two_step_verification") !== -1
         || String(href || "").indexOf("two_factor") !== -1
@@ -445,6 +453,37 @@ if (typeof sendAsyncMessage === "function") {
 
     if (la2FA(href)) { daThay2FA = true; mocVeLogin = 0; }
 
+    // (0a) HOP THOAI "Invalid request" o trang 2FA (nguoi dung bao 22/10): Facebook bao
+    //      "We could not validate your request, please try starting the flow from beginning".
+    //      -> THOAT RA, DANG NHAP LAI TU DAU (mo lai URL login sach, chay het email+pass+2FA).
+    //      Lam lai toi da INVALID_TOI_DA lan; qua so do van loi -> bao "invalid-fail".
+    //      DAT NGAY DAU (truoc moi guard "cho 2FA") de khong ngoi cho vo ich khi dialog dang che o ma.
+    if (laYeuCauLoi(doc) && (la2FA(href) || href.indexOf("two_step") !== -1
+        || href.indexOf("/login") !== -1 || href.indexOf("/checkpoint") !== -1
+        || href.indexOf("authentication") !== -1)) {
+      if (dangXuLyInvalid) { return; }      // dang dieu huong -> cho document moi tai, khong lam lai
+      lanInvalid++;
+      if (lanInvalid > INVALID_TOI_DA) {
+        report("invalid-fail", "Invalid request " + INVALID_TOI_DA + " lần vẫn lỗi → tắt trình duyệt, báo lỗi đăng nhập");
+        return;
+      }
+      dangXuLyInvalid = true;
+      // Bam "OK" dong hop thoai (neu co) cho giong nguoi that, roi dieu huong ra URL login.
+      try {
+        var okBtn = nutTheoChu(doc, /^(ok|đồng ý|dong y|close|đóng|dong|thử lại|thu lai|try again)$/i);
+        if (okBtn.length) { clickReal(win, okBtn[0]); try { okBtn[0].click(); } catch (e2) {} }
+      } catch (e) {}
+      // Reset co phien -> lan dang nhap lai duoc coi la LUOT MOI, khong dinh bo dem day-ve cu.
+      daThay2FA = false; mocVeLogin = 0; soLanDayVe = 0; lanDienLai = 0; lanTiepTuc = 0;
+      report("invalid-restart", "lần " + lanInvalid + "/" + INVALID_TOI_DA + ": thoát ra, đăng nhập lại từ đầu");
+      var urlVao = cmd.url_login || "https://www.facebook.com/login.php";
+      win.setTimeout(function () {
+        try { win.location.href = urlVao; } catch (e3) { try { win.location.replace(urlVao); } catch (e4) {} }
+        win.setTimeout(function () { dangXuLyInvalid = false; }, 4000);
+      }, 600);
+      return;
+    }
+
     // (0) Acc DA DANG NHAP SAN: Facebook tra trang trang "Not Found" cho login.php -> khong co
     //     form nao, truoc day ngoi cho het gio roi bao khong_ro (nguoi dung bao 12/10). Sang
     //     trang chu MOT LAN de probe thay phien song (cha tu ket luan "vao").
@@ -511,32 +550,7 @@ if (typeof sendAsyncMessage === "function") {
         || href.indexOf("/recovery") !== -1) {
       return xuLyKhoiPhuc(win, cmd);
     }
-    // Trang 2FA bi "Invalid request" (theo yeu cau nguoi dung 2026-09-17):
-    //   QUAY LAI -> bam "Tiep tuc" de dang nhap -> bam "Nhap mat khau". Lam lai toi da 3 lan;
-    //   qua 3 lan van loi -> bao "invalid-fail" (cha tat trinh duyet + bao loi dang nhap).
-    try {
-      var bodyLow = low(doc.body ? doc.body.innerText : "");
-      if (href.indexOf("two_step_verification") !== -1
-          && /invalid request|could not validate|try starting the flow|bắt đầu lại|không xác thực được/.test(bodyLow)) {
-        // CHUA duoc quay lai khi trang con dang chuyen huong sang man nhap ma: reCAPTCHA
-        // vua tich xong, FB quay vong vai giay roi moi hien o ma (nguoi dung bao 08/10).
-        var con = conCho2FA(doc);
-        if (con > 0) {
-          report("2fa-cho-chuyen", "trang 2FA đang chuyển hướng — chờ thêm "
-                 + Math.ceil(con / 1000) + "s, KHÔNG quay lại");
-          win.setTimeout(function () { onPage(win); }, 1500);
-          return;
-        }
-        lanInvalid++;
-        if (lanInvalid > 3) {
-          report("invalid-fail", "Invalid request 3 lần → tắt trình duyệt, báo lỗi đăng nhập");
-          return;
-        }
-        report("invalid-back", "lần " + lanInvalid + ": quay lại → tiếp tục → nhập mật khẩu");
-        try { win.history.back(); } catch (e) { try { win.history.go(-1); } catch (e2) {} }
-        return;
-      }
-    } catch (e) {}
+    // ("Invalid request" o trang 2FA xu ly NGAY DAU onPage, muc (0a) — thoat ra, dang nhap lai tu dau.)
 
     var step = cmd.delay || 2000, waited = 0, cap = cmd.formTimeout || 40000;
 

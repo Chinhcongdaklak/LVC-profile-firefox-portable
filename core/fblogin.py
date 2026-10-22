@@ -110,10 +110,12 @@ def _clear(profile_dir: str) -> None:
 TU_TICH_CAPTCHA = False
 
 
-def _put_cmd(profile_dir: str, account, code: str, *, tu_tich_captcha=None) -> None:
+def _put_cmd(profile_dir: str, account, code: str, *, tu_tich_captcha=None, url_login: str = "") -> None:
     cmd = {"action": "weblogin", "email": account.id, "pass": account.password,
            "code": code or "", "code_at": time.time(), "formTimeout": 45000, "delay": 2000,
            "tu_tich_captcha": TU_TICH_CAPTCHA if tu_tich_captcha is None else bool(tu_tich_captcha),
+           # URL de agent MO LAI TU DAU khi gap "Invalid request" o trang 2FA (22/10).
+           "url_login": url_login or LOGIN_URL,
            # Luong khoi phuc (Invalid request -> quen mat khau): mail khoi phuc + thoi gian cho captcha.
            "recovery_mail": (getattr(account, "recovery_mail", "") or ""),
            "recoverTimeout": 130000}
@@ -230,7 +232,7 @@ def login_web(manager, account, *, timeout: float = 200.0,
     _clear(profile)
     twofa = (account.twofa or "").strip()
     _put_cmd(profile, account, totp.generate(twofa) if twofa else "",
-             tu_tich_captcha=tu_tich_captcha)
+             tu_tich_captcha=tu_tich_captcha, url_login=url_login or LOGIN_URL)
 
     noi(f"[{account.id}] mở Firefox đăng nhập id|pass" + (" |2fa" if twofa else "") + "...")
     manager.launch(account, url=(url_login or LOGIN_URL))
@@ -305,6 +307,10 @@ def login_web(manager, account, *, timeout: float = 200.0,
                 # Dang cho FB tu dua tro lai trang 2FA (vua bi day ve man dang nhap).
                 if st == "cho-ve-2fa":
                     deadline = max(deadline, time.time() + 40.0)
+                # "Invalid request" o trang 2FA -> agent thoat ra, dang nhap lai tu dau: cho them
+                # mot luot day du (email+pass+2FA) truoc khi het gio (22/10).
+                if st == "invalid-restart":
+                    deadline = max(deadline, time.time() + 90.0)
             probe = manager.read_login_probe(account)
             vao = bool(probe and probe[0])
             status = danh_gia(states, vao, het_gio=False)
@@ -312,7 +318,8 @@ def login_web(manager, account, *, timeout: float = 200.0,
                 break
             # Lam moi ma 2FA moi ~5s de agent luon co ma con hieu luc khi toi buoc 2FA.
             if twofa and (time.time() - last_code_at) >= 5.0:
-                _put_cmd(profile, account, totp.generate(twofa), tu_tich_captcha=tu_tich_captcha)
+                _put_cmd(profile, account, totp.generate(twofa), tu_tich_captcha=tu_tich_captcha,
+                         url_login=url_login or LOGIN_URL)
                 last_code_at = time.time()
             time.sleep(1.0)
         if status is None:
