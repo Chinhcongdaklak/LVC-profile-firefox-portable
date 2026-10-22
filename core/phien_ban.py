@@ -10,18 +10,18 @@ Module nay KHONG import gi cua du an de phat_hanh.py / capnhat.py doc duoc ma kh
 theo giao dien.
 """
 
-PHIEN_BAN = "1.4.9"
+PHIEN_BAN = "1.5.1"
 
 #: Kho PHAT HANH tren GitHub (chi chua Releases, ma nguon o kho khac).
 KHO_GITHUB = "Chinhcongdaklak/congprofile"
 
 #: File chuong trinh chinh — thu bo cap nhat thay (ten tren MAY nguoi dung).
-TEN_EXE = "LVC Manager Profile.exe"
+TEN_EXE = "LVC firefox.exe"
 
 #: Ten tep DINH KEM tren GitHub Release. KHONG co dau cach: (1) dau cach lam URL tai len
 #: hong ("URL can't contain control characters" — loi that lan phat hanh dau 29/09), (2) GitHub
 #: tu doi dau cach thanh dau cham. Bo cap nhat tai tep nay roi luu thanh TEN_EXE.
-TEN_TEP_PHAT_HANH = "LVC.Manager.Profile.exe"
+TEN_TEP_PHAT_HANH = "LVC.firefox.exe"
 
 #: Bo cap nhat rieng (khong trung LVCUpdate.exe cua Video Slide neu de chung thu muc).
 TEN_UPDATER = "LVCProfileUpdate.exe"

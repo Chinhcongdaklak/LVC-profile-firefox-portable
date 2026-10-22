@@ -119,7 +119,7 @@ def chay_gui():
     from core.phien_ban import KHO_GITHUB, TEN_UPDATER
 
     cua = tk.Tk()
-    cua.title("Phát hành bản mới — LVC Manager Profile")
+    cua.title("Phát hành bản mới — LVC firefox")
     cua.geometry("760x620")
     khung = tk.Frame(cua, padx=12, pady=10)
     khung.pack(fill="both", expand=True)

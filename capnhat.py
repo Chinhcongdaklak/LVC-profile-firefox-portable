@@ -49,9 +49,9 @@ import urllib.request
 
 #: PHAI khop core/phien_ban.py (thuoc cn01 kiem) -- khong import de khoi keo du an vao.
 KHO = "Chinhcongdaklak/congprofile"
-TEN_EXE = "LVC Manager Profile.exe"
+TEN_EXE = "LVC firefox.exe"
 #: Ten tep dinh kem tren Release (khong dau cach — GitHub doi dau cach thanh dau cham).
-TEN_TEP_PHAT_HANH = "LVC.Manager.Profile.exe"
+TEN_TEP_PHAT_HANH = "LVC.firefox.exe"
 TEN_MO_TA = "capnhat.json"
 TEN_FILE_PHIEN_BAN = "phien_ban.txt"
 API = "https://api.github.com/repos/%s/releases/latest" % KHO
@@ -376,7 +376,7 @@ def chay_gui():
     from tkinter import ttk
 
     cua = tk.Tk()
-    cua.title("Cập nhật LVC Manager Profile")
+    cua.title("Cập nhật LVC firefox")
     cua.geometry("680x420")
     khung = tk.Frame(cua, padx=12, pady=10)
     khung.pack(fill="both", expand=True)
@@ -489,7 +489,7 @@ def chay_tu_dong(hoi_truoc=True):
 
     goc = thu_muc_goc()
     cua = tk.Tk()
-    cua.title("Cập nhật LVC Manager Profile")
+    cua.title("Cập nhật LVC firefox")
     cua.geometry("460x150")
     cua.resizable(False, False)
     khung = tk.Frame(cua, padx=14, pady=12)
@@ -572,7 +572,7 @@ def bao_hop_thoai(cau):
     try:
         import ctypes
         ctypes.windll.user32.MessageBoxW(
-            None, str(cau), "Cập nhật LVC Manager Profile", 0x10)     # 0x10 = biểu tượng lỗi
+            None, str(cau), "Cập nhật LVC firefox", 0x10)     # 0x10 = biểu tượng lỗi
         return True
     except Exception:  # noqa: BLE001
         return False

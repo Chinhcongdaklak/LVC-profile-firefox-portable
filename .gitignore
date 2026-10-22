@@ -19,6 +19,7 @@ build/
 dist/
 *.spec
 LVC Manager Profile.exe
+LVC firefox.exe
 
 # --- Python ---
 __pycache__/

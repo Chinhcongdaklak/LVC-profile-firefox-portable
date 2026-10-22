@@ -22,7 +22,7 @@ import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-APP_NAME = "LVC Manager Profile"
+APP_NAME = "LVC firefox"
 ENTRY = "main.py"
 ICON = os.path.join("assets", "logo.ico")
 
