@@ -149,7 +149,7 @@ class App(ctk.CTk):
         super().__init__()
         ctk.set_default_color_theme("blue")
 
-        self.title("LVC Manager Profile")
+        self.title("LVC firefox")
         self.geometry("1500x820")
         self.minsize(1100, 600)
         self._set_window_icon()
@@ -867,7 +867,7 @@ class App(ctk.CTk):
 
         ctk.CTkLabel(
             header,
-            text="LVC Manager Profile",
+            text="LVC firefox",
             font=ctk.CTkFont(size=20, weight="bold"),
         ).pack(side="left", padx=(0, 8), pady=10)
         from .nut_capnhat import NutCapNhat, phien_ban_hien

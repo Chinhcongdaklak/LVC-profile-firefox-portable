@@ -35,7 +35,7 @@ class LoginWindow(ctk.CTkToplevel):
 
     def __init__(self, parent) -> None:
         super().__init__(parent)
-        self.title("LVC Manager Profile - Đăng nhập")
+        self.title("LVC firefox - Đăng nhập")
         self.geometry("520x560")
         self.resizable(False, False)
         self._set_icon()
@@ -88,7 +88,7 @@ class LoginWindow(ctk.CTkToplevel):
         except Exception:
             pass
         ctk.CTkLabel(
-            header, text="LVC Manager Profile",
+            header, text="LVC firefox",
             font=ctk.CTkFont(size=19, weight="bold"),
         ).pack(side="left", pady=12)
 

@@ -12,7 +12,7 @@ import os
 import time
 
 TEN_KHOA = "Local\\LVC.ManagerProfile.MotBan"
-TIEU_DE = "LVC Manager Profile"          # cửa sổ chính + cổng đăng nhập đều mở đầu bằng chuỗi này
+TIEU_DE = "LVC firefox"                  # cửa sổ chính + cổng đăng nhập đều mở đầu bằng chuỗi này
 LOI_DA_CO = 183                          # ERROR_ALREADY_EXISTS
 
 _khoa = None                             # giữ handle tới khi tiến trình thoát
