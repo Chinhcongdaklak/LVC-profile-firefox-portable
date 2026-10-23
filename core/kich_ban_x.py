@@ -162,6 +162,7 @@ class KhoKichBan:
         self.accs: list = []
         self.luong = 1
         self.lap_phut = 0
+        self.tu_dong = False       # bat tu dong chay (mo tool la tu chay kich ban)
         self.mau_mo = MAU_MAC_DINH
         if os.path.isfile(duong_dan):
             self._nap()
@@ -190,6 +191,7 @@ class KhoKichBan:
         self._chia_tu_khoa(tu_mau)
         self.luong = _so(d.get("luong"), 1, 1, 20)
         self.lap_phut = _so(d.get("lap_phut"), 0, 0, 100000)
+        self.tu_dong = bool(d.get("tu_dong", False))
         self.mau_mo = str(d.get("mau_mo") or MAU_MAC_DINH)
 
     def _doc(self, path: str) -> dict:
@@ -252,7 +254,8 @@ class KhoKichBan:
         with self._khoa:
             d = {"mau": self.mau, "acc_mau": self.acc_mau, "acc_follow": self.acc_follow,
                  "acc_quote": self.acc_quote, "acc_tu_khoa": self.acc_tu_khoa, "accs": self.accs,
-                 "luong": self.luong, "lap_phut": self.lap_phut, "mau_mo": self.mau_mo}
+                 "luong": self.luong, "lap_phut": self.lap_phut, "tu_dong": self.tu_dong,
+                 "mau_mo": self.mau_mo}
             try:
                 os.makedirs(os.path.dirname(self.duong_dan) or ".", exist_ok=True)
                 tmp = f"{self.duong_dan}.{os.getpid()}.{threading.get_ident()}.tmp"

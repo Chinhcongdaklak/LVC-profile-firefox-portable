@@ -23,6 +23,7 @@ from .dialogs import AccountPickerDialog
 PAD = 8
 SO_TRON = "①②③④⑤⑥⑦⑧⑨⑩"
 TU_LUU_MS = 600
+AUTO_DELAY_MS = 20000      # mở tool mà "Tự động chạy" bật -> chờ app/VPN ổn định rồi tự chạy
 MAU_NODE = {kbx.NODE_LUOT: "#2f6fb0", kbx.NODE_FOLLOW: "#2f7d4f", kbx.NODE_QUOTE: "#8a5a1c",
             kbx.NODE_NGHI: "gray40"}
 
@@ -164,10 +165,14 @@ class KichBanXTab(ctk.CTkFrame):
             tat_ca.nap()
         except Exception:  # noqa: BLE001
             pass
+        self._auto_hen = None
         self._build()
         self._ve_mau()
         self._ve_nodes()
         self._show_accs()
+        # Mo tool ma "Tự động chạy" đang bật -> tự chạy kịch bản sau một lúc cho app/VPN ổn định.
+        if self.kho.tu_dong:
+            self._auto_hen = self.after(AUTO_DELAY_MS, self._auto_start)
 
     # ================================================================ bố cục
     def _build(self) -> None:
@@ -240,6 +245,10 @@ class KichBanXTab(ctk.CTkFrame):
         self.btn_stop = ctk.CTkButton(thanh, text="⏹ Dừng", width=80, fg_color="#a33",
                                       command=self._stop_run, state="disabled")
         self.btn_stop.pack(side="left")
+        # Tu dong chay: bat -> chay ngay; tat tool mo lai -> tu chay theo kich ban da luu.
+        self.auto_var = ctk.BooleanVar(value=bool(self.kho.tu_dong))
+        ctk.CTkSwitch(thanh, text="🔄 Tự động chạy", variable=self.auto_var,
+                      command=self._auto_toggled).pack(side="left", padx=(12, 0))
         self.lbl_dem = ctk.CTkLabel(thanh, text="", text_color="gray60", font=dam)
         self.lbl_dem.pack(side="right", padx=8)
 
@@ -737,12 +746,38 @@ class KichBanXTab(ctk.CTkFrame):
         except ValueError:
             return mac
 
-    def _start(self) -> None:
+    def _auto_toggled(self) -> None:
+        """Gạt công tắc "Tự động chạy": lưu ngay; bật -> chạy luôn, tắt -> huỷ hẹn + dừng."""
+        self.kho.tu_dong = bool(self.auto_var.get())
+        self.kho.luu()
+        if self._auto_hen is not None:
+            try:
+                self.after_cancel(self._auto_hen)
+            except Exception:  # noqa: BLE001
+                pass
+            self._auto_hen = None
+        if self.kho.tu_dong:
+            if not self._running:
+                self._start()
+        else:
+            self._log("Đã tắt tự động chạy.")
+            if self._running:
+                self._stop_run()
+
+    def _auto_start(self) -> None:
+        """Tới giờ tự chạy (mở tool mà tự động đang bật)."""
+        self._auto_hen = None
+        if self.kho.tu_dong and not self._running and self._accounts():
+            self._log("🔄 Tự động chạy kịch bản (đã bật từ trước).")
+            self._start(tu_dong=True)
+
+    def _start(self, tu_dong: bool = False) -> None:
         if self._running:
             return
         self._luu_ngay()
         if not self._accounts():
-            messagebox.showinfo("Kịch bản X", "Chọn ít nhất một acc X.", parent=self.winfo_toplevel())
+            if not tu_dong:            # tự động mà chưa có acc -> im lặng, không bung hộp thoại
+                messagebox.showinfo("Kịch bản X", "Chọn ít nhất một acc X.", parent=self.winfo_toplevel())
             return
         self.kho.luong = self._int(self.e_luong, 1, 1)
         self.kho.lap_phut = self._int(self.e_lap, 0)
