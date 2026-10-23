@@ -3043,6 +3043,25 @@ class App(ctk.CTk):
         # profile thì tự tạo (tu_tao_profile). Nghiệp vụ ở mô-đun core/modun/mo_profile (ADR-028).
         self.goi_modun("mo_profile", selected, done_message=f"Đã mở {len(selected)} profile.",
                        tu_tao_profile=True, url=url)
+        self._tai_avatar_nen(selected)          # tự tải avatar acc Facebook -> thư mục avatar/
+
+    def _tai_avatar_nen(self, accs) -> None:
+        """Tải avatar các acc Facebook ở luồng nền (tên file = id acc)."""
+        accs = list(accs or [])
+        if not accs:
+            return
+
+        def work():
+            try:
+                from core import avatar
+                kq = avatar.tai_nhieu(self.manager, accs, workers=self._so_luong(),
+                                      log=lambda m: self._post(lambda t=m: self.set_status(t)))
+                self._post(lambda: self.set_status(
+                    f"Avatar: đã tải {kq['ok']}/{kq['tong']} acc vào thư mục avatar/"))
+            except Exception as exc:  # noqa: BLE001
+                self._post(lambda e=exc: self.set_status(f"Tải avatar lỗi: {e}"))
+
+        threading.Thread(target=work, daemon=True, name="tai_avatar").start()
 
     def login_web_selected(self) -> None:
         """Đăng nhập web bằng id|pass|2fa (chuột phải) cho các acc đã chọn.
