@@ -2221,6 +2221,12 @@ class JobPanel(ctk.CTkFrame):
         else:
             so_video = len(fbupload.find_videos(cfg.folder)) if cfg.folder else 0
             phan = [f"{so_video} video trong thư mục"]
+        # 0 video mà thư mục lại có file khác (đuôi lạ) / sai đường dẫn -> nói RÕ lý do,
+        # đừng chỉ báo "không có video" (người dùng 26/10: có 3 video mà báo không có).
+        if so_video <= 0 and (cfg.folder or "").strip():
+            cd = fbupload.chan_doan_thu_muc(cfg.folder)
+            if "KHÔNG đuôi video" in cd or "KHÔNG tồn tại" in cd:
+                return "⚠ " + cd + " — kiểm tra lại thư mục / đuôi file"
         if self.auto.busy:
             phan.append("đang đăng...")
         elif so_video <= 0 and cfg.is_lich and self.auto.lich_con_khung():

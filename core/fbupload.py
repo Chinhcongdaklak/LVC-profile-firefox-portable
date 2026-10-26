@@ -31,7 +31,9 @@ CHUNKED_THRESHOLD = 80 * 1024 * 1024
 READ_BLOCK = 1024 * 1024
 
 #: Duoi file duoc coi la video. Dung de quet thu muc.
-VIDEO_SUFFIXES = (".mp4", ".mov", ".avi", ".mkv", ".flv", ".wmv", ".webm", ".m4v", ".mpg", ".mpeg")
+VIDEO_SUFFIXES = (".mp4", ".mov", ".avi", ".mkv", ".flv", ".wmv", ".webm", ".m4v", ".mpg",
+                  ".mpeg", ".ts", ".m2ts", ".mts", ".3gp", ".3g2", ".m2v", ".vob", ".ogv",
+                  ".mxf", ".divx", ".f4v", ".rmvb")
 #: Duoi file anh.
 IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".heic", ".heif")
 #: Bai chi co chu: moi file .txt la mot bai, noi dung file la noi dung bai.
@@ -279,23 +281,82 @@ def natural_key(name: str):
     return [int(p) if p.isdigit() else p.lower() for p in parts]
 
 
+def chuan_thu_muc(folder: str) -> str:
+    """Bo khoang trang + dau ngoac (" '') quanh duong dan nguoi dung dan vao. THUAN.
+
+    Dan duong dan tu Explorer ("Copy as path") kem dau ngoac kep; o nhap thua khoang
+    trang / xuong dong -> os.listdir khong thay thu muc -> bao "khong co video" oan.
+    """
+    s = str(folder or "").strip().strip('"').strip("'").strip()
+    return s
+
+
+def _listdir_ben(folder: str) -> list[str]:
+    """os.listdir chiu duoc duong dan DAI (> 260 ky tu) va thu muc tren o mang.
+
+    Loi that (29/09, chuyen may): duong dan dai lam os.listdir nem Errno 2 -> ve [] ->
+    "khong co video" oan. Thu lai voi tien to \\?\\ (long path)."""
+    try:
+        return os.listdir(folder)
+    except OSError:
+        pass
+    try:
+        p = os.path.abspath(folder)
+        if os.name == "nt" and not p.startswith("\\\\?\\"):
+            p = "\\\\?\\" + p
+        return os.listdir(p)
+    except OSError:
+        return []
+
+
 def find_files(folder: str, suffixes) -> list[str]:
     """Cac file co duoi trong ``suffixes``, XEP THEO TEN tu tren xuong duoi.
 
     Xep dung thu tu Windows Explorer hien, de nguoi dung nhin thu muc la biet cai
-    nao se len truoc.
+    nao se len truoc. Chiu duong dan co ngoac/khoang trang + duong dan dai.
     """
-    try:
-        names = os.listdir(folder)
-    except OSError:
+    folder = chuan_thu_muc(folder)
+    if not folder:
         return []
     found = []
-    for name in names:
+    for name in _listdir_ben(folder):
+        if not name.lower().endswith(suffixes):
+            continue
         path = os.path.join(folder, name)
-        if os.path.isfile(path) and name.lower().endswith(suffixes):
+        try:
+            la_file = os.path.isfile(path) or os.path.isfile("\\\\?\\" + os.path.abspath(path)
+                                                             if os.name == "nt" else path)
+        except OSError:
+            la_file = True                      # liet ke duoc ten ma kiem khong duoc -> cu nhan
+        if la_file:
             found.append(name)
     found.sort(key=natural_key)
     return [os.path.join(folder, name) for name in found]
+
+
+def chan_doan_thu_muc(folder: str) -> str:
+    """Mot dong chan doan: thu muc co ton tai khong, co bao nhieu file, vai ten dau.
+
+    De bao nguoi dung khi "khong co video" — biet la do duong dan sai, do duoi file la,
+    hay thu muc rong that su.
+    """
+    goc = str(folder or "")
+    folder = chuan_thu_muc(goc)
+    if not folder:
+        return "chưa đặt thư mục video"
+    ton_tai = os.path.isdir(folder) or (os.name == "nt" and os.path.isdir("\\\\?\\" + os.path.abspath(folder)))
+    if not ton_tai:
+        return f"thư mục KHÔNG tồn tại / không truy cập được: {folder}"
+    names = _listdir_ben(folder)
+    vids = [n for n in names if n.lower().endswith(VIDEO_SUFFIXES)]
+    if vids:
+        return f"{len(vids)} video trong {folder}"
+    khac = [n for n in names if os.path.isfile(os.path.join(folder, n))]
+    if khac:
+        mau = ", ".join(khac[:5])
+        return (f"có {len(khac)} file nhưng KHÔNG đuôi video: {mau}"
+                + (" …" if len(khac) > 5 else "") + f" (trong {folder})")
+    return f"thư mục rỗng: {folder}"
 
 
 def find_videos(folder: str) -> list[str]:

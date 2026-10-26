@@ -212,6 +212,18 @@ def la_loi_bo_bai(loi) -> bool:
 GIOI_HAN_GIO = 24
 #: Acc bi chan vi spam thi nghi bao nhieu NGAY (mac dinh; nguoi dung sua trong tab).
 SPAM_NGAY_MAC_DINH = 3
+
+
+def _la_thu_muc(d: str) -> bool:
+    """os.path.isdir chiu duong dan DAI (>260) tren Windows (long path \\?\\)."""
+    if os.path.isdir(d):
+        return True
+    if os.name == "nt":
+        try:
+            return os.path.isdir("\\\\?\\" + os.path.abspath(d))
+        except OSError:
+            return False
+    return False
 #: Tran tren cho "dat truoc N ngay" -- de khong ai go nham 365 roi tool dang ca nam mot luot.
 SO_NGAY_DAT_LICH_TOI_DA = 30
 #: Cho khoa acc DU PHONG toi da bao nhieu giay (acc do co the dang ban o trang khac); het gio thi bo qua
@@ -1401,8 +1413,8 @@ class AutoUploader:
         if self.config.is_group:
             ds.insert(0, self.config.queue_dir)
         for d in ds:
-            d = (d or "").strip()
-            if d and not os.path.isdir(d):
+            d = fbupload.chuan_thu_muc(d)
+            if d and not _la_thu_muc(d):
                 return d
         return ""
 
@@ -1936,14 +1948,15 @@ class AutoUploader:
         Nhom: [Thu muc bai cho dang, Thu muc video]. Fanpage: [Thu muc video].
         """
         ra = []
-        if self.config.is_group and (self.config.queue_dir or "").strip():
-            ra.append(self.config.queue_dir.strip())
-        if (self.config.folder or "").strip():
-            ra.append(self.config.folder.strip())
+        if self.config.is_group:
+            ra.append(fbupload.chuan_thu_muc(self.config.queue_dir))
+        ra.append(fbupload.chuan_thu_muc(self.config.folder))
         seen, out = set(), []
         for d in ra:
+            if not d:
+                continue
             n = os.path.normcase(os.path.abspath(d))
-            if n in seen or not os.path.isdir(d):
+            if n in seen or not _la_thu_muc(d):
                 continue
             seen.add(n)
             out.append(d)
