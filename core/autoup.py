@@ -918,7 +918,18 @@ class AutoUploader:
             # Khong co video thi coi nhu da xong moc nay, khong quet lai lien tuc.
             self._fired[moc] = hom_nay
             self.save()
-            self.note(f"Mốc {moc}: thư mục không có video nào.", ok=True)
+            mat = self.thu_muc_mat()
+            if mat:
+                self._bao_thu_muc_mat(mat)
+            else:
+                con = self.so_con_lai()
+                if con:
+                    # CON bai ma khong dang duoc (da dang / trang khac giu / bo qua...) -> noi RO,
+                    # dung "khong co video nao" oan (nguoi dung bao 26/10: con 3 bai ma bao het).
+                    self.note(f"Mốc {moc}:", ok=True)
+                    self._bao_moi_bi_bo_qua(con)
+                else:
+                    self.note(f"Mốc {moc}: thư mục không có video nào.", ok=True)
             return None
 
         self._busy = True
@@ -1895,13 +1906,67 @@ class AutoUploader:
             self.save()
         return True
 
+    def _phan_tich_bo_qua(self) -> dict:
+        """Vi sao cac bai trong thu muc KHONG dang duoc: dem theo tung ly do (giong bo loc
+        cua next_video). Tra {da_dang, bo_video, giu_khac, chua_san_sang, cho_xao, x_loai}."""
+        da_dang = set(self._posted)
+        bo_video = set(getattr(self, "_bo_video", ()))
+        toi_da = self.video_toi_da_giay()
+        r = {"da_dang": 0, "bo_video": 0, "giu_khac": 0, "chua_san_sang": 0, "cho_xao": 0, "x_loai": 0}
+        for _vi, path in self._bai_theo_thu_tu():
+            key = self._key(path)
+            if key in da_dang:
+                r["da_dang"] += 1
+                continue
+            if key in bo_video:
+                r["bo_video"] += 1
+                continue
+            if self.platform == "x" and self._x_bo_qua(path, key):
+                r["x_loai"] += 1
+                continue
+            if toi_da and self.platform != "x" and self._qua_dai(path, key, toi_da):
+                r["x_loai"] += 1
+                continue
+            if self.config.only_post_xao:
+                it = self._queue_item_for(path)
+                if it is not None and it.get("xao") != "da":
+                    r["cho_xao"] += 1
+                    continue
+            if self.claim_check is not None and not self.claim_check(key):
+                r["giu_khac"] += 1
+                continue
+            if not fbupload.is_ready(path):
+                r["chua_san_sang"] += 1
+            if self.unclaim is not None:
+                self.unclaim(key)
+        return r
+
     def _bao_moi_bi_bo_qua(self, con: int) -> None:
-        """Bao (1 lan cho moi so luong) khi thu muc CON bai nhung khong bai nao dang duoc."""
+        """Bao (1 lan cho moi so luong) khi thu muc CON bai nhung khong bai nao dang duoc.
+        Noi RO ly do tung nhom de nguoi dung biet xu ly (26/10: 'con 3 bai ma bao het')."""
         if getattr(self, "_bao_bo_qua_con", None) == con:
             return
         self._bao_bo_qua_con = con
-        self.note(f"Thư mục còn {con} bài nhưng KHÔNG bài nào đăng được (X không nhận / quá dài / "
-                  "đã bị bỏ qua) — xem các dòng 'Bỏ qua…' trong nhật ký.", ok=False)
+        try:
+            r = self._phan_tich_bo_qua()
+        except Exception:  # noqa: BLE001
+            r = {}
+        ly = []
+        if r.get("da_dang"):
+            ly.append(f"{r['da_dang']} bài ĐÃ ĐĂNG rồi (có trong lịch sử — bấm \"↺ Chạy lại từ đầu\" "
+                      "nếu muốn đăng lại)")
+        if r.get("giu_khac"):
+            ly.append(f"{r['giu_khac']} bài đang được TRANG KHÁC giữ (nhiều fanpage chung 1 thư mục)")
+        if r.get("bo_video"):
+            ly.append(f"{r['bo_video']} bài bị BỎ QUA (lỗi/định dạng — xem dòng 'Bỏ qua…')")
+        if r.get("x_loai"):
+            ly.append(f"{r['x_loai']} bài quá dài / định dạng không nhận")
+        if r.get("cho_xao"):
+            ly.append(f"{r['cho_xao']} bài chưa xào xong")
+        if r.get("chua_san_sang"):
+            ly.append(f"{r['chua_san_sang']} bài đang copy / chưa sẵn sàng")
+        chi_tiet = ("; ".join(ly)) if ly else "lý do không rõ"
+        self.note(f"Thư mục còn {con} bài nhưng KHÔNG bài nào đăng được: {chi_tiet}.", ok=False)
 
     def _rut_gon_tieu_de(self, path: str) -> str:
         """Fanpage (Business Suite): ten file qua dai -> cat ngan, caption van day du.
